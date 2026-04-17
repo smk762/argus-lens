@@ -1,0 +1,22 @@
+services:
+  argus-lens:
+    build: .
+    ports:
+      - "${ARGUS_PORT:-8080}:8080"
+    environment:
+      - ARGUS_BACKEND=${ARGUS_BACKEND:-hybrid}
+      - ARGUS_API_KEY=${ARGUS_API_KEY:-}
+      - WD14_MODEL_DIR=/root/.cache/wd14_tagger
+      - HF_HOME=/root/.cache/huggingface
+      - HF_TRUST_REMOTE_CODE=${HF_TRUST_REMOTE_CODE:-false}
+    volumes:
+      - ~/.cache/wd14_tagger:/root/.cache/wd14_tagger:ro
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
