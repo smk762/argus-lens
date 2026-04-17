@@ -115,6 +115,7 @@ def serve(
     port: int = Option(8080, "--port", "-p", help="Port to listen on"),
     host: str = Option("0.0.0.0", "--host", help="Host to bind to"),
     backend: str = Option("hybrid", "--backend", "-b", help="Default backend"),
+    cors: bool = Option(False, "--cors", help="Enable CORS (allow all origins)"),
 ) -> None:
     """Start the Argus Lens micro-server (FastAPI)."""
     try:
@@ -125,7 +126,7 @@ def serve(
 
     from argus_lens.server import create_app
 
-    app = create_app(default_backend=backend)
+    app = create_app(default_backend=backend, cors=cors)
     uvicorn.run(app, host=host, port=port)
 
 

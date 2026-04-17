@@ -11,6 +11,7 @@ from typing import Any
 try:
     from fastapi import FastAPI, File, Form, HTTPException, UploadFile
     from fastapi.responses import StreamingResponse
+    from pydantic import BaseModel
 except ImportError as exc:
     raise ImportError("Server requires: pip install argus-lens[server]") from exc
 
@@ -20,11 +21,25 @@ from argus_lens.engine import ArgusLens
 from argus_lens.types import CaptionResult
 
 
+class CaptionURLRequest(BaseModel):
+    image_url: str
+    trigger_word: str = ""
+    target_style: str = "photo"
+    target_category: str = "identity"
+    target_backend: str = "sdxl"
+    prose_enrichment: bool = True
+
+
 def _result_to_dict(result: CaptionResult) -> dict[str, Any]:
     return asdict(result)
 
 
-def create_app(default_backend: str = "hybrid", **kwargs: Any) -> FastAPI:
+def create_app(
+    default_backend: str = "hybrid",
+    cors: bool = False,
+    cors_origins: list[str] | None = None,
+    **kwargs: Any,
+) -> FastAPI:
     """Create a FastAPI application for image captioning."""
 
     app = FastAPI(
@@ -32,6 +47,18 @@ def create_app(default_backend: str = "hybrid", **kwargs: Any) -> FastAPI:
         description="Structured image captioning API",
         version="0.1.0",
     )
+
+    if cors:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins or ["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     engine = ArgusLens(backend=default_backend, **kwargs)
 
     @app.get("/backends")
@@ -60,6 +87,23 @@ def create_app(default_backend: str = "hybrid", **kwargs: Any) -> FastAPI:
             target_category=target_category,
             target_backend=target_backend,
         )
+        return _result_to_dict(result)
+
+    @app.post("/caption/url")
+    async def caption_url(req: CaptionURLRequest) -> dict[str, Any]:
+        """Caption an image from a URL (JSON body, no file upload needed)."""
+        try:
+            result = await asyncio.to_thread(
+                engine.caption,
+                req.image_url,
+                trigger_word=req.trigger_word,
+                target_style=req.target_style,
+                target_category=req.target_category,
+                target_backend=req.target_backend,
+                prose_enrichment=req.prose_enrichment,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _result_to_dict(result)
 
     @app.post("/caption/batch")
