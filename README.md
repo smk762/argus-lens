@@ -2,6 +2,8 @@
 
 Structured image captioning for training and generation.
 
+> **Looking for the web UI?** See [argus-vision-demo](https://github.com/smk762/argus-vision-demo) -- a thin Next.js frontend for exploring argus-lens interactively.
+
 ## Quick Start
 
 ```bash
