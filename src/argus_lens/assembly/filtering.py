@@ -84,6 +84,12 @@ def wd14_word_set(tags_str: str) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
+def _split_prose_sentences(text: str) -> list[str]:
+    """Split prose into sentences, preserving commas within sentences."""
+    clauses = re.split(r"(?<=[.!?])\s+|;\s*", text)
+    return [c.strip(" ,;.") for c in clauses if c.strip(" ,;.")]
+
+
 def filter_redundant_clauses_detailed(
     description: str,
     tags: str,
@@ -94,16 +100,15 @@ def filter_redundant_clauses_detailed(
     Returns ``(kept_clauses, removed_clauses)``.
     """
     if not description or not tags:
-        clauses = [c.strip() for c in re.split(r"[,.]", description) if c.strip()]
+        clauses = _split_prose_sentences(description) if description else []
         return clauses, []
 
     tag_words = wd14_word_set(tags)
-    raw_clauses = re.split(r"[,.]", description)
+    raw_clauses = _split_prose_sentences(description)
 
     kept: list[str] = []
     removed: list[str] = []
     for clause in raw_clauses:
-        clause = clause.strip()
         if not clause:
             continue
         cw = _content_words(clause)
@@ -121,6 +126,80 @@ def filter_redundant_clauses(description: str, tags: str, threshold: float = 0.5
     """Remove redundant clauses and return the filtered description."""
     kept, _ = filter_redundant_clauses_detailed(description, tags, threshold=threshold)
     return ", ".join(kept)
+
+
+# ---------------------------------------------------------------------------
+# Prose → tag-style token extraction
+# ---------------------------------------------------------------------------
+
+_PROSE_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "into",
+    "this", "that", "it", "its", "she", "he", "her", "his", "they",
+    "and", "or", "but", "also", "very", "quite", "rather", "some",
+    "has", "have", "had", "not", "no", "there", "which", "who",
+    "appears", "looks", "seems", "can", "may", "might",
+    "photo", "image", "picture", "portrait", "photograph",
+    "woman", "man", "person", "girl", "boy", "lady", "guy", "figure",
+    "young", "old",
+})
+
+_COMPOUND_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(\w+)\s+(shirt|dress|jacket|sweater|coat|skirt|pants|jeans|shorts|top|blouse|vest)\b", re.I),
+    re.compile(r"\b(\w+)\s+(hair|eyes|skin)\b", re.I),
+    re.compile(r"\b(\w+)\s+(light|lighting|glow|shadow|shadows)\b", re.I),
+    re.compile(r"\b(\w+)\s+(door|wall|window|floor|ceiling|mirror|table|chair|couch|sofa|bed)\b", re.I),
+    re.compile(r"\b(\w+)\s+(background|foreground)\b", re.I),
+    re.compile(r"\b(\w+)\s+(pattern|texture|fabric|material)\b", re.I),
+    re.compile(r"\b(\w+)\s+(expression|smile|grin|frown)\b", re.I),
+)
+
+
+def extract_prose_tokens(
+    prose_clauses: list[str],
+    existing_tag_words: frozenset[str],
+    max_tokens: int = 5,
+) -> list[str]:
+    """Extract tag-style tokens from novel prose clauses.
+
+    Pulls compound noun phrases (e.g. "gray sweater", "lace pattern",
+    "wooden door") and standalone content nouns that don't overlap with
+    existing WD14 tags. Returns at most *max_tokens* results.
+    """
+    seen: set[str] = set()
+    tokens: list[str] = []
+
+    for clause in prose_clauses:
+        lowered = clause.lower()
+
+        for pattern in _COMPOUND_PATTERNS:
+            for match in pattern.finditer(lowered):
+                modifier, noun = match.group(1), match.group(2)
+                if modifier in _PROSE_STOPWORDS:
+                    tag = noun
+                else:
+                    tag = f"{modifier}_{noun}"
+
+                if tag in seen or tag in existing_tag_words:
+                    continue
+                tag_words = set(tag.replace("_", " ").split())
+                if tag_words & existing_tag_words:
+                    continue
+                seen.add(tag)
+                tokens.append(tag)
+
+        for word in lowered.split():
+            cleaned = word.strip(".,!?;:'\"()[]")
+            if (
+                len(cleaned) > 3
+                and cleaned not in _PROSE_STOPWORDS
+                and cleaned not in existing_tag_words
+                and cleaned not in seen
+            ):
+                seen.add(cleaned)
+                tokens.append(cleaned)
+
+    return tokens[:max_tokens]
 
 
 # ---------------------------------------------------------------------------

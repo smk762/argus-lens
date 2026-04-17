@@ -102,8 +102,13 @@ def assemble_training_variant(
     drop_probability: float = 0.1,
     image_index: int = 0,
     categories: tuple[CategoryConfig, ...] | None = None,
+    enrichment: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     """Build a caption optimised for LoRA training.
+
+    *enrichment* contains tag-style tokens extracted from prose (e.g.
+    Florence-2) that provide novel scene detail not covered by WD14 tags.
+    These are appended at lowest priority after all tag tiers.
 
     Returns ``(caption, removed_fragments)``.
     """
@@ -241,6 +246,12 @@ def assemble_training_variant(
             removed.append(fragment)
 
     for fragment in setting_all:
+        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        if not added:
+            removed.append(fragment)
+
+    # Phase 5: prose enrichment (lowest priority, budget permitting)
+    for fragment in enrichment or []:
         added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
         if not added:
             removed.append(fragment)

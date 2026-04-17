@@ -5,9 +5,11 @@ from __future__ import annotations
 from argus_lens.assembly.classifier import classify_fragment
 from argus_lens.assembly.filtering import (
     dedupe_fragments,
+    extract_prose_tokens,
     filter_redundant_clauses_detailed,
     normalise_fragment,
     split_caption_pieces,
+    wd14_word_set,
 )
 from argus_lens.assembly.noise import (
     RATING_TAGS,
@@ -33,6 +35,7 @@ def compose_caption_result(
     image_index: int = 0,
     categories: tuple[CategoryConfig, ...] | None = None,
     backend_name: str = "",
+    prose_enrichment: bool = True,
 ) -> CaptionResult:
     """Build a structured ``CaptionResult`` from raw model outputs.
 
@@ -42,6 +45,7 @@ def compose_caption_result(
     """
     cat_names = get_category_names(categories)
     buckets: dict[str, list[str]] = {name: [] for name in cat_names}
+    tag_buckets: dict[str, list[str]] = {name: [] for name in cat_names}
     removed_phrases: list[str] = []
     compaction_notes: list[str] = []
 
@@ -60,7 +64,9 @@ def compose_caption_result(
         compaction_notes.append("Stripped rating/meta tags that have no training value.")
 
     for fragment in noise_kept:
-        buckets[classify_fragment(fragment, categories)].append(fragment)
+        cat = classify_fragment(fragment, categories)
+        buckets[cat].append(fragment)
+        tag_buckets[cat].append(fragment)
 
     # --- Process prose-based input (e.g. Florence, BLIP, OpenAI) ---
     kept_clauses, redundant = filter_redundant_clauses_detailed(prose, tags)
@@ -77,6 +83,7 @@ def compose_caption_result(
 
     for name in cat_names:
         buckets[name] = dedupe_fragments(buckets[name])
+        tag_buckets[name] = dedupe_fragments(tag_buckets[name])
 
     # --- Build category variants ---
     caption_variants: dict[str, str] = {}
@@ -94,15 +101,20 @@ def compose_caption_result(
     if truncated_any:
         compaction_notes.append("Trimmed lower-priority fragments to keep captions compact.")
 
-    # --- Build training variant ---
+    # --- Build training variant (tags + prose enrichment) ---
     training_buckets: dict[str, list[str]] = {}
     training_identity_stripped: list[str] = []
     for cat_name in cat_names:
-        kept, stripped = filter_training_noise(buckets[cat_name], strip_identity=True)
+        kept, stripped = filter_training_noise(tag_buckets[cat_name], strip_identity=True)
         training_buckets[cat_name] = kept
         training_identity_stripped.extend(stripped)
     if training_identity_stripped:
         compaction_notes.append("Suppressed identity traits for training variant (learned visually).")
+
+    enrichment_tokens: list[str] = []
+    if prose_enrichment and kept_clauses:
+        existing_tag_words = wd14_word_set(tags)
+        enrichment_tokens = extract_prose_tokens(kept_clauses, existing_tag_words)
 
     training_caption, training_truncated = assemble_training_variant(
         trigger_word, training_buckets,
@@ -111,6 +123,7 @@ def compose_caption_result(
         target_backend=target_profile.target_backend,
         image_index=image_index,
         categories=categories,
+        enrichment=enrichment_tokens,
     )
     caption_variants["training"] = training_caption
     if training_truncated:

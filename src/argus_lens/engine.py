@@ -109,12 +109,20 @@ def _image_hash(data: bytes) -> str:
 def _load_image(source: str | Path | bytes | Image.Image) -> tuple[str, Image.Image]:
     """Load an image from various source types.
 
+    Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs.
     Returns ``(name, pil_image)``.
     """
     if isinstance(source, Image.Image):
         return "image", source.convert("RGB")
     if isinstance(source, bytes):
         return "bytes", Image.open(io.BytesIO(source)).convert("RGB")
+    if isinstance(source, str) and source.startswith(("http://", "https://")):
+        import httpx
+
+        resp = httpx.get(source, follow_redirects=True, timeout=30.0)
+        resp.raise_for_status()
+        name = source.rsplit("/", 1)[-1].split("?")[0] or "image"
+        return name, Image.open(io.BytesIO(resp.content)).convert("RGB")
     path = Path(source)
     if path.exists():
         return path.name, Image.open(path).convert("RGB")
@@ -166,10 +174,15 @@ class ArgusLens:
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
+        prose_enrichment: bool = True,
     ) -> CaptionResult:
         """Caption a single image.
 
-        Accepts file paths, raw bytes, or PIL Images.
+        Accepts file paths, raw bytes, PIL Images, or ``http(s)://`` URLs.
+
+        When *prose_enrichment* is enabled (default), novel scene tokens
+        extracted from prose output (e.g. Florence-2) are appended to the
+        training variant at lowest priority.
         """
         name, pil = _load_image(image)
         profile = resolve_target_profile(
@@ -198,6 +211,7 @@ class ArgusLens:
             tags=tags,
             prose=prose,
             target_profile=profile,
+            prose_enrichment=prose_enrichment,
             categories=self._categories,
             backend_name=self._backend.name,
         )

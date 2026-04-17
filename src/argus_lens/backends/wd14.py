@@ -6,23 +6,63 @@ import os
 from pathlib import Path
 from typing import Any
 
+import structlog
 from PIL import Image
 
 from argus_lens.backends.base import LocalBackend
 from argus_lens.registry import ModelRegistry, get_default_registry
 
+logger = structlog.get_logger()
+
+_HF_REPO = "SmilingWolf/wd-vit-tagger-v2"
+_HF_BASE_URL = f"https://huggingface.co/{_HF_REPO}/resolve/main"
+_MODEL_FILENAME = "wd14-vit-v2.onnx"
+_TAGS_FILENAME = "selected_tags.csv"
+_REMOTE_FILES = {
+    _MODEL_FILENAME: f"{_HF_BASE_URL}/model.onnx",
+    _TAGS_FILENAME: f"{_HF_BASE_URL}/selected_tags.csv",
+}
+_DEFAULT_CACHE_DIR = Path.home() / ".cache" / "wd14_tagger"
+
+
+def _download_model(dest_dir: Path) -> None:
+    """Download WD14 model files from HuggingFace if not present."""
+    import httpx
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    for filename, url in _REMOTE_FILES.items():
+        dest = dest_dir / filename
+        if dest.exists():
+            continue
+
+        logger.info("wd14.download", file=filename, dest=str(dest))
+        tmp = dest.with_suffix(".part")
+        with httpx.stream("GET", url, follow_redirects=True, timeout=300.0) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers.get("content-length", 0))
+            downloaded = 0
+            with tmp.open("wb") as fh:
+                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                    fh.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = downloaded * 100 // total
+                        logger.debug("wd14.download.progress", file=filename, pct=pct)
+        tmp.rename(dest)
+        logger.info("wd14.download.done", file=filename, size_mb=round(dest.stat().st_size / 1024 / 1024, 1))
+
 
 class WD14Backend(LocalBackend):
     """WD14 ViT-v2 tagger producing comma-separated booru tags.
 
-    Model files required:
-    * ``wd14-vit-v2.onnx``
-    * ``selected_tags.csv``
+    Model files (``wd14-vit-v2.onnx`` + ``selected_tags.csv``) are
+    auto-downloaded from HuggingFace on first use if not found locally.
 
     Search order for model directory:
     1. *model_dir* constructor argument
     2. ``WD14_MODEL_DIR`` environment variable
-    3. ``~/.cache/wd14_tagger/``
+    3. ``~/.cache/wd14_tagger/`` (auto-downloads here if needed)
     """
 
     name = "wd14"
@@ -46,14 +86,28 @@ class WD14Backend(LocalBackend):
         env_dir = os.environ.get("WD14_MODEL_DIR")
         if env_dir:
             dirs.append(Path(env_dir))
-        dirs.append(Path.home() / ".cache" / "wd14_tagger")
+        dirs.append(_DEFAULT_CACHE_DIR)
         return dirs
 
     def _find_model(self) -> Path | None:
         for d in self._search_dirs():
-            if (d / "wd14-vit-v2.onnx").exists():
-                return d / "wd14-vit-v2.onnx"
+            if (d / _MODEL_FILENAME).exists():
+                return d / _MODEL_FILENAME
         return None
+
+    def _ensure_model(self) -> Path:
+        """Find model on disk, downloading to the default cache dir if missing."""
+        model_path = self._find_model()
+        if model_path is not None:
+            return model_path
+
+        target_dir = self._model_dir or _DEFAULT_CACHE_DIR
+        _download_model(target_dir)
+
+        model_path = target_dir / _MODEL_FILENAME
+        if not model_path.exists():
+            raise RuntimeError(f"WD14 download failed: {model_path} not found after download")
+        return model_path
 
     def is_available(self) -> bool:
         try:
@@ -61,7 +115,7 @@ class WD14Backend(LocalBackend):
             __import__("numpy")
         except ImportError:
             return False
-        return self._find_model() is not None
+        return True
 
     def availability_reason(self) -> str | None:
         try:
@@ -72,8 +126,6 @@ class WD14Backend(LocalBackend):
             __import__("numpy")
         except ImportError:
             return "Missing package: numpy"
-        if self._find_model() is None:
-            return "WD14 model files not found (wd14-vit-v2.onnx + selected_tags.csv)"
         return None
 
     def _loader(self) -> tuple[Any, list[str], str]:
@@ -81,10 +133,8 @@ class WD14Backend(LocalBackend):
 
         import onnxruntime as ort
 
-        model_path = self._find_model()
-        if model_path is None:
-            raise RuntimeError("WD14 ONNX model not found")
-        tags_path = model_path.parent / "selected_tags.csv"
+        model_path = self._ensure_model()
+        tags_path = model_path.parent / _TAGS_FILENAME
         if not tags_path.exists():
             raise RuntimeError(f"WD14 tags CSV not found at {tags_path}")
 
