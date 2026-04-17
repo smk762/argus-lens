@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "argus-lens"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Structured image captioning for training and generation"
 readme = "README.md"
 license = "MIT"
@@ -32,17 +32,17 @@ dependencies = [
 [project.optional-dependencies]
 wd14 = ["onnxruntime>=1.16", "numpy>=1.24"]
 wd14-gpu = ["onnxruntime-gpu>=1.16", "numpy>=1.24"]
-torch = ["torch>=2.1", "transformers>=4.36"]
-local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.36"]
+torch = ["torch>=2.1", "transformers>=4.46"]
+local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46"]
 openai = ["openai>=1.30"]
 replicate = ["replicate>=0.25"]
 cli = ["typer>=0.12", "rich>=13.0"]
-server = ["fastapi>=0.110", "uvicorn>=0.27"]
+server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7"]
 all = [
     "onnxruntime>=1.16",
     "numpy>=1.24",
     "torch>=2.1",
-    "transformers>=4.36",
+    "transformers>=4.46",
     "openai>=1.30",
     "replicate>=0.25",
     "typer>=0.12",
@@ -57,6 +57,12 @@ argus-lens = "argus_lens.cli:app"
 
 [project.urls]
 Repository = "https://github.com/smk762/argus-lens"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/argus_lens/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/argus_lens"]
