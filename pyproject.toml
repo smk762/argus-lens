@@ -5,12 +5,16 @@ build-backend = "hatchling.build"
 [project]
 name = "argus-lens"
 dynamic = ["version"]
-description = "Structured image captioning for training and generation"
+description = "Intent-aware, multi-model captioning pipeline for LoRA training, dataset curation, and generative AI workflows"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "smk762" }]
-keywords = ["captioning", "image", "lora", "training", "diffusion", "florence", "wd14", "blip"]
+keywords = [
+    "captioning", "image", "lora", "training", "diffusion",
+    "florence", "wd14", "blip", "dataset", "structured-captions",
+    "stable-diffusion", "flux", "sdxl", "annotation", "tagging",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

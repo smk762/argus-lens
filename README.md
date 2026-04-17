@@ -1,6 +1,8 @@
 # Argus Lens
 
-Structured image captioning for training and generation.
+One image. A hundred perspectives.
+
+Multi-model captioning pipeline for LoRA training, dataset curation, and generative AI workflows. Unlike traditional captioners that describe an image, Argus Lens produces **intent-aware caption subsets** -- structured, filtered, and optimised for how captions are actually used downstream.
 
 > **Looking for the web UI?** See [argus-vision-demo](https://github.com/smk762/argus-vision-demo) -- a thin Next.js frontend for exploring argus-lens interactively.
 
@@ -21,6 +23,33 @@ print(result.caption_variants["training"])
 print(result.caption_variants["zeroshot"])
 ```
 
+## Why Argus Lens?
+
+Most captioning tools answer *"what's in this image?"* -- Argus Lens answers *"how will this caption be used?"*
+
+BLIP gives you a sentence. WD14 gives you a flat tag list. Neither knows whether you're training a LoRA, curating a dataset, or generating zero-shot. Argus Lens produces **multiple structured caption variants from the same image**, each optimised for a different downstream task.
+
+| | Typical captioner | Argus Lens |
+|---|---|---|
+| Output | Single flat string | Structured, category-bucketed variants |
+| Intent awareness | None -- describes the image | Training, zero-shot, and per-category variants |
+| Multi-model fusion | One model at a time | Hybrid pipelines (e.g. WD14 tags + GPT-4o prose) |
+| Token budget management | Manual / none | Auto-tuned for SDXL (CLIP, 60 tokens) vs Flux/SD3 (T5, 200 tokens) |
+| LoRA training support | Raw output, hope for the best | Identity suppression, omission cycles, tiered tag protection |
+| Dataset workflow focus | Captioning only | Batch processing, deduplication, export to txt/JSON/JSONL/CSV |
+| Transparency | Black box | Every removed phrase and compaction decision is reported |
+
+### What the assembly pipeline does
+
+The model is just an input source. The real value is what happens after inference:
+
+1. **Classify** -- every tag and prose clause is bucketed into identity, wardrobe, pose/composition, setting, lighting, or action
+2. **Filter** -- redundant prose (>50% overlap with tags), filler prefixes ("The image shows..."), and training noise (rating tags, meta tokens) are stripped
+3. **Specialise** -- the training variant suppresses identity traits (the LoRA learns these visually; stating them conflicts with the base model's prior), while the zero-shot variant puts identity first (no LoRA to supply it)
+4. **Budget** -- fragments are assembled under the correct CLIP/T5 token limit with tiered protection (framing tags are never dropped, short generic tags are shed first)
+5. **Diversify** -- omission cycles systematically suppress different category buckets across images, creating stronger concept disentanglement across the dataset
+6. **Enrich** -- novel compound nouns from prose output ("gray sweater", "wooden door") are extracted and appended at lowest priority to fill remaining token budget
+
 ## Features
 
 - **Multi-model backends**: WD14, Florence-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM (cloud API)
@@ -29,6 +58,7 @@ print(result.caption_variants["zeroshot"])
 - **Zero-shot variant**: Identity-first, prose-preferred captions for generation without LoRA
 - **Hybrid pipelines**: Mix local + cloud backends (e.g. WD14 tags + GPT-4o prose)
 - **Backend-aware budgets**: Automatic token limits for SDXL (60), Flux (200), SD3 (200)
+- **Deterministic and filterable**: Category-aware outputs you can audit, filter, and override
 - **CLI + Server**: Command-line tool and optional FastAPI micro-server
 - **Export formats**: `.txt` sidecars, JSON, JSONL, CSV
 
