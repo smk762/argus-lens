@@ -146,7 +146,10 @@ class TestClassifier:
         assert classify_fragment("living room with green curtains") == "setting"
 
     def test_classifies_pose(self):
-        assert classify_fragment("standing with arms crossed") == "pose_composition"
+        assert classify_fragment("standing with arms crossed") == "pose_gaze"
+
+    def test_classifies_camera_framing(self):
+        assert classify_fragment("close-up portrait") == "camera_framing"
 
     def test_classifies_lighting(self):
         assert classify_fragment("dramatic backlighting with rim light") == "lighting"
