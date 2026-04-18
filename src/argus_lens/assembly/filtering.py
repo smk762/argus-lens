@@ -48,6 +48,7 @@ def strip_filler_prefixes(text: str) -> tuple[str, list[str]]:
 def normalise_fragment(text: str) -> tuple[str, list[str]]:
     """Normalise a caption fragment: strip fillers, collapse whitespace."""
     cleaned, removed = strip_filler_prefixes(text)
+    cleaned = cleaned.replace("_", " ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
     return cleaned.lower(), removed
 
@@ -178,7 +179,7 @@ def extract_prose_tokens(
                 if modifier in _PROSE_STOPWORDS:
                     tag = noun
                 else:
-                    tag = f"{modifier}_{noun}"
+                    tag = f"{modifier} {noun}"
 
                 if tag in seen or tag in existing_tag_words:
                     continue
