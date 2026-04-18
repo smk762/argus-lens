@@ -107,6 +107,18 @@ For GPU inference, you also need:
 
 If you already have torch and CUDA working in your environment, you're set -- the pip extras handle the rest.
 
+### Developing from a git checkout
+
+Use [uv](https://docs.astral.sh/uv/) for installs on PEP 668–managed system Pythons (e.g. Ubuntu). The repo `Makefile` targets `uv pip` and `uv build`:
+
+```bash
+uv venv && source .venv/bin/activate   # once
+make dev                               # editable install with dev + CLI extras
+make wheel-reinstall                   # rebuild wheel and reinstall [server,local,openai,replicate]
+```
+
+Override the binary with `make UV=/path/to/uv wheel-reinstall` if `uv` is not on your `PATH`.
+
 ## Usage
 
 ### Python API
