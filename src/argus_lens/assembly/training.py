@@ -34,31 +34,73 @@ from argus_lens.types import (
 # ---------------------------------------------------------------------------
 
 FRAMING_TAGS: frozenset[str] = frozenset({
+    # Camera distance
     "close-up", "close_up", "closeup",
     "upper_body", "upper body",
     "full_body", "full body",
     "portrait", "headshot",
+    "bust_shot", "bust shot",
+    "cowboy_shot", "cowboy shot",
+    "medium_shot", "medium shot",
+    "wide_shot", "wide shot",
+    "long_shot", "long shot",
+    "waist_up", "waist up", "waist-up",
+    "half_body", "half body",
+    # Camera angle
     "from_above", "from above",
     "from_below", "from below",
     "from_side", "from side",
+    "low_angle", "low angle",
+    "high_angle", "high angle",
+    "dutch_angle", "dutch angle",
+    "eye_level", "eye level",
+    "bird's_eye", "bird's eye", "birds_eye", "birds eye",
+    "aerial_view", "aerial view",
+    "overhead", "overhead_view", "overhead view",
+    "top_down", "top down", "top-down",
+    "profile_view", "profile view",
+    "three_quarter_view", "three quarter view",
+    "rear_view", "rear view",
 })
 
 PRIMARY_POSE_TAGS: frozenset[str] = frozenset({
     "standing", "sitting", "kneeling", "leaning", "walking", "running",
-    "lying_down", "lying down", "crouching",
+    "lying_down", "lying down", "crouching", "perching",
+    "leaning_forward", "leaning forward",
+    "leaning_back", "leaning back",
 })
 
 POSE_EXPRESSION_RESCUE: frozenset[str] = frozenset({
-    "looking_at_viewer", "looking at viewer", "looking_away", "looking away",
+    # Gaze / look direction
+    "looking_at_viewer", "looking at viewer",
     "looking_at_camera", "looking at camera",
+    "looking_away", "looking away",
+    "looking_down", "looking down",
+    "looking_up", "looking up",
+    "looking_left", "looking left",
+    "looking_right", "looking right",
+    "looking_over_shoulder", "looking over shoulder",
+    "looking_back", "looking back",
+    "side_glance", "side glance",
+    "averted_gaze", "averted gaze",
+    "eye_contact", "eye contact",
+    "gaze",
+    # Expression
     "closed_mouth", "open_mouth", "closed mouth", "open mouth",
     "smile", "smiling", "grin", "frown", "serious",
+    "cleavage",
+    # Framing (also in FRAMING_TAGS, kept here for belt-and-suspenders rescue)
     "upper_body", "upper body", "full_body", "full body",
     "close-up", "close_up", "closeup",
     "from_side", "from side", "from_above", "from above", "from_below", "from below",
-    "arms_crossed", "arms crossed", "hand_on_hip", "hand on hip",
+    "low_angle", "low angle", "high_angle", "high angle", "dutch_angle", "dutch angle",
+    # Body pose
+    "arms_crossed", "arms crossed",
+    "hand_on_hip", "hand on hip", "hands_on_hips", "hands on hips",
+    "arms_raised", "arms raised",
+    "hands_behind_back", "hands behind back",
     "sitting", "standing", "kneeling", "leaning",
-    "cleavage",
+    "crouching", "lying_down", "lying down",
 })
 
 OMISSION_CYCLES: tuple[dict[str, bool], ...] = (
@@ -137,10 +179,21 @@ def assemble_training_variant(
     action_all: list[str] = []
     removed: list[str] = []
 
-    for fragment in buckets.get("pose_composition", []):
-        if "pose_composition" in omission:
-            removed.append(fragment)
-        elif is_framing_fragment(fragment):
+    # camera_framing → tier1 first, pose_gaze → tier2/rest.
+    # Also drain the legacy "pose_composition" key for callers using custom buckets.
+    for fragment in buckets.get("camera_framing", []):
+        if is_framing_fragment(fragment):
+            tier1.append(fragment)
+        elif is_primary_pose(fragment):
+            tier2.append(fragment)
+        else:
+            pose_rest.append(fragment)
+
+    for fragment in (
+        list(buckets.get("pose_gaze", []))
+        + list(buckets.get("pose_composition", []))
+    ):
+        if is_framing_fragment(fragment):
             tier1.append(fragment)
         elif is_primary_pose(fragment):
             tier2.append(fragment)
