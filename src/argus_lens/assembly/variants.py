@@ -18,7 +18,8 @@ def _variant_limits(target_style: str, category: str) -> tuple[int, int]:
         limits = {
             "identity": (12, 28),
             "wardrobe": (12, 28),
-            "pose_composition": (10, 24),
+            "camera_framing": (8, 20),
+            "pose_gaze": (10, 24),
             "setting": (10, 24),
             "lighting": (8, 20),
             "action": (10, 24),
@@ -27,7 +28,8 @@ def _variant_limits(target_style: str, category: str) -> tuple[int, int]:
         limits = {
             "identity": (8, 22),
             "wardrobe": (8, 24),
-            "pose_composition": (8, 24),
+            "camera_framing": (6, 18),
+            "pose_gaze": (8, 24),
             "setting": (7, 22),
             "lighting": (6, 18),
             "action": (8, 22),

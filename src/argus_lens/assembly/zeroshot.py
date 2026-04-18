@@ -16,6 +16,7 @@ from __future__ import annotations
 from argus_lens.assembly.filtering import with_trigger
 from argus_lens.assembly.token_budget import estimate_tokens
 from argus_lens.types import (
+    CAMERA_FRAMING_HINTS,
     CategoryConfig,
     get_category_config_map,
     normalise_target_style,
@@ -37,6 +38,19 @@ def assemble_zeroshot_variant(
     """
     style = normalise_target_style(target_style)
     max_segments = 12 if style == "anime" else 10
+
+    # Backward compat: distribute legacy "pose_composition" key into the two
+    # new buckets so callers using the old key still get their fragments included.
+    if "pose_composition" in buckets and buckets["pose_composition"]:
+        _framing_hints = set(CAMERA_FRAMING_HINTS)
+        _camera: list[str] = list(buckets.get("camera_framing", []))
+        _gaze: list[str] = list(buckets.get("pose_gaze", []))
+        for _frag in buckets["pose_composition"]:
+            if any(_h in _frag.lower() for _h in _framing_hints):
+                _camera.append(_frag)
+            else:
+                _gaze.append(_frag)
+        buckets = {**buckets, "camera_framing": _camera, "pose_gaze": _gaze}
 
     config_map = get_category_config_map(categories)
 

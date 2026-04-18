@@ -48,8 +48,10 @@ def classify_fragment(
     words = _content_words(fragment)
     if {"indoors", "outdoors", "room", "street", "park"} & words:
         return "setting"
-    if {"standing", "sitting", "portrait"} & words:
-        return "pose_composition"
+    if {"portrait", "closeup", "headshot"} & words:
+        return "camera_framing"
+    if {"standing", "sitting"} & words:
+        return "pose_gaze"
 
     return "identity"
 

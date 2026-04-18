@@ -149,6 +149,16 @@ def compose_caption_result(
     if zeroshot_truncated:
         removed_phrases.extend(zeroshot_truncated)
 
+    # Backward-compatible alias: concatenate both pose halves so callers
+    # reading caption_variants["pose_composition"] still get a useful value.
+    framing = caption_variants.get("camera_framing", "")
+    pose = caption_variants.get("pose_gaze", "")
+    if framing and pose:
+        combined = f"{framing}, {pose}"
+    else:
+        combined = framing or pose
+    caption_variants["pose_composition"] = combined
+
     selected_category = target_profile.target_category
     return CaptionResult(
         final_caption=caption_variants.get(selected_category, ""),
