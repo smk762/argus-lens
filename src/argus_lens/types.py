@@ -25,11 +25,15 @@ class BackendKind(enum.Enum):
 DEFAULT_CATEGORIES: tuple[str, ...] = (
     "identity",
     "wardrobe",
-    "pose_composition",
+    "camera_framing",
+    "pose_gaze",
     "setting",
     "lighting",
     "action",
 )
+
+# Backward-compatible alias — pose_composition = camera_framing + pose_gaze
+_POSE_COMPOSITION_ALIAS = "pose_composition"
 
 CAPTION_TARGET_STYLES: tuple[str, ...] = ("photo", "anime")
 
@@ -69,7 +73,7 @@ class CategoryConfig:
 IDENTITY_HINTS: tuple[str, ...] = (
     "hair", "eyes", "face", "smile", "expression", "freckles", "glasses",
     "beard", "makeup", "blonde", "brunette", "brown hair", "black hair",
-    "red hair", "looking at camera", "age", "complexion", "skin",
+    "red hair", "age", "complexion", "skin",
 )
 
 WARDROBE_HINTS: tuple[str, ...] = (
@@ -79,12 +83,35 @@ WARDROBE_HINTS: tuple[str, ...] = (
     "suit", "blouse", "scarf", "tie", "vest", "socks", "sandals",
 )
 
-POSE_HINTS: tuple[str, ...] = (
-    "standing", "sitting", "kneeling", "leaning", "posing", "full body",
-    "upper body", "close up", "close-up", "portrait", "selfie",
-    "side view", "front view", "looking away", "arms crossed",
-    "from above", "from below", "from side", "headshot",
+CAMERA_FRAMING_HINTS: tuple[str, ...] = (
+    # Camera distance / shot type
+    "full body", "upper body", "close up", "close-up", "closeup",
+    "portrait", "selfie", "headshot", "bust shot", "cowboy shot",
+    "medium shot", "wide shot", "long shot", "extreme close",
+    "waist up", "waist-up", "half body", "knee up",
+    # Camera angle
+    "from above", "from below", "from side", "side view", "front view",
+    "low angle", "high angle", "dutch angle", "eye level",
+    "bird's eye", "birds eye", "aerial view", "overhead", "top down",
+    "profile view", "three quarter view", "rear view", "back view",
+    "tilted", "canted",
 )
+
+POSE_GAZE_HINTS: tuple[str, ...] = (
+    # Body pose
+    "standing", "sitting", "kneeling", "leaning", "posing",
+    "crouching", "lying down", "lying", "bending", "perching",
+    "arms crossed", "hand on hip", "hands on hips", "arms raised",
+    "hands behind back", "arms behind back",
+    # Gaze / look direction
+    "looking at viewer", "looking at camera", "looking away",
+    "looking down", "looking up", "looking left", "looking right",
+    "looking over shoulder", "looking back", "looking to the side",
+    "gaze", "eye contact", "side glance", "averted gaze",
+)
+
+# Combined for backward-compat callers that still reference POSE_HINTS
+POSE_HINTS: tuple[str, ...] = CAMERA_FRAMING_HINTS + POSE_GAZE_HINTS
 
 SETTING_HINTS: tuple[str, ...] = (
     "background", "room", "living room", "bedroom", "kitchen", "window",
@@ -103,11 +130,21 @@ LIGHTING_HINTS: tuple[str, ...] = (
 )
 
 ACTION_HINTS: tuple[str, ...] = (
-    "reading", "writing", "cooking", "dancing", "running", "walking",
-    "eating", "drinking", "playing", "swimming", "typing", "painting",
-    "holding", "carrying", "reaching", "waving", "pointing", "laughing",
-    "singing", "climbing", "jumping", "stretching", "working",
-    "talking", "hugging", "fighting", "sleeping", "driving",
+    # Locomotion
+    "running", "walking", "jogging", "sprinting", "leaping", "climbing",
+    "swimming", "driving",
+    # Object interaction
+    "reading", "writing", "cooking", "typing", "painting", "playing",
+    "eating", "drinking", "holding", "carrying", "reaching",
+    "touching", "grabbing", "pulling", "pushing",
+    # Gestures / body language
+    "waving", "pointing", "laughing", "singing", "talking", "smiling",
+    "crying", "stretching", "dancing", "jumping",
+    # Social / physical contact
+    "hugging", "fighting", "sleeping", "working",
+    # Specific pose-actions
+    "leaning forward", "leaning back", "bending over", "arching",
+    "twisting", "slouching",
 )
 
 DEFAULT_CATEGORY_CONFIGS: tuple[CategoryConfig, ...] = (
@@ -126,8 +163,14 @@ DEFAULT_CATEGORY_CONFIGS: tuple[CategoryConfig, ...] = (
         zeroshot_priority=3,
     ),
     CategoryConfig(
-        name="pose_composition",
-        hint_words=POSE_HINTS,
+        name="camera_framing",
+        hint_words=CAMERA_FRAMING_HINTS,
+        training_priority=0,
+        zeroshot_priority=2,
+    ),
+    CategoryConfig(
+        name="pose_gaze",
+        hint_words=POSE_GAZE_HINTS,
         training_priority=1,
         zeroshot_priority=2,
     ),
@@ -257,11 +300,17 @@ def normalise_target_category(
     category: str | None,
     categories: tuple[CategoryConfig, ...] | None = None,
 ) -> str:
-    """Normalise a category name, falling back to ``"identity"``."""
+    """Normalise a category name, falling back to ``"identity"``.
+
+    ``"pose_composition"`` is accepted as a backward-compatible alias for
+    ``"camera_framing"`` (the higher-priority half of the old bucket).
+    """
     names = get_category_names(categories)
     value = (category or "").strip().lower().replace("-", "_").replace(" ", "_")
     if value in names:
         return value
+    if value == _POSE_COMPOSITION_ALIAS and categories is None:
+        return "camera_framing"
     return "identity"
 
 
