@@ -18,7 +18,7 @@ except ImportError as exc:
 from PIL import Image
 
 from argus_lens.engine import ArgusLens
-from argus_lens.types import CaptionResult
+from argus_lens.types import CaptionResult, get_category_names
 
 
 class CaptionURLRequest(BaseModel):
@@ -30,8 +30,36 @@ class CaptionURLRequest(BaseModel):
     prose_enrichment: bool = True
 
 
+def _stabilize_caption_variants(cv: dict[str, Any]) -> dict[str, Any]:
+    """Ensure every category key exists so clients (e.g. web UIs) can render split pose rows."""
+    out = dict(cv)
+    for name in get_category_names():
+        out.setdefault(name, "")
+    for key in ("training", "zeroshot", "pose_composition"):
+        out.setdefault(key, "")
+    return out
+
+
 def _result_to_dict(result: CaptionResult) -> dict[str, Any]:
-    return asdict(result)
+    d = asdict(result)
+    d["caption_variants"] = _stabilize_caption_variants(d["caption_variants"])
+    return d
+
+
+def _package_version() -> dict[str, str | None]:
+    """Version from hatch-vcs generated _version.py, or importlib.metadata fallback."""
+    try:
+        from argus_lens import _version as v
+
+        cid = getattr(v, "commit_id", None) or getattr(v, "__commit_id__", None)
+        return {"version": v.__version__, "commit": cid}
+    except Exception:
+        try:
+            from importlib.metadata import version as pkg_version
+
+            return {"version": pkg_version("argus-lens"), "commit": None}
+        except Exception:
+            return {"version": "unknown", "commit": None}
 
 
 def create_app(
@@ -58,6 +86,11 @@ def create_app(
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    @app.get("/version")
+    async def version_info() -> dict[str, str | None]:
+        """Installed argus-lens package version (for UI / health checks)."""
+        return _package_version()
 
     engine = ArgusLens(backend=default_backend, **kwargs)
 
