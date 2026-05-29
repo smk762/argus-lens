@@ -18,6 +18,7 @@ except ImportError as exc:
 from PIL import Image
 
 from argus_lens.engine import ArgusLens
+from argus_lens.openai_compat import create_openai_router
 from argus_lens.types import CaptionResult
 
 
@@ -60,6 +61,11 @@ def create_app(
         )
 
     engine = ArgusLens(backend=default_backend, **kwargs)
+
+    # OpenAI-compatible /v1 endpoints (Frigate GenAI provider).
+    # Always mounted — Frigate's genai block uses POST /v1/chat/completions.
+    # Engine kwargs are forwarded so model_dir / florence_model_id are honoured.
+    app.include_router(create_openai_router(**kwargs), prefix="/v1")
 
     @app.get("/backends")
     async def list_backends() -> dict[str, Any]:

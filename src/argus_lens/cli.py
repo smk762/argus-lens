@@ -114,10 +114,20 @@ def backends() -> None:
 def serve(
     port: int = Option(8080, "--port", "-p", help="Port to listen on"),
     host: str = Option("0.0.0.0", "--host", help="Host to bind to"),
-    backend: str = Option("hybrid", "--backend", "-b", help="Default backend"),
+    backend: str = Option("hybrid", "--backend", "-b", help="Default backend for /caption endpoints"),
     cors: bool = Option(False, "--cors", help="Enable CORS (allow all origins)"),
 ) -> None:
-    """Start the Argus Lens micro-server (FastAPI)."""
+    """Start the Argus Lens micro-server (FastAPI).
+
+    Exposes both the native /caption endpoints and an OpenAI-compatible
+    /v1/chat/completions endpoint suitable for use as a Frigate GenAI provider:
+
+        genai:
+          enabled: true
+          provider: openai
+          base_url: http://<this-host>:<port>/v1
+          model: argus-hybrid
+    """
     try:
         import uvicorn
     except ImportError as _exc:
