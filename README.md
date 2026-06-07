@@ -207,6 +207,11 @@ By default, the Florence-2 backend uses [`florence-community/Florence-2-base`](h
 
 The legacy [`microsoft/Florence-2-base`](https://huggingface.co/microsoft/Florence-2-base) weights require `HF_TRUST_REMOTE_CODE=true`, which executes arbitrary Python from the model repository at load time. Only enable this for models you trust. WD14 uses a static ONNX model and never runs remote code.
 
+## Related projects
+
+- [argus-vision-demo](https://github.com/smk762/argus-vision-demo) -- a thin Next.js web UI for exploring argus-lens interactively.
+- [awesome-immich](https://github.com/tlwhittaker/awesome-immich) -- a curated list of Immich plugins, tools, and community projects. Argus Lens is working toward self-hosted photo-library tagging and captioning, with Immich integration on the v2 roadmap.
+
 ## License
 
 MIT
