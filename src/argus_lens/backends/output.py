@@ -10,6 +10,7 @@ See issue #1.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 # (x1, y1, x2, y2) in pixel coordinates.
 Region = tuple[int, int, int, int]
@@ -43,7 +44,7 @@ class BackendOutput:
 
     tags: list[Tag] = field(default_factory=list)
     prose: str = ""
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     def tag_string(self, *, min_score: float | None = None) -> str:
         """Flatten tags into the legacy comma-separated string.
