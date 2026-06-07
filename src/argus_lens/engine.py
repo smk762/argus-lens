@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 from collections.abc import Generator
 from pathlib import Path
@@ -14,6 +15,7 @@ from PIL import Image
 from argus_lens.assembly.composer import compose_caption_result
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.backends.hybrid import HybridPipeline
+from argus_lens.retry import clear_gpu_cache, run_with_oom_retry
 from argus_lens.types import (
     CaptionResult,
     CategoryConfig,
@@ -165,6 +167,33 @@ class ArgusLens:
     def backend(self) -> CaptionBackend:
         return self._backend
 
+    @staticmethod
+    def _accepts_device(fn: Any) -> bool:
+        """True if *fn* accepts a ``device`` keyword (local backends do)."""
+        try:
+            return "device" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+
+    def _infer(self, pil: Image.Image) -> tuple[str, str]:
+        """Run backend inference, returning ``(tags, prose)``.
+
+        Forwards the engine's configured ``device`` to backends that accept it
+        (#10) and retries on CUDA OOM with cache cleanup (#9).
+        """
+
+        def _call() -> tuple[str, str]:
+            if isinstance(self._backend, HybridPipeline):
+                return self._backend.caption_image_split(pil)
+            device_kwargs = {"device": self._device} if self._accepts_device(self._backend.caption_image) else {}
+            raw = self._backend.caption_image(pil, **device_kwargs)
+            if self._backend.style == "anime" or self._backend.name == "wd14":
+                return raw, ""
+            return "", raw
+
+        tags, prose = run_with_oom_retry(_call, cleanup_fn=clear_gpu_cache)  # type: ignore[misc]
+        return tags, prose
+
     def caption(
         self,
         image: str | Path | bytes | Image.Image,
@@ -195,17 +224,7 @@ class ArgusLens:
             categories=self._categories,
         )
 
-        tags = ""
-        prose = ""
-
-        if isinstance(self._backend, HybridPipeline):
-            tags, prose = self._backend.caption_image_split(pil)
-        else:
-            raw = self._backend.caption_image(pil)
-            if self._backend.style == "anime" or self._backend.name == "wd14":
-                tags = raw
-            else:
-                prose = raw
+        tags, prose = self._infer(pil)
 
         return compose_caption_result(
             trigger_word=trigger_word,
@@ -253,15 +272,7 @@ class ArgusLens:
             h = _image_hash(buf.getvalue())
 
             if h not in caption_cache:
-                if isinstance(self._backend, HybridPipeline):
-                    tags, prose = self._backend.caption_image_split(pil)
-                else:
-                    raw = self._backend.caption_image(pil)
-                    if self._backend.style == "anime" or self._backend.name == "wd14":
-                        tags, prose = raw, ""
-                    else:
-                        tags, prose = "", raw
-                caption_cache[h] = (tags, prose)
+                caption_cache[h] = self._infer(pil)
 
             cached_tags, cached_prose = caption_cache[h]
             results[name] = compose_caption_result(
@@ -302,14 +313,7 @@ class ArgusLens:
 
         for idx, source in enumerate(images):
             name, pil = _load_image(source)
-            if isinstance(self._backend, HybridPipeline):
-                tags, prose = self._backend.caption_image_split(pil)
-            else:
-                raw = self._backend.caption_image(pil)
-                if self._backend.style == "anime" or self._backend.name == "wd14":
-                    tags, prose = raw, ""
-                else:
-                    tags, prose = "", raw
+            tags, prose = self._infer(pil)
 
             result = compose_caption_result(
                 trigger_word=trigger_word,
