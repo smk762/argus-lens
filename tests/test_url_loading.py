@@ -3,6 +3,7 @@
 import io
 from unittest.mock import patch
 
+import httpx
 import pytest
 from PIL import Image
 
@@ -66,7 +67,7 @@ def test_load_image_url_trailing_slash(mock_get):
 
 @patch("httpx.get", return_value=_FakeResponseBadStatus())
 def test_load_image_url_http_error(mock_get):
-    with pytest.raises(Exception):
+    with pytest.raises(httpx.HTTPStatusError):
         _load_image("https://example.com/missing.jpg")
 
 

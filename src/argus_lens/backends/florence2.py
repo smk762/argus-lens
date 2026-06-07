@@ -38,7 +38,8 @@ class Florence2Backend(LocalBackend):
     ) -> None:
         if trust_remote_code is None:
             trust_remote_code = os.environ.get(
-                "HF_TRUST_REMOTE_CODE", "0",
+                "HF_TRUST_REMOTE_CODE",
+                "0",
             ).lower() in ("1", "true", "yes")
         self._trust_remote_code = trust_remote_code
 
@@ -60,17 +61,22 @@ class Florence2Backend(LocalBackend):
         load_kwargs: dict[str, Any] = {}
         if self._trust_remote_code:
             from transformers import AutoModelForCausalLM
+
             model_cls = AutoModelForCausalLM
             load_kwargs["trust_remote_code"] = True
         else:
             from transformers import Florence2ForConditionalGeneration
+
             model_cls = Florence2ForConditionalGeneration
 
         processor = AutoProcessor.from_pretrained(
-            self._model_id, **({k: v for k, v in load_kwargs.items() if k == "trust_remote_code"}),
+            self._model_id,
+            **({k: v for k, v in load_kwargs.items() if k == "trust_remote_code"}),
         )
         model = model_cls.from_pretrained(
-            self._model_id, torch_dtype=dtype, **load_kwargs,
+            self._model_id,
+            torch_dtype=dtype,
+            **load_kwargs,
         ).to(device)
         model.eval()
         return processor, model, device
@@ -102,7 +108,9 @@ class Florence2Backend(LocalBackend):
                 gen_ids = model.generate(**prepared, max_new_tokens=256, do_sample=False)
             gen_text = processor.batch_decode(gen_ids, skip_special_tokens=False)[0]
             parsed = processor.post_process_generation(
-                gen_text, task=self._task, image_size=(pil.width, pil.height),
+                gen_text,
+                task=self._task,
+                image_size=(pil.width, pil.height),
             )
             return parsed.get(self._task, "").strip()
 

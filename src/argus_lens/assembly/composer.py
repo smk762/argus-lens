@@ -90,8 +90,11 @@ def compose_caption_result(
     truncated_any = False
     for cat_name in cat_names:
         caption, truncated = assemble_variant(
-            trigger_word, buckets, cat_name,
-            target_profile.target_style, categories,
+            trigger_word,
+            buckets,
+            cat_name,
+            target_profile.target_style,
+            categories,
         )
         caption_variants[cat_name] = caption
         if truncated:
@@ -117,7 +120,8 @@ def compose_caption_result(
         enrichment_tokens = extract_prose_tokens(kept_clauses, existing_tag_words)
 
     training_caption, training_truncated = assemble_training_variant(
-        trigger_word, training_buckets,
+        trigger_word,
+        training_buckets,
         target_profile.target_style,
         clip_token_budget=target_profile.token_budget.budget,
         target_backend=target_profile.target_backend,
@@ -139,7 +143,8 @@ def compose_caption_result(
         zeroshot_buckets[cat_name] = dedupe_fragments(zeroshot_buckets[cat_name])
 
     zeroshot_caption, zeroshot_truncated = assemble_zeroshot_variant(
-        trigger_word, zeroshot_buckets,
+        trigger_word,
+        zeroshot_buckets,
         target_profile.target_style,
         clip_token_budget=target_profile.token_budget.budget,
         target_backend=target_profile.target_backend,

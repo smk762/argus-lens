@@ -38,15 +38,17 @@ def _register_backends() -> None:
     from argus_lens.backends.replicate import ReplicateBackend
     from argus_lens.backends.wd14 import WD14Backend
 
-    _BACKEND_REGISTRY.update({
-        "wd14": WD14Backend,
-        "blip2": BLIP2Backend,
-        "florence2": Florence2Backend,
-        "openai": OpenAIBackend,
-        "hf-inference": HFInferenceBackend,
-        "replicate": ReplicateBackend,
-        "nvidia-nim": NVIDIANIMBackend,
-    })
+    _BACKEND_REGISTRY.update(
+        {
+            "wd14": WD14Backend,
+            "blip2": BLIP2Backend,
+            "florence2": Florence2Backend,
+            "openai": OpenAIBackend,
+            "hf-inference": HFInferenceBackend,
+            "replicate": ReplicateBackend,
+            "nvidia-nim": NVIDIANIMBackend,
+        }
+    )
 
 
 def _resolve_backend(
@@ -91,8 +93,7 @@ def _resolve_backend(
 
     cls = _BACKEND_REGISTRY[backend]
     ctor_kwargs: dict[str, Any] = {}
-    for key in ("api_key", "model_id", "system_prompt", "model_dir",
-                 "florence_model_id", "threshold", "base_url"):
+    for key in ("api_key", "model_id", "system_prompt", "model_dir", "florence_model_id", "threshold", "base_url"):
         if key in kwargs:
             mapped = key
             if key == "florence_model_id":

@@ -66,6 +66,7 @@ def _assemble_content(result: CaptionResult) -> str:
 
 # ── Image extraction ───────────────────────────────────────────────────────────
 
+
 def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
     """Return raw image bytes from an OpenAI-format message content list.
 
@@ -83,6 +84,7 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
             return base64.b64decode(b64)
         if url.startswith(("http://", "https://")):
             import httpx
+
             resp = httpx.get(url, timeout=15)
             resp.raise_for_status()
             return resp.content
@@ -90,6 +92,7 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
 
 
 # ── Lazy engine pool ───────────────────────────────────────────────────────────
+
 
 class _EnginePool:
     """Thread-safe per-model-ID engine cache.  Engines are initialised on first use."""
@@ -110,6 +113,7 @@ class _EnginePool:
 
 
 # ── Pydantic request model ─────────────────────────────────────────────────────
+
 
 class _ImageURL(BaseModel):
     url: str
@@ -136,6 +140,7 @@ class _ChatCompletionRequest(BaseModel):
 
 
 # ── Router factory ─────────────────────────────────────────────────────────────
+
 
 def create_openai_router(**engine_kwargs: Any) -> APIRouter:
     """Return an APIRouter with the OpenAI-compatible /v1 endpoints.
@@ -228,6 +233,7 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
 
 
 # ── Error helper ───────────────────────────────────────────────────────────────
+
 
 def _openai_error(
     status: int,

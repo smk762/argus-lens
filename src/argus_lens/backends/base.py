@@ -112,8 +112,7 @@ class CloudBackend(CaptionBackend):
             if key:
                 return key
         raise ValueError(
-            f"{self.name} backend requires an API key. "
-            f"Pass api_key= or set {self.env_var} environment variable."
+            f"{self.name} backend requires an API key. Pass api_key= or set {self.env_var} environment variable."
         )
 
     def load(self, device: str = "auto") -> None:

@@ -35,7 +35,8 @@ class BLIP2Backend(LocalBackend):
         dtype = torch.float16 if device == "cuda" else torch.float32
         processor = Blip2Processor.from_pretrained(self._model_id)
         model = Blip2ForConditionalGeneration.from_pretrained(
-            self._model_id, torch_dtype=dtype,
+            self._model_id,
+            torch_dtype=dtype,
         ).to(device)
         model.eval()
         return processor, model, device

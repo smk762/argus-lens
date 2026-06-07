@@ -258,8 +258,11 @@ class TestTrainingVariant:
             "action": [],
         }
         caption, removed = assemble_training_variant(
-            "sks_eva", buckets, "photo",
-            rng=random.Random(42), drop_probability=0.0,
+            "sks_eva",
+            buckets,
+            "photo",
+            rng=random.Random(42),
+            drop_probability=0.0,
         )
         assert "blonde hair" not in caption
         assert "blue eyes" not in caption
@@ -275,8 +278,12 @@ class TestTrainingVariant:
             "action": [],
         }
         caption, removed = assemble_training_variant(
-            "sks_eva", buckets, "photo", clip_token_budget=25,
-            rng=random.Random(42), drop_probability=0.0,
+            "sks_eva",
+            buckets,
+            "photo",
+            clip_token_budget=25,
+            rng=random.Random(42),
+            drop_probability=0.0,
         )
         assert "upper body" in caption
 
@@ -290,12 +297,14 @@ class TestTrainingVariant:
             "action": [],
         }
         caption, _ = assemble_training_variant(
-            "sks_eva", buckets, "photo",
-            rng=random.Random(42), drop_probability=0.0,
+            "sks_eva",
+            buckets,
+            "photo",
+            rng=random.Random(42),
+            drop_probability=0.0,
         )
         wardrobe_count = sum(
-            1 for f in ["black jacket", "blue jeans", "white sneakers", "red hat", "silver watch"]
-            if f in caption
+            1 for f in ["black jacket", "blue jeans", "white sneakers", "red hat", "silver watch"] if f in caption
         )
         assert wardrobe_count <= 2
 
@@ -309,8 +318,12 @@ class TestTrainingVariant:
             "action": [],
         }
         caption, removed = assemble_training_variant(
-            "sks_eva", buckets, "photo", clip_token_budget=30,
-            rng=random.Random(42), drop_probability=0.0,
+            "sks_eva",
+            buckets,
+            "photo",
+            clip_token_budget=30,
+            rng=random.Random(42),
+            drop_probability=0.0,
         )
         assert "looking_at_viewer" in caption
         assert "smile" in caption
@@ -327,12 +340,20 @@ class TestTrainingVariant:
             "action": [],
         }
         caption_full, _ = assemble_training_variant(
-            "sks_eva", buckets, "photo",
-            rng=random.Random(42), drop_probability=0.0, image_index=0,
+            "sks_eva",
+            buckets,
+            "photo",
+            rng=random.Random(42),
+            drop_probability=0.0,
+            image_index=0,
         )
         caption_no_setting, _ = assemble_training_variant(
-            "sks_eva", buckets, "photo",
-            rng=random.Random(42), drop_probability=0.0, image_index=1,
+            "sks_eva",
+            buckets,
+            "photo",
+            rng=random.Random(42),
+            drop_probability=0.0,
+            image_index=1,
         )
         assert "park" in caption_full or "sunny day" in caption_full
         assert "park" not in caption_no_setting
@@ -347,12 +368,20 @@ class TestTrainingVariant:
             "action": [],
         }
         _, removed_tight = assemble_training_variant(
-            "sks_eva", buckets, "photo", clip_token_budget=15,
-            rng=random.Random(42), drop_probability=0.0,
+            "sks_eva",
+            buckets,
+            "photo",
+            clip_token_budget=15,
+            rng=random.Random(42),
+            drop_probability=0.0,
         )
         _, removed_loose = assemble_training_variant(
-            "sks_eva", buckets, "photo", clip_token_budget=60,
-            rng=random.Random(42), drop_probability=0.0,
+            "sks_eva",
+            buckets,
+            "photo",
+            clip_token_budget=60,
+            rng=random.Random(42),
+            drop_probability=0.0,
         )
         assert len(removed_tight) > len(removed_loose)
 

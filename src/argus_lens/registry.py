@@ -80,9 +80,9 @@ class ModelRegistry:
         now = time.monotonic()
         with self._lock:
             to_evict = [
-                k for k in list(self._models)
-                if self._refs.get(k, 0) == 0
-                and now - self._last_used.get(k, 0) > self._idle_seconds
+                k
+                for k in list(self._models)
+                if self._refs.get(k, 0) == 0 and now - self._last_used.get(k, 0) > self._idle_seconds
             ]
             evicted = {k: self._models.pop(k) for k in to_evict}
             for k in to_evict:

@@ -39,7 +39,7 @@ def strip_filler_prefixes(text: str) -> tuple[str, list[str]]:
         for prefix in _FILLER_PREFIXES:
             if lowered.startswith(prefix):
                 removed.append(prefix.strip())
-                cleaned = cleaned[len(prefix):].lstrip(" ,:-")
+                cleaned = cleaned[len(prefix) :].lstrip(" ,:-")
                 changed = True
                 break
     return cleaned.strip(" ,.;:-"), removed
@@ -132,17 +132,76 @@ def filter_redundant_clauses(description: str, tags: str, threshold: float = 0.5
 # Prose → tag-style token extraction
 # ---------------------------------------------------------------------------
 
-_PROSE_STOPWORDS: frozenset[str] = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "in", "on", "at", "to", "for", "of", "with", "by", "from", "into",
-    "this", "that", "it", "its", "she", "he", "her", "his", "they",
-    "and", "or", "but", "also", "very", "quite", "rather", "some",
-    "has", "have", "had", "not", "no", "there", "which", "who",
-    "appears", "looks", "seems", "can", "may", "might",
-    "photo", "image", "picture", "portrait", "photograph",
-    "woman", "man", "person", "girl", "boy", "lady", "guy", "figure",
-    "young", "old",
-})
+_PROSE_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "into",
+        "this",
+        "that",
+        "it",
+        "its",
+        "she",
+        "he",
+        "her",
+        "his",
+        "they",
+        "and",
+        "or",
+        "but",
+        "also",
+        "very",
+        "quite",
+        "rather",
+        "some",
+        "has",
+        "have",
+        "had",
+        "not",
+        "no",
+        "there",
+        "which",
+        "who",
+        "appears",
+        "looks",
+        "seems",
+        "can",
+        "may",
+        "might",
+        "photo",
+        "image",
+        "picture",
+        "portrait",
+        "photograph",
+        "woman",
+        "man",
+        "person",
+        "girl",
+        "boy",
+        "lady",
+        "guy",
+        "figure",
+        "young",
+        "old",
+    }
+)
 
 _COMPOUND_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(\w+)\s+(shirt|dress|jacket|sweater|coat|skirt|pants|jeans|shorts|top|blouse|vest)\b", re.I),
@@ -175,10 +234,7 @@ def extract_prose_tokens(
         for pattern in _COMPOUND_PATTERNS:
             for match in pattern.finditer(lowered):
                 modifier, noun = match.group(1), match.group(2)
-                if modifier in _PROSE_STOPWORDS:
-                    tag = noun
-                else:
-                    tag = f"{modifier}_{noun}"
+                tag = noun if modifier in _PROSE_STOPWORDS else f"{modifier}_{noun}"
 
                 if tag in seen or tag in existing_tag_words:
                     continue
