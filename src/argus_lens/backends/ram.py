@@ -29,6 +29,14 @@ class RamBackend(LocalBackend):
         self._threshold = threshold
         self._model = None
 
+    def is_available(self) -> bool:
+        # Scaffold: model loading/inference are not implemented yet, so the
+        # backend must not advertise itself as usable once it is registered.
+        return False
+
+    def availability_reason(self) -> str | None:
+        return "RAM++ backend not yet implemented (#3)"
+
     def load(self, device: str = "auto") -> None:
         raise NotImplementedError("RAM++ model loading is not yet implemented (#3)")
 
