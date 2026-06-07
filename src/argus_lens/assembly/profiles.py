@@ -34,8 +34,27 @@ _REGISTRY: dict[str, AssemblyProfile] = {}
 
 
 def register_profile(profile: AssemblyProfile) -> AssemblyProfile:
-    """Register an assembly profile under its ``name``."""
-    _REGISTRY[profile.name] = profile
+    """Register an assembly profile under its ``name``.
+
+    Returns the profile so it can be used as a decorator.
+
+    Raises:
+        TypeError: if *profile* does not expose a callable ``assemble``.
+        ValueError: if ``name`` is blank, or already registered to a
+            different profile (re-registering the same object is a no-op).
+    """
+    if not callable(getattr(profile, "assemble", None)):
+        raise TypeError(f"Assembly profile {profile!r} must define a callable 'assemble' method")
+
+    name = getattr(profile, "name", "")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"Assembly profile {profile!r} must define a non-empty string 'name'")
+
+    existing = _REGISTRY.get(name)
+    if existing is not None and existing is not profile:
+        raise ValueError(f"Assembly profile {name!r} is already registered")
+
+    _REGISTRY[name] = profile
     return profile
 
 
