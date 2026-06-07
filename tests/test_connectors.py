@@ -1,7 +1,9 @@
 """Tests for connector scaffolding (issue #6)."""
 
 import io
+from xml.dom import minidom
 
+import pytest
 from PIL import Image
 
 from argus_lens.connectors import AssetRef, FilesystemSource, Sink, Source, XmpSink
@@ -36,6 +38,16 @@ def test_xmp_render_contains_keywords_and_description():
     assert "a &lt;scenic&gt; view" in xmp
 
 
+def test_xmp_render_strips_illegal_xml_chars():
+    # NUL / control chars are illegal in XML even when "escaped"; they must be
+    # removed so the sidecar stays well-formed.
+    doc = XmpSink().render(keywords=["cat\x00\x07dog"], description="line\x0bbreak")
+    assert "\x00" not in doc and "\x07" not in doc and "\x0b" not in doc
+    assert "<rdf:li>catdog</rdf:li>" in doc
+    # The rendered document parses as well-formed XML.
+    minidom.parseString(doc.replace("\ufeff", ""))
+
+
 def test_xmp_sink_writes_sidecar(tmp_path):
     img_path = tmp_path / "photo.jpg"
     _make_png(img_path)
@@ -44,6 +56,33 @@ def test_xmp_sink_writes_sidecar(tmp_path):
     sidecar = tmp_path / "photo.jpg.xmp"
     assert sidecar.exists()
     assert "<rdf:li>cat</rdf:li>" in sidecar.read_text()
+
+
+def test_xmp_sink_does_not_clobber_existing_sidecar(tmp_path):
+    img_path = tmp_path / "photo.jpg"
+    _make_png(img_path)
+    sidecar = tmp_path / "photo.jpg.xmp"
+    sidecar.write_text("<existing>rating + GPS</existing>", encoding="utf-8")
+
+    ref = AssetRef(id="photo.jpg", path=str(img_path))
+    # By default an existing sidecar is preserved, not overwritten.
+    with pytest.raises(FileExistsError):
+        XmpSink().write(ref, keywords=["cat"])
+    assert sidecar.read_text() == "<existing>rating + GPS</existing>"
+
+    # overwrite=True replaces it.
+    XmpSink().write(ref, keywords=["cat"], overwrite=True)
+    assert "<rdf:li>cat</rdf:li>" in sidecar.read_text()
+
+
+def test_xmp_write_requires_local_path():
+    with pytest.raises(ValueError):
+        XmpSink().write(AssetRef(id="remote", uri="https://example.com/x.jpg"), keywords=["x"])
+
+
+def test_fetch_image_requires_local_path():
+    with pytest.raises(ValueError):
+        FilesystemSource("/tmp").fetch_image(AssetRef(id="remote", uri="https://example.com/x.jpg"))
 
 
 def test_fetch_image_roundtrip_from_bytes(tmp_path):

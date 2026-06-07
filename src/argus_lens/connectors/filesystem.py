@@ -26,4 +26,7 @@ class FilesystemSource:
     def fetch_image(self, ref: AssetRef) -> Image.Image:
         if ref.path is None:
             raise ValueError(f"AssetRef {ref.id!r} has no local path")
-        return Image.open(ref.path).convert("RGB")
+        # Use a context manager so the source file handle is closed; convert()
+        # returns a fully-loaded copy that outlives the closed file.
+        with Image.open(ref.path) as img:
+            return img.convert("RGB")
