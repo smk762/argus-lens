@@ -14,15 +14,21 @@ from argus_lens.registry import ModelRegistry, get_default_registry
 
 logger = structlog.get_logger()
 
-_HF_REPO = "SmilingWolf/wd-vit-tagger-v2"
+_HF_REPO = "SmilingWolf/wd-vit-tagger-v3"
 _HF_BASE_URL = f"https://huggingface.co/{_HF_REPO}/resolve/main"
-_MODEL_FILENAME = "wd14-vit-v2.onnx"
+_MODEL_FILENAME = "wd-vit-tagger-v3.onnx"
 _TAGS_FILENAME = "selected_tags.csv"
 _REMOTE_FILES = {
     _MODEL_FILENAME: f"{_HF_BASE_URL}/model.onnx",
     _TAGS_FILENAME: f"{_HF_BASE_URL}/selected_tags.csv",
 }
 _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "wd14_tagger"
+
+# In selected_tags.csv, rating tags (general/sensitive/questionable/explicit)
+# are marked with category 9. They are excluded from training captions.
+_RATING_CATEGORY = 9
+# WD-ViT-v3 expects 448px square input; read from the model when possible.
+_DEFAULT_IMAGE_SIZE = 448
 
 
 def _download_model(dest_dir: Path) -> None:
@@ -128,7 +134,7 @@ class WD14Backend(LocalBackend):
             return "Missing package: numpy"
         return None
 
-    def _loader(self) -> tuple[Any, list[str], str]:
+    def _loader(self) -> tuple[Any, list[tuple[str, int]], str]:
         import csv
 
         import onnxruntime as ort
@@ -139,7 +145,7 @@ class WD14Backend(LocalBackend):
             raise RuntimeError(f"WD14 tags CSV not found at {tags_path}")
 
         with tags_path.open(newline="", encoding="utf-8") as fh:
-            tag_names = [row["name"] for row in csv.DictReader(fh)]
+            tags = [(row["name"], int(row["category"])) for row in csv.DictReader(fh)]
 
         available = ort.get_available_providers()
         providers = (
@@ -149,24 +155,46 @@ class WD14Backend(LocalBackend):
         )
         session = ort.InferenceSession(str(model_path), providers=providers)
         input_name = session.get_inputs()[0].name
-        return session, tag_names, input_name
+        return session, tags, input_name
 
     def load(self, device: str = "auto") -> None:
         pass
 
-    def caption_image(self, image: Image.Image) -> str:
+    @staticmethod
+    def _input_size(session: Any) -> int:
+        """Read the square input size (H/W) from the ONNX session."""
+        shape = session.get_inputs()[0].shape  # NHWC, e.g. [batch, 448, 448, 3]
+        for dim in shape[1:3]:
+            if isinstance(dim, int) and dim > 0:
+                return dim
+        return _DEFAULT_IMAGE_SIZE
+
+    @staticmethod
+    def _preprocess(image: Image.Image, size: int) -> Any:
+        """Pad to square (white), resize, and convert to BGR float32 [0,255].
+
+        Matches the SmilingWolf WD-v3 preprocessing.
+        """
         import numpy as np
 
-        with self._registry.acquire("wd14", self._loader) as (session, tag_names, input_name):
-            img = image.convert("RGB").resize((448, 448), Image.LANCZOS)
-            img_np = np.expand_dims(np.array(img, dtype=np.float32)[:, :, ::-1], 0)
+        img = image.convert("RGB")
+        w, h = img.size
+        side = max(w, h)
+        canvas = Image.new("RGB", (side, side), (255, 255, 255))
+        canvas.paste(img, ((side - w) // 2, (side - h) // 2))
+        canvas = canvas.resize((size, size), Image.BICUBIC)
+        arr = np.asarray(canvas, dtype=np.float32)[:, :, ::-1]  # RGB -> BGR
+        return np.ascontiguousarray(np.expand_dims(arr, 0))
+
+    def caption_image(self, image: Image.Image) -> str:
+        with self._registry.acquire("wd14", self._loader) as (session, tags, input_name):
+            img_np = self._preprocess(image, self._input_size(session))
             probs = session.run(None, {input_name: img_np})[0][0]
-            tags = ", ".join(
-                tag_names[idx]
-                for idx, prob in enumerate(probs)
-                if prob > self.threshold and not tag_names[idx].startswith("rating:")
+            return ", ".join(
+                name
+                for (name, category), prob in zip(tags, probs, strict=False)
+                if prob > self.threshold and category != _RATING_CATEGORY
             )
-            return tags
 
     def unload(self) -> None:
         pass
