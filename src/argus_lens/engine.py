@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import io
 from collections.abc import Generator
 from pathlib import Path
@@ -165,37 +164,36 @@ class ArgusLens:
         self._categories = categories
         self._oom_retry_max_wait_s = oom_retry_max_wait_s
         self._oom_retry_interval_s = oom_retry_interval_s
-        # Whether the (non-hybrid) backend's caption_image takes a ``device``
-        # kwarg. Computed once — the signature can't change at runtime.
-        self._backend_accepts_device = self._accepts_device(self._backend.caption_image)
+        self._loaded = False
         self._kwargs = kwargs
 
     @property
     def backend(self) -> CaptionBackend:
         return self._backend
 
-    @staticmethod
-    def _accepts_device(fn: Any) -> bool:
-        """True if *fn* accepts a ``device`` keyword (local backends do)."""
-        try:
-            return "device" in inspect.signature(fn).parameters
-        except (TypeError, ValueError):
-            return False
+    def _ensure_loaded(self) -> None:
+        """Configure the backend device once, lazily, before first inference.
+
+        Device placement flows through ``load(device)`` (#21): the backend
+        records the engine's configured device and uses it for subsequent
+        (lazy) model loads. ``caption_image`` itself stays device-free.
+        """
+        if not self._loaded:
+            self._backend.load(self._device)
+            self._loaded = True
 
     def _infer(self, pil: Image.Image) -> tuple[str, str]:
         """Run backend inference, returning ``(tags, prose)``.
 
-        Forwards the engine's configured ``device`` to backends that accept it
-        (#10) and retries on CUDA OOM with cache cleanup (#9). The OOM wait
-        budget is bounded by ``oom_retry_max_wait_s``; set it to ``0`` to fail
-        fast.
+        Retries on CUDA OOM with cache cleanup (#9). The OOM wait budget is
+        bounded by ``oom_retry_max_wait_s``; set it to ``0`` to fail fast.
         """
+        self._ensure_loaded()
 
         def _call() -> tuple[str, str]:
             if isinstance(self._backend, HybridPipeline):
-                return self._backend.caption_image_split(pil, device=self._device)
-            device_kwargs = {"device": self._device} if self._backend_accepts_device else {}
-            raw = self._backend.caption_image(pil, **device_kwargs)
+                return self._backend.caption_image_split(pil)
+            raw = self._backend.caption_image(pil)
             if self._backend.style == "anime" or self._backend.name == "wd14":
                 return raw, ""
             return "", raw

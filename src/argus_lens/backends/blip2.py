@@ -41,13 +41,10 @@ class BLIP2Backend(LocalBackend):
         model.eval()
         return processor, model, device
 
-    def load(self, device: str = "auto") -> None:
-        pass
-
-    def caption_image(self, image: Image.Image, device: str = "auto") -> str:
+    def caption_image(self, image: Image.Image) -> str:
         import torch
 
-        resolved = self.resolve_device(device)
+        resolved = self.resolve_device()
         cache_key = self._cache_key(resolved)
 
         with self._registry.acquire(cache_key, lambda: self._loader(resolved)) as (processor, model, dev):

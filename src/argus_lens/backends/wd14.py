@@ -128,7 +128,7 @@ class WD14Backend(LocalBackend):
             return "Missing package: numpy"
         return None
 
-    def _loader(self) -> tuple[Any, list[str], str]:
+    def _loader(self, device: str) -> tuple[Any, list[str], str]:
         import csv
 
         import onnxruntime as ort
@@ -141,23 +141,25 @@ class WD14Backend(LocalBackend):
         with tags_path.open(newline="", encoding="utf-8") as fh:
             tag_names = [row["name"] for row in csv.DictReader(fh)]
 
+        # ONNX Runtime uses providers rather than torch devices. Honour an
+        # explicit CPU request; otherwise prefer CUDA when it is available.
+        force_cpu = device.startswith("cpu")
         available = ort.get_available_providers()
         providers = (
             ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if "CUDAExecutionProvider" in available
+            if not force_cpu and "CUDAExecutionProvider" in available
             else ["CPUExecutionProvider"]
         )
         session = ort.InferenceSession(str(model_path), providers=providers)
         input_name = session.get_inputs()[0].name
         return session, tag_names, input_name
 
-    def load(self, device: str = "auto") -> None:
-        pass
-
     def caption_image(self, image: Image.Image) -> str:
         import numpy as np
 
-        with self._registry.acquire("wd14", self._loader) as (session, tag_names, input_name):
+        device = self._device
+        cache_key = f"wd14:{device}"
+        with self._registry.acquire(cache_key, lambda: self._loader(device)) as (session, tag_names, input_name):
             img = image.convert("RGB").resize((448, 448), Image.LANCZOS)
             img_np = np.expand_dims(np.array(img, dtype=np.float32)[:, :, ::-1], 0)
             probs = session.run(None, {input_name: img_np})[0][0]

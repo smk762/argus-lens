@@ -65,13 +65,32 @@ class CaptionBackend(ABC):
 
 
 class LocalBackend(CaptionBackend):
-    """Base class for backends that run inference locally (GPU/CPU)."""
+    """Base class for backends that run inference locally (GPU/CPU).
+
+    Device placement follows the :class:`CaptionBackend` contract: the
+    target device is supplied once via :meth:`load` and remembered on the
+    instance, so ``caption_image`` stays device-free. Subclasses read the
+    remembered intent via ``self._device`` (lazy model loaders should pass
+    it through :meth:`resolve_device`).
+    """
 
     kind = BackendKind.LOCAL
     requires_gpu = True
 
-    def resolve_device(self, device: str = "auto") -> str:
-        """Resolve ``"auto"`` to ``"cuda"`` or ``"cpu"``."""
+    # Raw device intent ("auto" | "cpu" | "cuda" | "cuda:N"), set by load().
+    _device: str = "auto"
+
+    def load(self, device: str = "auto") -> None:
+        """Remember the target device for subsequent (lazy) model loads."""
+        self._device = device
+
+    def resolve_device(self, device: str | None = None) -> str:
+        """Resolve ``"auto"`` to ``"cuda"`` or ``"cpu"``.
+
+        With no argument, resolves the device remembered by :meth:`load`.
+        """
+        if device is None:
+            device = self._device
         if device != "auto":
             return device
         from argus_lens.retry import resolve_device

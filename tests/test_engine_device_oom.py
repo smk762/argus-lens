@@ -1,4 +1,4 @@
-"""Tests for device passthrough (#10) and OOM-retry wiring (#9)."""
+"""Tests for device passthrough (#10, #21) and OOM-retry wiring (#9)."""
 
 from unittest.mock import patch
 
@@ -12,7 +12,7 @@ from argus_lens.retry import OOMDeadlineExceededError
 
 
 class _RecordingBackend(CaptionBackend):
-    """Prose backend that records the device passed to caption_image."""
+    """Prose backend that records the device passed to load() (#21)."""
 
     name = "recording"
     style = "photo"
@@ -21,10 +21,9 @@ class _RecordingBackend(CaptionBackend):
         self.seen_device: str | None = None
 
     def load(self, device: str = "auto") -> None:
-        pass
-
-    def caption_image(self, image: Image.Image, device: str = "auto") -> str:
         self.seen_device = device
+
+    def caption_image(self, image: Image.Image) -> str:
         return "a test caption"
 
     def unload(self) -> None:
@@ -53,6 +52,27 @@ class _FlakyBackend(CaptionBackend):
         pass
 
 
+class _CountingLoadBackend(CaptionBackend):
+    """Counts load() invocations to verify lazy single-load behaviour."""
+
+    name = "counting"
+    style = "photo"
+
+    def __init__(self) -> None:
+        self.load_calls = 0
+        self.seen_device: str | None = None
+
+    def load(self, device: str = "auto") -> None:
+        self.load_calls += 1
+        self.seen_device = device
+
+    def caption_image(self, image: Image.Image) -> str:
+        return "a test caption"
+
+    def unload(self) -> None:
+        pass
+
+
 def _img() -> Image.Image:
     return Image.new("RGB", (8, 8), (1, 2, 3))
 
@@ -60,6 +80,16 @@ def _img() -> Image.Image:
 def test_device_is_forwarded_to_backend():
     backend = _RecordingBackend()
     ArgusLens(backend=backend, device="cpu").caption(_img())
+    assert backend.seen_device == "cpu"
+
+
+def test_backend_loaded_once_across_multiple_images():
+    backend = _CountingLoadBackend()
+    engine = ArgusLens(backend=backend, device="cpu")
+    engine.caption(_img())
+    engine.caption(_img())
+    # load(device) is configured once, lazily — not per image.
+    assert backend.load_calls == 1
     assert backend.seen_device == "cpu"
 
 
@@ -127,34 +157,13 @@ def test_non_oom_error_propagates_without_retry():
     assert backend.calls == 1
 
 
-class _NoDeviceTagBackend(CaptionBackend):
-    """Tag backend without a device kwarg (like wd14)."""
-
-    name = "tags"
-    style = "anime"
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def load(self, device: str = "auto") -> None:
-        pass
-
-    def caption_image(self, image: Image.Image) -> str:
-        self.calls += 1
-        return "tag1, tag2"
-
-    def unload(self) -> None:
-        pass
-
-
-def test_hybrid_forwards_device_to_device_aware_subbackend():
-    tag = _NoDeviceTagBackend()
+def test_hybrid_forwards_device_to_both_subbackends_via_load():
+    tag = _RecordingBackend()
     prose = _RecordingBackend()
     pipeline = HybridPipeline(tag_backend=tag, prose_backend=prose)
 
     ArgusLens(backend=pipeline, device="cpu").caption(_img())
 
-    # device-aware prose backend receives the explicit engine device ...
+    # HybridPipeline.load(device) forwards the engine device to both stages.
+    assert tag.seen_device == "cpu"
     assert prose.seen_device == "cpu"
-    # ... and the no-device tag backend is still called without error.
-    assert tag.calls == 1
