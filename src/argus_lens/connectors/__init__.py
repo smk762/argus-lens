@@ -7,6 +7,15 @@ that also works for Lightroom/digiKam.
 
 from argus_lens.connectors.base import AssetRef, Sink, Source
 from argus_lens.connectors.filesystem import FilesystemSource
+from argus_lens.connectors.immich import ImmichSink, ImmichSource
 from argus_lens.connectors.xmp import XmpSink
 
-__all__ = ["AssetRef", "Sink", "Source", "FilesystemSource", "XmpSink"]
+__all__ = [
+    "AssetRef",
+    "Sink",
+    "Source",
+    "FilesystemSource",
+    "ImmichSource",
+    "ImmichSink",
+    "XmpSink",
+]
