@@ -11,7 +11,9 @@ paged listing and write-back calls are stubbed pending implementation.
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterator
+from urllib.parse import quote
 
 import httpx
 from PIL import Image
@@ -29,11 +31,17 @@ class _ImmichClient:
         self._api_key = api_key
         self._timeout = timeout
 
-    def _headers(self) -> dict[str, str]:
-        return {"x-api-key": self._api_key, "Accept": "application/json"}
+    def _headers(self, *, accept: str = "application/json") -> dict[str, str]:
+        """Auth headers. *accept* is overridable since binary endpoints (e.g.
+        ``/original``) should not request a JSON response."""
+        return {"x-api-key": self._api_key, "Accept": accept}
 
     def _url(self, path: str) -> str:
         return f"{self._base_url}/{path.lstrip('/')}"
+
+    def _asset_path(self, asset_id: str, suffix: str = "") -> str:
+        """Build an ``/api/assets/<id>`` path with the id percent-encoded."""
+        return f"/api/assets/{quote(asset_id, safe='')}{suffix}"
 
 
 class ImmichSource(_ImmichClient):
@@ -45,15 +53,14 @@ class ImmichSource(_ImmichClient):
 
     def fetch_image(self, ref: AssetRef) -> Image.Image:
         resp = httpx.get(
-            self._url(f"/api/assets/{ref.id}/original"),
-            headers={"x-api-key": self._api_key},
+            self._url(self._asset_path(ref.id, "/original")),
+            headers=self._headers(accept="*/*"),
             timeout=self._timeout,
             follow_redirects=True,
         )
         resp.raise_for_status()
-        import io
-
-        return Image.open(io.BytesIO(resp.content)).convert("RGB")
+        with Image.open(io.BytesIO(resp.content)) as img:
+            return img.convert("RGB")
 
 
 class ImmichSink(_ImmichClient):
