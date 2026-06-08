@@ -6,6 +6,7 @@ import pytest
 from PIL import Image
 
 from argus_lens.backends.base import CaptionBackend
+from argus_lens.backends.hybrid import HybridPipeline
 from argus_lens.engine import ArgusLens
 from argus_lens.retry import OOMDeadlineExceededError
 
@@ -124,3 +125,36 @@ def test_non_oom_error_propagates_without_retry():
         ArgusLens(backend=backend).caption(_img())
     # no retry loop for non-OOM errors
     assert backend.calls == 1
+
+
+class _NoDeviceTagBackend(CaptionBackend):
+    """Tag backend without a device kwarg (like wd14)."""
+
+    name = "tags"
+    style = "anime"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def load(self, device: str = "auto") -> None:
+        pass
+
+    def caption_image(self, image: Image.Image) -> str:
+        self.calls += 1
+        return "tag1, tag2"
+
+    def unload(self) -> None:
+        pass
+
+
+def test_hybrid_forwards_device_to_device_aware_subbackend():
+    tag = _NoDeviceTagBackend()
+    prose = _RecordingBackend()
+    pipeline = HybridPipeline(tag_backend=tag, prose_backend=prose)
+
+    ArgusLens(backend=pipeline, device="cpu").caption(_img())
+
+    # device-aware prose backend receives the explicit engine device ...
+    assert prose.seen_device == "cpu"
+    # ... and the no-device tag backend is still called without error.
+    assert tag.calls == 1

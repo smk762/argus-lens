@@ -193,7 +193,7 @@ class ArgusLens:
 
         def _call() -> tuple[str, str]:
             if isinstance(self._backend, HybridPipeline):
-                return self._backend.caption_image_split(pil)
+                return self._backend.caption_image_split(pil, device=self._device)
             device_kwargs = {"device": self._device} if self._backend_accepts_device else {}
             raw = self._backend.caption_image(pil, **device_kwargs)
             if self._backend.style == "anime" or self._backend.name == "wd14":

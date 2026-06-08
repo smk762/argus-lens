@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 from PIL import Image
 
 from argus_lens.assembly.filtering import filter_redundant_clauses
@@ -36,17 +38,34 @@ class HybridPipeline(CaptionBackend):
         self._tag.load(device)
         self._prose.load(device)
 
-    def caption_image(self, image: Image.Image) -> str:
-        tags = self._tag.caption_image(image)
-        prose = self._prose.caption_image(image)
+    @staticmethod
+    def _caption(backend: CaptionBackend, image: Image.Image, device: str) -> str:
+        """Call ``backend.caption_image``, forwarding ``device`` when accepted.
+
+        Some local backends (florence2, blip2) take a ``device`` kwarg on
+        ``caption_image``; others (wd14, cloud) do not. We sniff the signature
+        so an explicit engine device is honoured by the prose/tag sub-backend.
+        See #21 for the eventual ``load(device)``-based cleanup.
+        """
+        try:
+            accepts_device = "device" in inspect.signature(backend.caption_image).parameters
+        except (TypeError, ValueError):
+            accepts_device = False
+        if accepts_device:
+            return backend.caption_image(image, device=device)  # type: ignore[call-arg]
+        return backend.caption_image(image)
+
+    def caption_image(self, image: Image.Image, device: str = "auto") -> str:
+        tags = self._caption(self._tag, image, device)
+        prose = self._caption(self._prose, image, device)
         filtered = filter_redundant_clauses(prose, tags) if prose and tags else prose
         parts = [p for p in [tags, filtered] if p]
         return ", ".join(parts)
 
-    def caption_image_split(self, image: Image.Image) -> tuple[str, str]:
+    def caption_image_split(self, image: Image.Image, device: str = "auto") -> tuple[str, str]:
         """Return ``(tags, prose)`` separately for structured assembly."""
-        tags = self._tag.caption_image(image)
-        prose = self._prose.caption_image(image)
+        tags = self._caption(self._tag, image, device)
+        prose = self._caption(self._prose, image, device)
         return tags, prose
 
     def unload(self) -> None:
