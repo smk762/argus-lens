@@ -156,11 +156,18 @@ class ArgusLens:
         *,
         device: str = "auto",
         categories: tuple[CategoryConfig, ...] | None = None,
+        oom_retry_max_wait_s: float = 180.0,
+        oom_retry_interval_s: float = 5.0,
         **kwargs: Any,
     ) -> None:
         self._backend = _resolve_backend(backend, **kwargs)
         self._device = device
         self._categories = categories
+        self._oom_retry_max_wait_s = oom_retry_max_wait_s
+        self._oom_retry_interval_s = oom_retry_interval_s
+        # Whether the (non-hybrid) backend's caption_image takes a ``device``
+        # kwarg. Computed once — the signature can't change at runtime.
+        self._backend_accepts_device = self._accepts_device(self._backend.caption_image)
         self._kwargs = kwargs
 
     @property
@@ -179,19 +186,34 @@ class ArgusLens:
         """Run backend inference, returning ``(tags, prose)``.
 
         Forwards the engine's configured ``device`` to backends that accept it
-        (#10) and retries on CUDA OOM with cache cleanup (#9).
+        (#10) and retries on CUDA OOM with cache cleanup (#9). The OOM wait
+        budget is bounded by ``oom_retry_max_wait_s``; set it to ``0`` to fail
+        fast.
         """
 
         def _call() -> tuple[str, str]:
             if isinstance(self._backend, HybridPipeline):
                 return self._backend.caption_image_split(pil)
-            device_kwargs = {"device": self._device} if self._accepts_device(self._backend.caption_image) else {}
+            device_kwargs = {"device": self._device} if self._backend_accepts_device else {}
             raw = self._backend.caption_image(pil, **device_kwargs)
             if self._backend.style == "anime" or self._backend.name == "wd14":
                 return raw, ""
             return "", raw
 
-        tags, prose = run_with_oom_retry(_call, cleanup_fn=clear_gpu_cache)  # type: ignore[misc]
+        def _on_oom(exc: Exception, attempt: int) -> None:
+            logger.warning("backend_oom", backend=self._backend.name, attempt=attempt, error=str(exc))
+
+        def _on_retry(wait_s: float, attempt: int) -> None:
+            logger.info("backend_oom_retry", backend=self._backend.name, attempt=attempt, wait_s=round(wait_s, 1))
+
+        tags, prose = run_with_oom_retry(  # type: ignore[misc]
+            _call,
+            max_wait_s=self._oom_retry_max_wait_s,
+            interval_s=self._oom_retry_interval_s,
+            cleanup_fn=clear_gpu_cache,
+            on_oom=_on_oom,
+            on_retry=_on_retry,
+        )
         return tags, prose
 
     def caption(

@@ -2,10 +2,12 @@
 
 from unittest.mock import patch
 
+import pytest
 from PIL import Image
 
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.engine import ArgusLens
+from argus_lens.retry import OOMDeadlineExceededError
 
 
 class _RecordingBackend(CaptionBackend):
@@ -60,9 +62,65 @@ def test_device_is_forwarded_to_backend():
     assert backend.seen_device == "cpu"
 
 
+class _AlwaysOOMBackend(CaptionBackend):
+    """Always raises CUDA OOM."""
+
+    name = "always-oom"
+    style = "photo"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def load(self, device: str = "auto") -> None:
+        pass
+
+    def caption_image(self, image: Image.Image) -> str:
+        self.calls += 1
+        raise RuntimeError("CUDA out of memory")
+
+    def unload(self) -> None:
+        pass
+
+
+class _ValueErrorBackend(CaptionBackend):
+    """Raises a non-OOM error that must propagate without retry."""
+
+    name = "boom"
+    style = "photo"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def load(self, device: str = "auto") -> None:
+        pass
+
+    def caption_image(self, image: Image.Image) -> str:
+        self.calls += 1
+        raise ValueError("not an OOM")
+
+    def unload(self) -> None:
+        pass
+
+
 def test_oom_is_retried_then_succeeds():
     backend = _FlakyBackend()
     with patch("argus_lens.retry.time.sleep"):
         result = ArgusLens(backend=backend).caption(_img())
     assert backend.calls == 2
     assert "recovered caption" in result.raw_prose
+
+
+def test_persistent_oom_raises_deadline_error():
+    backend = _AlwaysOOMBackend()
+    with patch("argus_lens.retry.time.sleep"), pytest.raises(OOMDeadlineExceededError):
+        # tiny budget so the loop exhausts quickly without real waiting
+        ArgusLens(backend=backend, oom_retry_max_wait_s=0.0).caption(_img())
+    assert backend.calls >= 1
+
+
+def test_non_oom_error_propagates_without_retry():
+    backend = _ValueErrorBackend()
+    with pytest.raises(ValueError):
+        ArgusLens(backend=backend).caption(_img())
+    # no retry loop for non-OOM errors
+    assert backend.calls == 1
