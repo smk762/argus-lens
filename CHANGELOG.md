@@ -59,6 +59,13 @@ additive/opt-in and are not wired into the default captioning path.
 - `BackendOutput.raw` typed as `dict[str, Any]`. (#12)
 
 ### Fixed
+- **`wd14` tagger repaired and bumped to `wd-vit-tagger-v3`** — fixes the dead
+  download path and corrects tag handling: ratings are excluded by tag *category*
+  (not a fragile `rating:` name prefix), preprocessing matches SmilingWolf v3
+  (white square-pad → BICUBIC → BGR), and the input size is read from the model.
+  Guards against a model/`selected_tags.csv` size mismatch instead of silently
+  truncating. The cache key stays import-light (no `onnxruntime` import on the
+  caption path). (#23, #24)
 - **Connectors robustness** — Immich asset IDs are URL-encoded and headers tidied;
   XMP sidecars are protected and illegal XML characters stripped. (#17, #18)
 - **Taxonomy** — immutable default and blank labels dropped. (#16)
@@ -70,6 +77,8 @@ additive/opt-in and are not wired into the default captioning path.
 - Device-contract tests: `wd14` provider selection + provider-keyed cache, the
   back-compat `device` override, `resolve_device` behavior, and a single
   `load()` under concurrent first use. (#22)
+- `wd14` v3 tests: rating-category exclusion + threshold filtering and the
+  square-pad/BGR preprocessing, run against a fake ONNX session. (#23, #24)
 - Expanded RAM++ backend tests.
 - CI: pinned `ruff==0.15.16` for reproducible lint; resolved ruff findings and
   reformatted the codebase.
