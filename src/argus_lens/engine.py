@@ -37,6 +37,7 @@ def _register_backends() -> None:
     from argus_lens.backends.hf_inference import HFInferenceBackend
     from argus_lens.backends.nvidia_nim import NVIDIANIMBackend
     from argus_lens.backends.openai import OpenAIBackend
+    from argus_lens.backends.openai_compat import OpenAICompatBackend
     from argus_lens.backends.replicate import ReplicateBackend
     from argus_lens.backends.wd14 import WD14Backend
 
@@ -46,6 +47,7 @@ def _register_backends() -> None:
             "blip2": BLIP2Backend,
             "florence2": Florence2Backend,
             "openai": OpenAIBackend,
+            "openai-compat": OpenAICompatBackend,
             "hf-inference": HFInferenceBackend,
             "replicate": ReplicateBackend,
             "nvidia-nim": NVIDIANIMBackend,

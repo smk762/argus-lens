@@ -33,6 +33,9 @@ def caption(
     overwrite: bool = Option(False, "--overwrite", help="Overwrite existing caption files"),
     api_key: str | None = Option(None, "--api-key", help="API key for cloud backends"),
     model_id: str | None = Option(None, "--model-id", help="Model ID override"),
+    base_url: str | None = Option(
+        None, "--base-url", help="Endpoint URL for openai-compat backend (e.g. http://localhost:11434/v1)"
+    ),
     verbose: bool = Option(False, "--verbose", "-v", help="Verbose output"),
 ) -> None:
     """Caption images in a file or directory."""
@@ -41,6 +44,8 @@ def caption(
     kwargs = {}
     if api_key:
         kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
     if model_id:
         if backend in ("florence2", "blip2"):
             kwargs["florence_model_id" if backend == "florence2" else "model_id"] = model_id

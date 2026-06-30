@@ -52,7 +52,7 @@ The model is just an input source. The real value is what happens after inferenc
 
 ## Features
 
-- **Multi-model backends**: WD14, Florence-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM (cloud API)
+- **Multi-model backends**: WD14, Florence-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM, and any OpenAI-compatible server — Ollama, vLLM, LM Studio (cloud or self-hosted API)
 - **Structured captions**: Category-bucketed variants (identity, wardrobe, pose, setting, lighting, action)
 - **Training-optimised**: Tiered tag protection, omission cycles, CLIP/T5 token budgets, identity suppression
 - **Zero-shot variant**: Identity-first, prose-preferred captions for generation without LoRA
@@ -78,6 +78,7 @@ pip install argus-lens[torch]      # Florence-2 only
 # Cloud backends (no GPU needed)
 pip install argus-lens[openai]     # GPT-4o vision
 pip install argus-lens[replicate]  # Replicate API
+# openai-compat, hf-inference, nvidia-nim need no extra — only the core httpx dep
 
 # Server (FastAPI + uvicorn)
 pip install argus-lens[server,local,openai]
@@ -124,6 +125,15 @@ result = engine.caption("photo.jpg", trigger_word="sks_person")
 engine = ArgusLens(backend="hybrid")
 result = engine.caption("photo.jpg", trigger_word="sks_person")
 
+# Self-hosted OpenAI-compatible server (Ollama, vLLM, LM Studio, ...)
+# No API key needed for local servers; base_url defaults to Ollama localhost.
+engine = ArgusLens(
+    backend="openai-compat",
+    base_url="http://localhost:11434/v1",
+    model_id="llama3.2-vision",
+)
+result = engine.caption("photo.jpg", trigger_word="sks_person")
+
 # Batch processing
 results = engine.caption_directory("./images/", output_format="txt")
 ```
@@ -136,6 +146,10 @@ argus-lens caption photo.jpg --trigger sks_person --backend openai
 
 # Caption a directory, output as txt sidecars
 argus-lens caption ./images/ --format txt --backend hybrid
+
+# Self-hosted Ollama (or any OpenAI-compatible server)
+argus-lens caption photo.jpg --backend openai-compat \
+    --base-url http://localhost:11434/v1 --model-id llama3.2-vision
 
 # List available backends
 argus-lens backends
