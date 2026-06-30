@@ -14,15 +14,21 @@ from argus_lens.registry import ModelRegistry, get_default_registry
 
 logger = structlog.get_logger()
 
-_HF_REPO = "SmilingWolf/wd-vit-tagger-v2"
+_HF_REPO = "SmilingWolf/wd-vit-tagger-v3"
 _HF_BASE_URL = f"https://huggingface.co/{_HF_REPO}/resolve/main"
-_MODEL_FILENAME = "wd14-vit-v2.onnx"
+_MODEL_FILENAME = "wd-vit-tagger-v3.onnx"
 _TAGS_FILENAME = "selected_tags.csv"
 _REMOTE_FILES = {
     _MODEL_FILENAME: f"{_HF_BASE_URL}/model.onnx",
     _TAGS_FILENAME: f"{_HF_BASE_URL}/selected_tags.csv",
 }
 _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "wd14_tagger"
+
+# In selected_tags.csv, rating tags (general/sensitive/questionable/explicit)
+# are marked with category 9. They are excluded from training captions.
+_RATING_CATEGORY = 9
+# WD-ViT-v3 expects 448px square input; read from the model when possible.
+_DEFAULT_IMAGE_SIZE = 448
 
 
 def _download_model(dest_dir: Path) -> None:
@@ -54,9 +60,9 @@ def _download_model(dest_dir: Path) -> None:
 
 
 class WD14Backend(LocalBackend):
-    """WD14 ViT-v2 tagger producing comma-separated booru tags.
+    """WD14 ViT-v3 tagger producing comma-separated booru tags.
 
-    Model files (``wd14-vit-v2.onnx`` + ``selected_tags.csv``) are
+    Model files (``wd-vit-tagger-v3.onnx`` + ``selected_tags.csv``) are
     auto-downloaded from HuggingFace on first use if not found locally.
 
     Search order for model directory:
@@ -145,7 +151,17 @@ class WD14Backend(LocalBackend):
             return ["CUDAExecutionProvider", "CPUExecutionProvider"]
         return ["CPUExecutionProvider"]
 
-    def _loader(self, providers: list[str]) -> tuple[Any, list[str], str]:
+    @staticmethod
+    def _device_key(device: str) -> str:
+        """Coarse cache key (``cpu`` / ``gpu``) for a device intent.
+
+        Derived from the device string alone — no onnxruntime import — so the
+        inference entrypoint stays import-light. GPU-targeting intents
+        (``auto`` / ``cuda``) collapse to one cached session.
+        """
+        return "cpu" if device.startswith("cpu") else "gpu"
+
+    def _loader(self, device: str) -> tuple[Any, list[tuple[str, int]], str]:
         import csv
 
         import onnxruntime as ort
@@ -156,30 +172,56 @@ class WD14Backend(LocalBackend):
             raise RuntimeError(f"WD14 tags CSV not found at {tags_path}")
 
         with tags_path.open(newline="", encoding="utf-8") as fh:
-            tag_names = [row["name"] for row in csv.DictReader(fh)]
+            tags = [(row["name"], int(row["category"])) for row in csv.DictReader(fh)]
 
-        session = ort.InferenceSession(str(model_path), providers=providers)
+        session = ort.InferenceSession(str(model_path), providers=self._select_providers(device))
         input_name = session.get_inputs()[0].name
-        return session, tag_names, input_name
+        return session, tags, input_name
 
-    def caption_image(self, image: Image.Image) -> str:
+    @staticmethod
+    def _input_size(session: Any) -> int:
+        """Read the square input size (H/W) from the ONNX session."""
+        shape = session.get_inputs()[0].shape  # NHWC, e.g. [batch, 448, 448, 3]
+        for dim in shape[1:3]:
+            if isinstance(dim, int) and dim > 0:
+                return dim
+        return _DEFAULT_IMAGE_SIZE
+
+    @staticmethod
+    def _preprocess(image: Image.Image, size: int) -> Any:
+        """Pad to square (white), resize, and convert to BGR float32 [0,255].
+
+        Matches the SmilingWolf WD-v3 preprocessing.
+        """
         import numpy as np
 
-        providers = self._select_providers(self._device)
-        # Key the cache by the effective provider so device intents that resolve
-        # to the same provider (e.g. "auto" and "cuda" on a CUDA box) share one
-        # cached session instead of duplicating it.
-        cache_key = f"wd14:{providers[0]}"
-        with self._registry.acquire(cache_key, lambda: self._loader(providers)) as (session, tag_names, input_name):
-            img = image.convert("RGB").resize((448, 448), Image.LANCZOS)
-            img_np = np.expand_dims(np.array(img, dtype=np.float32)[:, :, ::-1], 0)
+        img = image.convert("RGB")
+        w, h = img.size
+        side = max(w, h)
+        canvas = Image.new("RGB", (side, side), (255, 255, 255))
+        canvas.paste(img, ((side - w) // 2, (side - h) // 2))
+        canvas = canvas.resize((size, size), Image.BICUBIC)
+        arr = np.asarray(canvas, dtype=np.float32)[:, :, ::-1]  # RGB -> BGR
+        return np.ascontiguousarray(np.expand_dims(arr, 0))
+
+    def caption_image(self, image: Image.Image) -> str:
+        device = self._device
+        # Cache key is provider-coarse and import-light; the actual ONNX
+        # provider selection happens lazily inside ``_loader``.
+        cache_key = f"wd14:{self._device_key(device)}"
+        with self._registry.acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
+            img_np = self._preprocess(image, self._input_size(session))
             probs = session.run(None, {input_name: img_np})[0][0]
-            tags = ", ".join(
-                tag_names[idx]
-                for idx, prob in enumerate(probs)
-                if prob > self.threshold and not tag_names[idx].startswith("rating:")
+            if len(probs) != len(tags):
+                raise RuntimeError(
+                    f"WD14 model output ({len(probs)}) does not match tag count ({len(tags)}); "
+                    "the model and selected_tags.csv are out of sync"
+                )
+            return ", ".join(
+                name
+                for (name, category), prob in zip(tags, probs, strict=True)
+                if prob > self.threshold and category != _RATING_CATEGORY
             )
-            return tags
 
     def unload(self) -> None:
         pass

@@ -70,14 +70,13 @@ def test_wd14_auto_falls_back_to_cpu_without_cuda(ort_cpu_only):
     assert WD14Backend._select_providers("auto") == ["CPUExecutionProvider"]
 
 
-def test_wd14_cache_key_collapses_equivalent_devices(ort_with_cuda):
-    # "auto" and "cuda" resolve to the same provider -> identical cache key,
-    # so a shared global registry doesn't duplicate the ONNX session.
-    auto_key = "wd14:" + WD14Backend._select_providers("auto")[0]
-    cuda_key = "wd14:" + WD14Backend._select_providers("cuda")[0]
-    cpu_key = "wd14:" + WD14Backend._select_providers("cpu")[0]
-    assert auto_key == cuda_key == "wd14:CUDAExecutionProvider"
-    assert cpu_key == "wd14:CPUExecutionProvider"
+def test_wd14_cache_key_collapses_equivalent_devices():
+    # GPU-targeting intents ("auto"/"cuda") share one cache key; explicit CPU is
+    # distinct. Derived from the device string alone (no onnxruntime import), so
+    # the inference entrypoint stays import-light.
+    assert WD14Backend._device_key("auto") == WD14Backend._device_key("cuda") == "gpu"
+    assert WD14Backend._device_key("cuda:1") == "gpu"
+    assert WD14Backend._device_key("cpu") == "cpu"
 
 
 # ── Backwards compatibility: optional device kwarg on torch backends ────────
