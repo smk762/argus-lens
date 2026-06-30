@@ -41,12 +41,13 @@ class BLIP2Backend(LocalBackend):
         model.eval()
         return processor, model, device
 
-    def load(self, device: str = "auto") -> None:
-        pass
-
-    def caption_image(self, image: Image.Image, device: str = "auto") -> str:
+    def caption_image(self, image: Image.Image, device: str | None = None) -> str:
         import torch
 
+        # Canonical device placement flows through ``load(device)`` (#21), so
+        # the engine calls this device-free. ``device`` is retained as an
+        # optional override for backwards compatibility with direct callers
+        # (pre-0.3 API); when omitted, the device remembered by ``load`` is used.
         resolved = self.resolve_device(device)
         cache_key = self._cache_key(resolved)
 
