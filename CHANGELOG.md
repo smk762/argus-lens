@@ -39,10 +39,19 @@ additive/opt-in and are not wired into the default captioning path.
   unavailable until its dependencies/model are wired). (#14)
 
 ### Changed
-- **Engine device handling** — the engine's configured `device` is now forwarded
-  to backends that accept it (and to device-aware hybrid sub-backends). Backends
-  that don't take a `device` keyword are detected via signature introspection and
-  called exactly as before, so custom backends remain compatible. (#10, #20)
+- **Device placement via the `load(device)` contract** — the engine's configured
+  `device` flows to backends through `load(device)`, which each backend records
+  and applies to its (lazy) model loads; `caption_image` is device-free on the
+  canonical path. The engine calls `load()` exactly once, lazily, and the
+  check-and-set is thread-safe for engines shared across request threads. The
+  torch backends (`florence2`, `blip2`) retain an **optional** `device` override
+  on `caption_image` for backwards compatibility with pre-0.3 direct callers.
+  Replaces the interim `caption_image` signature-sniffing introduced during
+  development. (#10, #20, #21, #22)
+  - Fixes an explicitly-set engine device being dropped for hybrid prose
+    backends, and lets `wd14` be pinned to CPU; `wd14` selects ONNX Runtime
+    providers without requiring torch (so `[wd14-gpu]` still uses CUDA) and keys
+    its session cache by the effective provider to avoid duplicate sessions.
 - **CUDA OOM retry** — backend inference retries on CUDA out-of-memory with cache
   cleanup; the wait budget is configurable and observable via the new keyword-only
   `ArgusLens(oom_retry_max_wait_s=..., oom_retry_interval_s=...)` parameters
@@ -58,6 +67,9 @@ additive/opt-in and are not wired into the default captioning path.
 - Backend class-contract smoke tests, including a variant that runs without
   optional dependencies installed. (#19)
 - Wire-format tests for the `openai-compat` backend via `httpx.MockTransport`. (#25)
+- Device-contract tests: `wd14` provider selection + provider-keyed cache, the
+  back-compat `device` override, `resolve_device` behavior, and a single
+  `load()` under concurrent first use. (#22)
 - Expanded RAM++ backend tests.
 - CI: pinned `ruff==0.15.16` for reproducible lint; resolved ruff findings and
   reformatted the codebase.
