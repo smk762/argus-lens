@@ -60,9 +60,9 @@ def _download_model(dest_dir: Path) -> None:
 
 
 class WD14Backend(LocalBackend):
-    """WD14 ViT-v2 tagger producing comma-separated booru tags.
+    """WD14 ViT-v3 tagger producing comma-separated booru tags.
 
-    Model files (``wd14-vit-v2.onnx`` + ``selected_tags.csv``) are
+    Model files (``wd-vit-tagger-v3.onnx`` + ``selected_tags.csv``) are
     auto-downloaded from HuggingFace on first use if not found locally.
 
     Search order for model directory:
@@ -134,7 +134,34 @@ class WD14Backend(LocalBackend):
             return "Missing package: numpy"
         return None
 
-    def _loader(self) -> tuple[Any, list[tuple[str, int]], str]:
+    @staticmethod
+    def _select_providers(device: str) -> list[str]:
+        """Choose ONNX Runtime execution providers for a device intent.
+
+        ONNX Runtime uses providers rather than torch devices. An explicit CPU
+        request is honoured; otherwise CUDA is preferred when the runtime
+        actually exposes it. Deliberately torch-free so the ``[wd14-gpu]``
+        install (onnxruntime-gpu, no torch) still selects CUDA.
+        """
+        import onnxruntime as ort
+
+        if device.startswith("cpu"):
+            return ["CPUExecutionProvider"]
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]
+
+    @staticmethod
+    def _device_key(device: str) -> str:
+        """Coarse cache key (``cpu`` / ``gpu``) for a device intent.
+
+        Derived from the device string alone — no onnxruntime import — so the
+        inference entrypoint stays import-light. GPU-targeting intents
+        (``auto`` / ``cuda``) collapse to one cached session.
+        """
+        return "cpu" if device.startswith("cpu") else "gpu"
+
+    def _loader(self, device: str) -> tuple[Any, list[tuple[str, int]], str]:
         import csv
 
         import onnxruntime as ort
@@ -147,18 +174,9 @@ class WD14Backend(LocalBackend):
         with tags_path.open(newline="", encoding="utf-8") as fh:
             tags = [(row["name"], int(row["category"])) for row in csv.DictReader(fh)]
 
-        available = ort.get_available_providers()
-        providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if "CUDAExecutionProvider" in available
-            else ["CPUExecutionProvider"]
-        )
-        session = ort.InferenceSession(str(model_path), providers=providers)
+        session = ort.InferenceSession(str(model_path), providers=self._select_providers(device))
         input_name = session.get_inputs()[0].name
         return session, tags, input_name
-
-    def load(self, device: str = "auto") -> None:
-        pass
 
     @staticmethod
     def _input_size(session: Any) -> int:
@@ -187,12 +205,21 @@ class WD14Backend(LocalBackend):
         return np.ascontiguousarray(np.expand_dims(arr, 0))
 
     def caption_image(self, image: Image.Image) -> str:
-        with self._registry.acquire("wd14", self._loader) as (session, tags, input_name):
+        device = self._device
+        # Cache key is provider-coarse and import-light; the actual ONNX
+        # provider selection happens lazily inside ``_loader``.
+        cache_key = f"wd14:{self._device_key(device)}"
+        with self._registry.acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
             img_np = self._preprocess(image, self._input_size(session))
             probs = session.run(None, {input_name: img_np})[0][0]
+            if len(probs) != len(tags):
+                raise RuntimeError(
+                    f"WD14 model output ({len(probs)}) does not match tag count ({len(tags)}); "
+                    "the model and selected_tags.csv are out of sync"
+                )
             return ", ".join(
                 name
-                for (name, category), prob in zip(tags, probs, strict=False)
+                for (name, category), prob in zip(tags, probs, strict=True)
                 if prob > self.threshold and category != _RATING_CATEGORY
             )
 
