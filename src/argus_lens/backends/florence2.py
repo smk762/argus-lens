@@ -81,10 +81,14 @@ class Florence2Backend(LocalBackend):
         model.eval()
         return processor, model, device
 
-    def caption_image(self, image: Image.Image) -> str:
+    def caption_image(self, image: Image.Image, device: str | None = None) -> str:
         import torch
 
-        resolved = self.resolve_device()
+        # Canonical device placement flows through ``load(device)`` (#21), so
+        # the engine calls this device-free. ``device`` is retained as an
+        # optional override for backwards compatibility with direct callers
+        # (pre-0.3 API); when omitted, the device remembered by ``load`` is used.
+        resolved = self.resolve_device(device)
         cache_key = self._cache_key(resolved)
 
         with self._registry.acquire(cache_key, lambda: self._loader(resolved)) as (processor, model, dev):

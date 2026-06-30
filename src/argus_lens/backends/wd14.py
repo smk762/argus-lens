@@ -128,7 +128,24 @@ class WD14Backend(LocalBackend):
             return "Missing package: numpy"
         return None
 
-    def _loader(self, device: str) -> tuple[Any, list[str], str]:
+    @staticmethod
+    def _select_providers(device: str) -> list[str]:
+        """Choose ONNX Runtime execution providers for a device intent.
+
+        ONNX Runtime uses providers rather than torch devices. An explicit CPU
+        request is honoured; otherwise CUDA is preferred when the runtime
+        actually exposes it. Deliberately torch-free so the ``[wd14-gpu]``
+        install (onnxruntime-gpu, no torch) still selects CUDA.
+        """
+        import onnxruntime as ort
+
+        if device.startswith("cpu"):
+            return ["CPUExecutionProvider"]
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]
+
+    def _loader(self, providers: list[str]) -> tuple[Any, list[str], str]:
         import csv
 
         import onnxruntime as ort
@@ -141,15 +158,6 @@ class WD14Backend(LocalBackend):
         with tags_path.open(newline="", encoding="utf-8") as fh:
             tag_names = [row["name"] for row in csv.DictReader(fh)]
 
-        # ONNX Runtime uses providers rather than torch devices. Honour an
-        # explicit CPU request; otherwise prefer CUDA when it is available.
-        force_cpu = device.startswith("cpu")
-        available = ort.get_available_providers()
-        providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if not force_cpu and "CUDAExecutionProvider" in available
-            else ["CPUExecutionProvider"]
-        )
         session = ort.InferenceSession(str(model_path), providers=providers)
         input_name = session.get_inputs()[0].name
         return session, tag_names, input_name
@@ -157,9 +165,12 @@ class WD14Backend(LocalBackend):
     def caption_image(self, image: Image.Image) -> str:
         import numpy as np
 
-        device = self._device
-        cache_key = f"wd14:{device}"
-        with self._registry.acquire(cache_key, lambda: self._loader(device)) as (session, tag_names, input_name):
+        providers = self._select_providers(self._device)
+        # Key the cache by the effective provider so device intents that resolve
+        # to the same provider (e.g. "auto" and "cuda" on a CUDA box) share one
+        # cached session instead of duplicating it.
+        cache_key = f"wd14:{providers[0]}"
+        with self._registry.acquire(cache_key, lambda: self._loader(providers)) as (session, tag_names, input_name):
             img = image.convert("RGB").resize((448, 448), Image.LANCZOS)
             img_np = np.expand_dims(np.array(img, dtype=np.float32)[:, :, ::-1], 0)
             probs = session.run(None, {input_name: img_np})[0][0]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import threading
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -165,6 +166,7 @@ class ArgusLens:
         self._oom_retry_max_wait_s = oom_retry_max_wait_s
         self._oom_retry_interval_s = oom_retry_interval_s
         self._loaded = False
+        self._load_lock = threading.Lock()
         self._kwargs = kwargs
 
     @property
@@ -177,10 +179,18 @@ class ArgusLens:
         Device placement flows through ``load(device)`` (#21): the backend
         records the engine's configured device and uses it for subsequent
         (lazy) model loads. ``caption_image`` itself stays device-free.
+
+        Thread-safe: a single engine may be shared across request threads
+        (e.g. the server's per-model engine pool), so the check-and-set is
+        guarded to call ``load()`` exactly once. Double-checked locking keeps
+        the common (already-loaded) path lock-free.
         """
-        if not self._loaded:
-            self._backend.load(self._device)
-            self._loaded = True
+        if self._loaded:
+            return
+        with self._load_lock:
+            if not self._loaded:
+                self._backend.load(self._device)
+                self._loaded = True
 
     def _infer(self, pil: Image.Image) -> tuple[str, str]:
         """Run backend inference, returning ``(tags, prose)``.
