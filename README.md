@@ -171,6 +171,8 @@ Endpoints:
 - `POST /caption/batch` -- multiple file upload
 - `POST /caption/stream` -- NDJSON streaming for batch
 - `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars)
+- `POST /caption/folder` -- batch-caption every image in a server-side folder (optionally recursive, writes `.txt` sidecars)
+- `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
 
 ### Docker

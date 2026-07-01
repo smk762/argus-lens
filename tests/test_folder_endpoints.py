@@ -1,0 +1,95 @@
+"""Tests for POST /caption/folder and GET /folders (local-folder captioning)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+pytest.importorskip("fastapi")
+pytest.importorskip("httpx")
+from fastapi.testclient import TestClient  # noqa: E402
+
+from argus_lens.backends.base import CaptionBackend  # noqa: E402
+from argus_lens.server import create_app  # noqa: E402
+
+
+class _StubBackend(CaptionBackend):
+    name = "stub"
+    requires_gpu = False
+
+    def load(self, device: str = "auto") -> None:
+        pass
+
+    def caption_image(self, image: Image.Image) -> str:
+        return "a person, plain studio background, soft lighting"
+
+    def unload(self) -> None:
+        pass
+
+
+def _png(path: Path, size: int = 64) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (size, size), (120, 120, 120)).save(path)
+
+
+def test_caption_folder_non_recursive_writes_sidecars(tmp_path: Path) -> None:
+    _png(tmp_path / "01.jpg")
+    _png(tmp_path / "02.png")
+    _png(tmp_path / "sub" / "03.jpg")  # ignored when non-recursive
+
+    client = TestClient(create_app(default_backend=_StubBackend()))
+    resp = client.post("/caption/folder", json={"folder": str(tmp_path)})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 2
+    assert body["captioned"] == 2
+    assert (tmp_path / "01.txt").read_text().strip()
+    assert not (tmp_path / "sub" / "03.txt").exists()
+
+
+def test_caption_folder_recursive(tmp_path: Path) -> None:
+    _png(tmp_path / "01.jpg")
+    _png(tmp_path / "sub" / "03.jpg")
+
+    client = TestClient(create_app(default_backend=_StubBackend()))
+    resp = client.post(
+        "/caption/folder",
+        json={"folder": str(tmp_path), "recursive": True, "write_sidecar": False},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 2
+    rels = {r["rel_path"] for r in body["results"]}
+    assert rels == {"01.jpg", str(Path("sub") / "03.jpg")}
+    assert not (tmp_path / "01.txt").exists()  # sidecars disabled
+
+
+def test_caption_folder_rejects_missing_dir(tmp_path: Path) -> None:
+    client = TestClient(create_app(default_backend=_StubBackend()))
+    resp = client.post("/caption/folder", json={"folder": str(tmp_path / "nope")})
+    assert resp.status_code == 400
+
+
+def test_folders_browse(tmp_path: Path) -> None:
+    _png(tmp_path / "personA" / "01.jpg")
+    _png(tmp_path / "personA" / "02.jpg")
+    _png(tmp_path / "personB" / "01.jpg")
+
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    root = client.get("/folders").json()
+    assert root["parent"] is None
+    assert {f["name"] for f in root["folders"]} == {"personA", "personB"}
+    person_a = next(f for f in root["folders"] if f["name"] == "personA")
+    assert person_a["image_count"] == 2
+
+    sub = client.get("/folders", params={"path": "personA"}).json()
+    assert sub["parent"] == ""
+    assert sub["direct_image_count"] == 2
+    assert client.get("/folders", params={"path": "../../etc"}).status_code == 400
+
+
+def test_folders_requires_source_root() -> None:
+    client = TestClient(create_app(default_backend=_StubBackend()))
+    assert client.get("/folders").status_code == 400
