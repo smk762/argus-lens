@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 try:
@@ -168,5 +169,73 @@ def create_app(
                 yield line
 
         return StreamingResponse(_ndjson(), media_type="application/x-ndjson")
+
+    @app.post("/caption/manifest")
+    async def caption_manifest(
+        manifest: UploadFile = File(...),
+        trigger_word: str = Form(""),
+        write_sidecar: bool = Form(True),
+    ) -> dict[str, Any]:
+        """Batch-caption an argus-curator JSONL manifest.
+
+        Each line carries ``abs_path`` and the shared ``target_profile``; images
+        are captioned with that profile (no category remapping) and, by default,
+        a ``.txt`` sidecar is written next to each image. Assumes the images are
+        reachable at ``abs_path`` (e.g. a shared volume with the curator).
+        """
+        raw = await manifest.read()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"manifest not UTF-8: {exc}") from exc
+
+        rows: list[dict[str, Any]] = []
+        for i, line in enumerate(text.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=400, detail=f"invalid JSON on line {i + 1}: {exc}") from exc
+
+        def _run() -> dict[str, Any]:
+            results: list[dict[str, Any]] = []
+            errors: list[dict[str, Any]] = []
+            for row in rows:
+                abs_path = row.get("abs_path")
+                rel_path = row.get("rel_path") or abs_path or "<unknown>"
+                if not abs_path:
+                    errors.append({"rel_path": rel_path, "error": "row missing abs_path"})
+                    continue
+                profile = row.get("target_profile") or {}
+                try:
+                    result = engine.caption(
+                        abs_path,
+                        trigger_word=trigger_word,
+                        target_style=profile.get("target_style", "photo"),
+                        target_category=profile.get("target_category", "identity"),
+                        target_backend=profile.get("target_backend", "sdxl"),
+                        checkpoint=profile.get("checkpoint"),
+                    )
+                except Exception as exc:  # noqa: BLE001 - report per-row, keep going
+                    errors.append({"rel_path": rel_path, "error": str(exc)})
+                    continue
+                if write_sidecar:
+                    try:
+                        sidecar = Path(abs_path).with_suffix(".txt")
+                        sidecar.write_text(result.final_caption, encoding="utf-8")
+                    except OSError as exc:
+                        errors.append({"rel_path": rel_path, "error": f"sidecar write failed: {exc}"})
+                results.append({"rel_path": rel_path, "final_caption": result.final_caption})
+            return {
+                "total": len(rows),
+                "captioned": len(results),
+                "failed": len(errors),
+                "results": results,
+                "errors": errors,
+            }
+
+        return await asyncio.to_thread(_run)
 
     return app

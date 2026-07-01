@@ -170,6 +170,7 @@ Endpoints:
 - `POST /caption/url` -- JSON body with image URL
 - `POST /caption/batch` -- multiple file upload
 - `POST /caption/stream` -- NDJSON streaming for batch
+- `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars)
 - `GET /backends` -- list available backends
 
 ### Docker
