@@ -1,0 +1,27 @@
+# Self-contained image built straight from source — no gpu_base / prebuilt wheel needed.
+# Used by the argus-vision-demo suite compose so `docker compose up` works in one step.
+# The GPU-native path (Dockerfile + Dockerfile.gpu-base + build-docker.sh) is unchanged.
+#
+#   EXTRAS   pip extras to install (default self-contained local backend).
+#            Use "server,openai,replicate" for a light cloud-only image.
+#   VERSION  build version (.git is excluded from the context, so hatch-vcs
+#            cannot infer it — we pretend via setuptools-scm).
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ARG EXTRAS=server,local
+ARG VERSION=0.0.0
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VERSION}
+
+COPY . /app
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    pip install ".[${EXTRAS}]"
+
+EXPOSE 8100
+CMD ["argus-lens", "serve", "--port", "8100", "--cors"]
