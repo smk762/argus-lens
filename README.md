@@ -1,5 +1,10 @@
 # Argus Lens
 
+[![PyPI](https://img.shields.io/pypi/v/argus-lens)](https://pypi.org/project/argus-lens/)
+[![Python](https://img.shields.io/pypi/pyversions/argus-lens)](https://pypi.org/project/argus-lens/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/smk762/argus-lens/blob/main/LICENSE)
+[![CI](https://github.com/smk762/argus-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/smk762/argus-lens/actions/workflows/ci.yml)
+
 One image. A hundred perspectives.
 
 Multi-model captioning pipeline for LoRA training, dataset curation, and generative AI workflows. Unlike traditional captioners that describe an image, Argus Lens produces **intent-aware caption subsets** -- structured, filtered, and optimised for how captions are actually used downstream.
@@ -52,7 +57,7 @@ The model is just an input source. The real value is what happens after inferenc
 
 ## Features
 
-- **Multi-model backends**: WD14, Florence-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM (cloud API)
+- **Multi-model backends**: WD14, Florence-2, BLIP-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM, and any OpenAI-compatible server — Ollama, vLLM, LM Studio (cloud or self-hosted API)
 - **Structured captions**: Category-bucketed variants (identity, wardrobe, pose, setting, lighting, action)
 - **Training-optimised**: Tiered tag protection, omission cycles, CLIP/T5 token budgets, identity suppression
 - **Zero-shot variant**: Identity-first, prose-preferred captions for generation without LoRA
@@ -71,16 +76,21 @@ pip handles all Python dependencies through extras. Pick the extras that match y
 pip install argus-lens
 
 # Local backends (GPU inference)
-pip install argus-lens[local]      # WD14 + Florence-2
+pip install argus-lens[local]      # WD14 + Florence-2 + BLIP-2
 pip install argus-lens[wd14]       # WD14 only (CPU, no torch)
-pip install argus-lens[torch]      # Florence-2 only
+pip install argus-lens[wd14-gpu]   # WD14 only, CUDA onnxruntime (no torch)
+pip install argus-lens[torch]      # Florence-2 / BLIP-2 only
 
 # Cloud backends (no GPU needed)
 pip install argus-lens[openai]     # GPT-4o vision
 pip install argus-lens[replicate]  # Replicate API
+# openai-compat, hf-inference, nvidia-nim need no extra — only the core httpx dep
 
-# Server (FastAPI + uvicorn)
-pip install argus-lens[server,local,openai]
+# CLI (the `argus-lens` command; combine with your backend extras)
+pip install argus-lens[cli,openai]
+
+# Server (FastAPI + uvicorn; add [cli] for the `argus-lens serve` command)
+pip install argus-lens[cli,server,local,openai]
 
 # Everything
 pip install argus-lens[all]
@@ -124,11 +134,22 @@ result = engine.caption("photo.jpg", trigger_word="sks_person")
 engine = ArgusLens(backend="hybrid")
 result = engine.caption("photo.jpg", trigger_word="sks_person")
 
+# Self-hosted OpenAI-compatible server (Ollama, vLLM, LM Studio, ...)
+# No API key needed for local servers; base_url defaults to Ollama localhost.
+engine = ArgusLens(
+    backend="openai-compat",
+    base_url="http://localhost:11434/v1",
+    model_id="llama3.2-vision",
+)
+result = engine.caption("photo.jpg", trigger_word="sks_person")
+
 # Batch processing
 results = engine.caption_directory("./images/", output_format="txt")
 ```
 
 ### CLI
+
+The `argus-lens` command requires the `[cli]` extra (`pip install argus-lens[cli,<backend>]`).
 
 ```bash
 # Caption a single image
@@ -136,6 +157,10 @@ argus-lens caption photo.jpg --trigger sks_person --backend openai
 
 # Caption a directory, output as txt sidecars
 argus-lens caption ./images/ --format txt --backend hybrid
+
+# Self-hosted Ollama (or any OpenAI-compatible server)
+argus-lens caption photo.jpg --backend openai-compat \
+    --base-url http://localhost:11434/v1 --model-id llama3.2-vision
 
 # List available backends
 argus-lens backends
@@ -146,7 +171,7 @@ argus-lens backends
 Run the built-in FastAPI server for frontend consumers (e.g. [argus-vision-demo](https://github.com/smk762/argus-vision-demo)):
 
 ```bash
-pip install argus-lens[server,local]
+pip install argus-lens[cli,server,local]
 argus-lens serve --cors --port 8080
 ```
 
@@ -156,7 +181,40 @@ Endpoints:
 - `POST /caption/url` -- JSON body with image URL
 - `POST /caption/batch` -- multiple file upload
 - `POST /caption/stream` -- NDJSON streaming for batch
+- `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars)
+- `POST /caption/manifest/stream` -- streaming variant of `/caption/manifest`: one NDJSON progress line per image, then a completion summary
+- `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars)
+- `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
+- `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider)
+
+### Immich
+
+Immich is strong at CLIP search and faces but weak at descriptive keywords and captions -- the gap Argus Lens fills. Immich has no in-process ML plugin hook, so Argus Lens runs as a companion service: pull assets via the Immich API, caption them, and push keywords + description back.
+
+Create an API key in Immich under Account Settings -> API Keys, then:
+
+```python
+from argus_lens import ArgusLens
+from argus_lens.connectors import ImmichSink, ImmichSource
+
+IMMICH_URL = "http://immich.local:2283"
+API_KEY = "..."
+
+source = ImmichSource(IMMICH_URL, API_KEY)
+sink = ImmichSink(IMMICH_URL, API_KEY)
+engine = ArgusLens(backend="hybrid")
+
+# Pass `since` (ISO 8601) to only process assets changed after your last run.
+for ref in source.list_assets(since="2026-07-01T00:00:00Z"):
+    result = engine.caption(source.fetch_image(ref))
+    keywords = [t.strip() for t in result.raw_tags.split(",") if t.strip()]
+    sink.write(ref, keywords=keywords, description=result.caption_variants["zeroshot"])
+```
+
+Keywords are upserted as Immich tags (existing tags are reused) and attached to the asset; the description lands in the asset's description field, both searchable in the Immich UI. Writes are idempotent, so re-running over the same assets is safe.
+
+If you'd rather keep Argus Lens decoupled from the Immich API entirely, use `XmpSink` instead: it writes standard `.xmp` sidecars next to your originals, which Immich (as well as Lightroom and digiKam) ingests on library scan.
 
 ### Docker
 
@@ -170,6 +228,16 @@ docker compose up
 
 This builds a CUDA 12.4 base image, installs all extras into it, and runs `argus-lens serve` on port 8080.
 
+#### Standalone image (GHCR)
+
+A self-contained image built from `Dockerfile.standalone` is published to GHCR on each release — no local build needed:
+
+```bash
+docker run -p 8100:8100 -v /path/to/images:/data ghcr.io/smk762/argus-lens:latest
+```
+
+Folder browsing and captioning are confined to the mounted `/data` (override with `LENS_SOURCE_PATH`).
+
 #### Configuration
 
 Copy or create a `.env` file for the Docker deployment:
@@ -177,7 +245,7 @@ Copy or create a `.env` file for the Docker deployment:
 | Variable | Default | Description |
 |---|---|---|
 | `ARGUS_BACKEND` | `hybrid` | Captioning backend (`hybrid`, `wd14`, `florence2`, `openai`, etc.) |
-| `ARGUS_API_KEY` | -- | API key for cloud backends |
+| `OPENAI_API_KEY` / `REPLICATE_API_TOKEN` / `HF_TOKEN` / `NVIDIA_API_KEY` | -- | API key for the matching cloud backend (each backend reads its own variable) |
 | `ARGUS_PORT` | `8080` | Host port for the server |
 | `WD14_MODEL_DIR` | `~/.cache/wd14_tagger/` | WD14 ONNX model directory (auto-downloads on first use) |
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
@@ -206,6 +274,11 @@ The `docker-compose.yaml` bind-mounts `~/.cache/wd14_tagger` and `~/.cache/huggi
 By default, the Florence-2 backend uses [`florence-community/Florence-2-base`](https://huggingface.co/florence-community/Florence-2-base) weights which are natively supported in `transformers` -- no `trust_remote_code` needed.
 
 The legacy [`microsoft/Florence-2-base`](https://huggingface.co/microsoft/Florence-2-base) weights require `HF_TRUST_REMOTE_CODE=true`, which executes arbitrary Python from the model repository at load time. Only enable this for models you trust. WD14 uses a static ONNX model and never runs remote code.
+
+## Related projects
+
+- [argus-vision-demo](https://github.com/smk762/argus-vision-demo) -- a thin Next.js web UI for exploring argus-lens interactively.
+- [awesome-immich](https://github.com/tlwhittaker/awesome-immich) -- a curated list of Immich plugins, tools, and community projects. Argus Lens integrates with Immich as a companion tagging/captioning service -- see [Immich](#immich).
 
 ## License
 

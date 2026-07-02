@@ -53,14 +53,18 @@ all = [
     "rich>=13.0",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "python-multipart>=0.0.7",
 ]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff==0.15.16", "interrogate>=1.7"]
 
 [project.scripts]
 argus-lens = "argus_lens.cli:app"
 
 [project.urls]
+Homepage = "https://github.com/smk762/argus-lens"
 Repository = "https://github.com/smk762/argus-lens"
+Issues = "https://github.com/smk762/argus-lens/issues"
+Changelog = "https://github.com/smk762/argus-lens/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 source = "vcs"
@@ -76,9 +80,15 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
+[tool.interrogate]
+fail-under = 80
+exclude = ["src/argus_lens/_version.py"]
+verbose = 1
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+extend-exclude = ["src/argus_lens/_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]

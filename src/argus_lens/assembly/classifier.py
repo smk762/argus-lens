@@ -14,14 +14,59 @@ def _content_words(text: str) -> frozenset[str]:
     )
 
 
-_STOPWORDS: frozenset[str] = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "in", "on", "at", "to", "for", "of", "with", "by", "from", "into",
-    "this", "that", "it", "its", "she", "he", "they", "her", "his",
-    "and", "or", "but", "also", "very", "quite", "rather", "some",
-    "photo", "image", "picture", "portrait", "woman", "man", "person",
-    "girl", "boy", "lady", "guy", "figure",
-})
+_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "into",
+        "this",
+        "that",
+        "it",
+        "its",
+        "she",
+        "he",
+        "they",
+        "her",
+        "his",
+        "and",
+        "or",
+        "but",
+        "also",
+        "very",
+        "quite",
+        "rather",
+        "some",
+        "photo",
+        "image",
+        "picture",
+        "portrait",
+        "woman",
+        "man",
+        "person",
+        "girl",
+        "boy",
+        "lady",
+        "guy",
+        "figure",
+    }
+)
 
 
 def classify_fragment(
@@ -37,8 +82,7 @@ def classify_fragment(
     lowered = fragment.lower()
 
     scores: dict[str, int] = {
-        name: sum(1 for hint in cfg.hint_words if hint in lowered)
-        for name, cfg in config_map.items()
+        name: sum(1 for hint in cfg.hint_words if hint in lowered) for name, cfg in config_map.items()
     }
 
     best = max(scores, key=lambda k: scores[k])

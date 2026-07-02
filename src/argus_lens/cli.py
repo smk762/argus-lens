@@ -33,6 +33,9 @@ def caption(
     overwrite: bool = Option(False, "--overwrite", help="Overwrite existing caption files"),
     api_key: str | None = Option(None, "--api-key", help="API key for cloud backends"),
     model_id: str | None = Option(None, "--model-id", help="Model ID override"),
+    base_url: str | None = Option(
+        None, "--base-url", help="Endpoint URL for openai-compat backend (e.g. http://localhost:11434/v1)"
+    ),
     verbose: bool = Option(False, "--verbose", "-v", help="Verbose output"),
 ) -> None:
     """Caption images in a file or directory."""
@@ -41,6 +44,8 @@ def caption(
     kwargs = {}
     if api_key:
         kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
     if model_id:
         if backend in ("florence2", "blip2"):
             kwargs["florence_model_id" if backend == "florence2" else "model_id"] = model_id
@@ -70,6 +75,7 @@ def caption(
         count = 0
 
         def _progress(current: int, total: int, name: str, _result: object) -> None:
+            """Track completion count and echo per-image progress when verbose."""
             nonlocal count
             count = current
             if verbose:
@@ -114,8 +120,11 @@ def backends() -> None:
 def serve(
     port: int = Option(8080, "--port", "-p", help="Port to listen on"),
     host: str = Option("0.0.0.0", "--host", help="Host to bind to"),
-    backend: str = Option("hybrid", "--backend", "-b", help="Default backend for /caption endpoints"),
+    backend: str = Option(
+        "hybrid", "--backend", "-b", envvar="ARGUS_BACKEND", help="Default backend for /caption endpoints"
+    ),
     cors: bool = Option(False, "--cors", help="Enable CORS (allow all origins)"),
+    source_root: str | None = Option(None, "--source-root", help="Root folder for /folders browsing (UI picker)"),
 ) -> None:
     """Start the Argus Lens micro-server (FastAPI).
 
@@ -136,7 +145,7 @@ def serve(
 
     from argus_lens.server import create_app
 
-    app = create_app(default_backend=backend, cors=cors)
+    app = create_app(default_backend=backend, cors=cors, source_root=source_root)
     uvicorn.run(app, host=host, port=port)
 
 

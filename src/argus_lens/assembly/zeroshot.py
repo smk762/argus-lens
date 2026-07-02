@@ -41,6 +41,7 @@ def assemble_zeroshot_variant(
     config_map = get_category_config_map(categories)
 
     def _prose_priority(fragments: list[str]) -> list[str]:
+        """Order fragments longest-first so natural-language phrases win the budget."""
         return sorted(fragments, key=lambda f: len(f.split()), reverse=True)
 
     plan = sorted(config_map.items(), key=lambda x: x[1].zeroshot_priority)

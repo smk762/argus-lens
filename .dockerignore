@@ -1,0 +1,13 @@
+# Keep the build context small and hermetic. VCS metadata is intentionally
+# excluded — Dockerfile.standalone passes the version via SETUPTOOLS_SCM_PRETEND_VERSION.
+# NOTE: dist/ is deliberately NOT ignored — the GPU Dockerfile installs from dist/*.whl.
+.git
+.venv
+venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+__pycache__
+*.pyc
+.env
+node_modules

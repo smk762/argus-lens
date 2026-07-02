@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import threading
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from PIL import Image
 from argus_lens.assembly.composer import compose_caption_result
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.backends.hybrid import HybridPipeline
+from argus_lens.retry import clear_gpu_cache, run_with_oom_retry
 from argus_lens.types import (
     CaptionResult,
     CategoryConfig,
@@ -35,18 +37,22 @@ def _register_backends() -> None:
     from argus_lens.backends.hf_inference import HFInferenceBackend
     from argus_lens.backends.nvidia_nim import NVIDIANIMBackend
     from argus_lens.backends.openai import OpenAIBackend
+    from argus_lens.backends.openai_compat import OpenAICompatBackend
     from argus_lens.backends.replicate import ReplicateBackend
     from argus_lens.backends.wd14 import WD14Backend
 
-    _BACKEND_REGISTRY.update({
-        "wd14": WD14Backend,
-        "blip2": BLIP2Backend,
-        "florence2": Florence2Backend,
-        "openai": OpenAIBackend,
-        "hf-inference": HFInferenceBackend,
-        "replicate": ReplicateBackend,
-        "nvidia-nim": NVIDIANIMBackend,
-    })
+    _BACKEND_REGISTRY.update(
+        {
+            "wd14": WD14Backend,
+            "blip2": BLIP2Backend,
+            "florence2": Florence2Backend,
+            "openai": OpenAIBackend,
+            "openai-compat": OpenAICompatBackend,
+            "hf-inference": HFInferenceBackend,
+            "replicate": ReplicateBackend,
+            "nvidia-nim": NVIDIANIMBackend,
+        }
+    )
 
 
 def _resolve_backend(
@@ -91,8 +97,7 @@ def _resolve_backend(
 
     cls = _BACKEND_REGISTRY[backend]
     ctor_kwargs: dict[str, Any] = {}
-    for key in ("api_key", "model_id", "system_prompt", "model_dir",
-                 "florence_model_id", "threshold", "base_url"):
+    for key in ("api_key", "model_id", "system_prompt", "model_dir", "florence_model_id", "threshold", "base_url"):
         if key in kwargs:
             mapped = key
             if key == "florence_model_id":
@@ -153,16 +158,78 @@ class ArgusLens:
         *,
         device: str = "auto",
         categories: tuple[CategoryConfig, ...] | None = None,
+        oom_retry_max_wait_s: float = 180.0,
+        oom_retry_interval_s: float = 5.0,
         **kwargs: Any,
     ) -> None:
+        """Resolve the backend and store configuration; models load lazily on first caption."""
         self._backend = _resolve_backend(backend, **kwargs)
         self._device = device
         self._categories = categories
+        self._oom_retry_max_wait_s = oom_retry_max_wait_s
+        self._oom_retry_interval_s = oom_retry_interval_s
+        self._loaded = False
+        self._load_lock = threading.Lock()
         self._kwargs = kwargs
 
     @property
     def backend(self) -> CaptionBackend:
+        """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
+
+    def _ensure_loaded(self) -> None:
+        """Configure the backend device once, lazily, before first inference.
+
+        Device placement flows through ``load(device)`` (#21): the backend
+        records the engine's configured device and uses it for subsequent
+        (lazy) model loads. ``caption_image`` itself stays device-free.
+
+        Thread-safe: a single engine may be shared across request threads
+        (e.g. the server's per-model engine pool), so the check-and-set is
+        guarded to call ``load()`` exactly once. Double-checked locking keeps
+        the common (already-loaded) path lock-free.
+        """
+        if self._loaded:
+            return
+        with self._load_lock:
+            if not self._loaded:
+                self._backend.load(self._device)
+                self._loaded = True
+
+    def _infer(self, pil: Image.Image) -> tuple[str, str]:
+        """Run backend inference, returning ``(tags, prose)``.
+
+        Retries on CUDA OOM with cache cleanup (#9). The OOM wait budget is
+        bounded by ``oom_retry_max_wait_s``; set it to ``0`` to fail fast.
+        """
+        self._ensure_loaded()
+
+        def _call() -> tuple[str, str]:
+            """Invoke the backend once, normalising its output into ``(tags, prose)``."""
+            if isinstance(self._backend, HybridPipeline):
+                return self._backend.caption_image_split(pil)
+            raw = self._backend.caption_image(pil)
+            if self._backend.style == "anime" or self._backend.name == "wd14":
+                return raw, ""
+            return "", raw
+
+        def _on_oom(exc: Exception, attempt: int) -> None:
+            """Log the OOM failure for this attempt."""
+            logger.warning("backend_oom", backend=self._backend.name, attempt=attempt, error=str(exc))
+
+        def _on_retry(wait_s: float, attempt: int) -> None:
+            """Log the backoff wait before the next retry."""
+            logger.info("backend_oom_retry", backend=self._backend.name, attempt=attempt, wait_s=round(wait_s, 1))
+
+        tags, prose = run_with_oom_retry(  # type: ignore[misc]
+            _call,
+            max_wait_s=self._oom_retry_max_wait_s,
+            interval_s=self._oom_retry_interval_s,
+            cleanup_fn=clear_gpu_cache,
+            on_oom=_on_oom,
+            on_retry=_on_retry,
+        )
+        return tags, prose
 
     def caption(
         self,
@@ -194,17 +261,7 @@ class ArgusLens:
             categories=self._categories,
         )
 
-        tags = ""
-        prose = ""
-
-        if isinstance(self._backend, HybridPipeline):
-            tags, prose = self._backend.caption_image_split(pil)
-        else:
-            raw = self._backend.caption_image(pil)
-            if self._backend.style == "anime" or self._backend.name == "wd14":
-                tags = raw
-            else:
-                prose = raw
+        tags, prose = self._infer(pil)
 
         return compose_caption_result(
             trigger_word=trigger_word,
@@ -252,15 +309,7 @@ class ArgusLens:
             h = _image_hash(buf.getvalue())
 
             if h not in caption_cache:
-                if isinstance(self._backend, HybridPipeline):
-                    tags, prose = self._backend.caption_image_split(pil)
-                else:
-                    raw = self._backend.caption_image(pil)
-                    if self._backend.style == "anime" or self._backend.name == "wd14":
-                        tags, prose = raw, ""
-                    else:
-                        tags, prose = "", raw
-                caption_cache[h] = (tags, prose)
+                caption_cache[h] = self._infer(pil)
 
             cached_tags, cached_prose = caption_cache[h]
             results[name] = compose_caption_result(
@@ -301,14 +350,7 @@ class ArgusLens:
 
         for idx, source in enumerate(images):
             name, pil = _load_image(source)
-            if isinstance(self._backend, HybridPipeline):
-                tags, prose = self._backend.caption_image_split(pil)
-            else:
-                raw = self._backend.caption_image(pil)
-                if self._backend.style == "anime" or self._backend.name == "wd14":
-                    tags, prose = raw, ""
-                else:
-                    tags, prose = "", raw
+            tags, prose = self._infer(pil)
 
             result = compose_caption_result(
                 trigger_word=trigger_word,

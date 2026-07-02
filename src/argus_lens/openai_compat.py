@@ -66,6 +66,7 @@ def _assemble_content(result: CaptionResult) -> str:
 
 # ── Image extraction ───────────────────────────────────────────────────────────
 
+
 def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
     """Return raw image bytes from an OpenAI-format message content list.
 
@@ -83,6 +84,7 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
             return base64.b64decode(b64)
         if url.startswith(("http://", "https://")):
             import httpx
+
             resp = httpx.get(url, timeout=15)
             resp.raise_for_status()
             return resp.content
@@ -91,15 +93,18 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
 
 # ── Lazy engine pool ───────────────────────────────────────────────────────────
 
+
 class _EnginePool:
     """Thread-safe per-model-ID engine cache.  Engines are initialised on first use."""
 
     def __init__(self, **engine_kwargs: Any) -> None:
+        """Store kwargs forwarded to every lazily constructed ``ArgusLens`` engine."""
         self._kwargs = engine_kwargs
         self._engines: dict[str, ArgusLens] = {}
         self._lock = threading.Lock()
 
     def get(self, model_id: str) -> ArgusLens:
+        """Return the cached engine for *model_id*, constructing it on first use."""
         if model_id in self._engines:
             return self._engines[model_id]
         with self._lock:
@@ -111,23 +116,32 @@ class _EnginePool:
 
 # ── Pydantic request model ─────────────────────────────────────────────────────
 
+
 class _ImageURL(BaseModel):
+    """OpenAI ``image_url`` payload: a data URI or http(s) URL."""
+
     url: str
     detail: str = "auto"
 
 
 class _ContentPart(BaseModel):
+    """One element of a multimodal message content list (text or image_url)."""
+
     type: str
     image_url: _ImageURL | None = None
     text: str | None = None
 
 
 class _Message(BaseModel):
+    """Chat message whose content is either a plain string or multimodal parts."""
+
     role: str
     content: list[_ContentPart] | str
 
 
 class _ChatCompletionRequest(BaseModel):
+    """Request body for ``POST /v1/chat/completions`` (OpenAI chat format)."""
+
     model: str = "argus-hybrid"
     messages: list[_Message]
     max_tokens: int | None = None
@@ -136,6 +150,7 @@ class _ChatCompletionRequest(BaseModel):
 
 
 # ── Router factory ─────────────────────────────────────────────────────────────
+
 
 def create_openai_router(**engine_kwargs: Any) -> APIRouter:
     """Return an APIRouter with the OpenAI-compatible /v1 endpoints.
@@ -228,6 +243,7 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
 
 
 # ── Error helper ───────────────────────────────────────────────────────────────
+
 
 def _openai_error(
     status: int,

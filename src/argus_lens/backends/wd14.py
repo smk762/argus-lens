@@ -14,15 +14,21 @@ from argus_lens.registry import ModelRegistry, get_default_registry
 
 logger = structlog.get_logger()
 
-_HF_REPO = "SmilingWolf/wd-vit-tagger-v2"
+_HF_REPO = "SmilingWolf/wd-vit-tagger-v3"
 _HF_BASE_URL = f"https://huggingface.co/{_HF_REPO}/resolve/main"
-_MODEL_FILENAME = "wd14-vit-v2.onnx"
+_MODEL_FILENAME = "wd-vit-tagger-v3.onnx"
 _TAGS_FILENAME = "selected_tags.csv"
 _REMOTE_FILES = {
     _MODEL_FILENAME: f"{_HF_BASE_URL}/model.onnx",
     _TAGS_FILENAME: f"{_HF_BASE_URL}/selected_tags.csv",
 }
 _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "wd14_tagger"
+
+# In selected_tags.csv, rating tags (general/sensitive/questionable/explicit)
+# are marked with category 9. They are excluded from training captions.
+_RATING_CATEGORY = 9
+# WD-ViT-v3 expects 448px square input; read from the model when possible.
+_DEFAULT_IMAGE_SIZE = 448
 
 
 def _download_model(dest_dir: Path) -> None:
@@ -54,9 +60,9 @@ def _download_model(dest_dir: Path) -> None:
 
 
 class WD14Backend(LocalBackend):
-    """WD14 ViT-v2 tagger producing comma-separated booru tags.
+    """WD14 ViT-v3 tagger producing comma-separated booru tags.
 
-    Model files (``wd14-vit-v2.onnx`` + ``selected_tags.csv``) are
+    Model files (``wd-vit-tagger-v3.onnx`` + ``selected_tags.csv``) are
     auto-downloaded from HuggingFace on first use if not found locally.
 
     Search order for model directory:
@@ -75,11 +81,13 @@ class WD14Backend(LocalBackend):
         threshold: float = 0.35,
         registry: ModelRegistry | None = None,
     ) -> None:
+        """Configure the model directory, tag confidence threshold, and model registry."""
         self._model_dir = Path(model_dir) if model_dir else None
         self.threshold = threshold
         self._registry = registry or get_default_registry()
 
     def _search_dirs(self) -> list[Path]:
+        """Return candidate model directories in search-priority order."""
         dirs: list[Path] = []
         if self._model_dir:
             dirs.append(self._model_dir)
@@ -90,6 +98,7 @@ class WD14Backend(LocalBackend):
         return dirs
 
     def _find_model(self) -> Path | None:
+        """Return the first existing model file among the search dirs, or None."""
         for d in self._search_dirs():
             if (d / _MODEL_FILENAME).exists():
                 return d / _MODEL_FILENAME
@@ -102,6 +111,12 @@ class WD14Backend(LocalBackend):
             return model_path
 
         target_dir = self._model_dir or _DEFAULT_CACHE_DIR
+        # The model and tag CSV must stay a matched pair: when the model is
+        # missing (fresh install or a version bump renamed it), drop any CSV
+        # left over from a previous model so both are re-downloaded together.
+        stale_csv = target_dir / _TAGS_FILENAME
+        if stale_csv.exists():
+            stale_csv.unlink()
         _download_model(target_dir)
 
         model_path = target_dir / _MODEL_FILENAME
@@ -110,6 +125,7 @@ class WD14Backend(LocalBackend):
         return model_path
 
     def is_available(self) -> bool:
+        """Return True if onnxruntime and numpy are importable."""
         try:
             __import__("onnxruntime")
             __import__("numpy")
@@ -118,6 +134,7 @@ class WD14Backend(LocalBackend):
         return True
 
     def availability_reason(self) -> str | None:
+        """Name the missing package (onnxruntime or numpy), or None if usable."""
         try:
             __import__("onnxruntime")
         except ImportError:
@@ -128,7 +145,46 @@ class WD14Backend(LocalBackend):
             return "Missing package: numpy"
         return None
 
-    def _loader(self) -> tuple[Any, list[str], str]:
+    @staticmethod
+    def _select_providers(device: str) -> list[str]:
+        """Choose ONNX Runtime execution providers for a device intent.
+
+        ONNX Runtime uses providers rather than torch devices. An explicit CPU
+        request is honoured; otherwise CUDA is preferred when the runtime
+        actually exposes it. Deliberately torch-free so the ``[wd14-gpu]``
+        install (onnxruntime-gpu, no torch) still selects CUDA.
+        """
+        import onnxruntime as ort
+
+        if device.startswith("cpu"):
+            return ["CPUExecutionProvider"]
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]
+
+    @staticmethod
+    def _device_key(device: str) -> str:
+        """Coarse cache key (``cpu`` / ``gpu``) for a device intent.
+
+        Derived from the device string alone — no onnxruntime import — so the
+        inference entrypoint stays import-light. GPU-targeting intents
+        (``auto`` / ``cuda``) collapse to one cached session.
+        """
+        return "cpu" if device.startswith("cpu") else "gpu"
+
+    def _cache_key(self, device: str) -> str:
+        """Registry key for the cached session: device intent + model source.
+
+        Provider-coarse and import-light (the actual ONNX provider selection
+        happens lazily inside ``_loader``), but includes the configured model
+        directory so two backends pointing at different models never share
+        one cached session.
+        """
+        model_key = str(self._model_dir) if self._model_dir else os.environ.get("WD14_MODEL_DIR") or "default"
+        return f"wd14:{self._device_key(device)}:{model_key}"
+
+    def _loader(self, device: str) -> tuple[Any, list[tuple[str, int]], str]:
+        """Create the ONNX session and load the tag vocabulary from the CSV."""
         import csv
 
         import onnxruntime as ort
@@ -139,34 +195,56 @@ class WD14Backend(LocalBackend):
             raise RuntimeError(f"WD14 tags CSV not found at {tags_path}")
 
         with tags_path.open(newline="", encoding="utf-8") as fh:
-            tag_names = [row["name"] for row in csv.DictReader(fh)]
+            tags = [(row["name"], int(row["category"])) for row in csv.DictReader(fh)]
 
-        available = ort.get_available_providers()
-        providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if "CUDAExecutionProvider" in available
-            else ["CPUExecutionProvider"]
-        )
-        session = ort.InferenceSession(str(model_path), providers=providers)
+        session = ort.InferenceSession(str(model_path), providers=self._select_providers(device))
         input_name = session.get_inputs()[0].name
-        return session, tag_names, input_name
+        return session, tags, input_name
 
-    def load(self, device: str = "auto") -> None:
-        pass
+    @staticmethod
+    def _input_size(session: Any) -> int:
+        """Read the square input size (H/W) from the ONNX session."""
+        shape = session.get_inputs()[0].shape  # NHWC, e.g. [batch, 448, 448, 3]
+        for dim in shape[1:3]:
+            if isinstance(dim, int) and dim > 0:
+                return dim
+        return _DEFAULT_IMAGE_SIZE
 
-    def caption_image(self, image: Image.Image) -> str:
+    @staticmethod
+    def _preprocess(image: Image.Image, size: int) -> Any:
+        """Pad to square (white), resize, and convert to BGR float32 [0,255].
+
+        Matches the SmilingWolf WD-v3 preprocessing.
+        """
         import numpy as np
 
-        with self._registry.acquire("wd14", self._loader) as (session, tag_names, input_name):
-            img = image.convert("RGB").resize((448, 448), Image.LANCZOS)
-            img_np = np.expand_dims(np.array(img, dtype=np.float32)[:, :, ::-1], 0)
+        img = image.convert("RGB")
+        w, h = img.size
+        side = max(w, h)
+        canvas = Image.new("RGB", (side, side), (255, 255, 255))
+        canvas.paste(img, ((side - w) // 2, (side - h) // 2))
+        canvas = canvas.resize((size, size), Image.BICUBIC)
+        arr = np.asarray(canvas, dtype=np.float32)[:, :, ::-1]  # RGB -> BGR
+        return np.ascontiguousarray(np.expand_dims(arr, 0))
+
+    def caption_image(self, image: Image.Image) -> str:
+        """Return comma-separated booru tags above the threshold, excluding rating tags."""
+        device = self._device
+        cache_key = self._cache_key(device)
+        with self._registry.acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
+            img_np = self._preprocess(image, self._input_size(session))
             probs = session.run(None, {input_name: img_np})[0][0]
-            tags = ", ".join(
-                tag_names[idx]
-                for idx, prob in enumerate(probs)
-                if prob > self.threshold and not tag_names[idx].startswith("rating:")
+            if len(probs) != len(tags):
+                raise RuntimeError(
+                    f"WD14 model output ({len(probs)}) does not match tag count ({len(tags)}); "
+                    "the model and selected_tags.csv are out of sync"
+                )
+            return ", ".join(
+                name
+                for (name, category), prob in zip(tags, probs, strict=True)
+                if prob > self.threshold and category != _RATING_CATEGORY
             )
-            return tags
 
     def unload(self) -> None:
+        """Do nothing; session lifetime is managed by the shared registry."""
         pass

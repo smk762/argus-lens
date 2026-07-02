@@ -27,15 +27,18 @@ class OpenAIBackend(CloudBackend):
         max_tokens: int = 300,
         **kwargs: Any,
     ) -> None:
+        """Store credentials and token budget; defer SDK client creation to :meth:`load`."""
         super().__init__(api_key=api_key, model_id=model_id, system_prompt=system_prompt, **kwargs)
         self._max_tokens = max_tokens
         self._client: Any = None
 
     @property
     def model_id(self) -> str:
+        """OpenAI model to query, defaulting to ``gpt-4o``."""
         return self._model_id or "gpt-4o"
 
     def load(self, device: str = "auto") -> None:
+        """Create the official OpenAI SDK client, raising if the package is missing."""
         try:
             from openai import OpenAI
         except ImportError as exc:
@@ -43,6 +46,7 @@ class OpenAIBackend(CloudBackend):
         self._client = OpenAI(api_key=self.resolve_api_key())
 
     def caption_image(self, image: Image.Image) -> str:
+        """Send the image as a high-detail base64 data URI to chat completions and return the reply."""
         if self._client is None:
             self.load()
 
@@ -67,12 +71,16 @@ class OpenAIBackend(CloudBackend):
             ],
             max_tokens=self._max_tokens,
         )
+        if not response.choices or response.choices[0].message.content is None:
+            raise RuntimeError("OpenAI response contained no caption text (empty choices or null content)")
         return response.choices[0].message.content.strip()
 
     def unload(self) -> None:
+        """Drop the SDK client reference."""
         self._client = None
 
     def is_available(self) -> bool:
+        """Return True if the openai package is installed and an API key is configured."""
         try:
             __import__("openai")
         except ImportError:
@@ -80,6 +88,7 @@ class OpenAIBackend(CloudBackend):
         return super().is_available()
 
     def availability_reason(self) -> str | None:
+        """Report a missing openai package or missing API key, or None if usable."""
         try:
             __import__("openai")
         except ImportError:

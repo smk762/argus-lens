@@ -36,9 +36,11 @@ class Florence2Backend(LocalBackend):
         trust_remote_code: bool | None = None,
         registry: ModelRegistry | None = None,
     ) -> None:
+        """Pick native or legacy weights based on *trust_remote_code* and set the caption task."""
         if trust_remote_code is None:
             trust_remote_code = os.environ.get(
-                "HF_TRUST_REMOTE_CODE", "0",
+                "HF_TRUST_REMOTE_CODE",
+                "0",
             ).lower() in ("1", "true", "yes")
         self._trust_remote_code = trust_remote_code
 
@@ -49,9 +51,11 @@ class Florence2Backend(LocalBackend):
         self._registry = registry or get_default_registry()
 
     def _cache_key(self, device: str) -> str:
+        """Return the registry cache key for this model/device pair."""
         return f"florence2:{self._model_id}:{device}"
 
     def _loader(self, device: str) -> tuple[Any, Any, str]:
+        """Load the Florence-2 processor and model onto *device* (fp16 on CUDA)."""
         import torch
         from transformers import AutoProcessor
 
@@ -60,27 +64,34 @@ class Florence2Backend(LocalBackend):
         load_kwargs: dict[str, Any] = {}
         if self._trust_remote_code:
             from transformers import AutoModelForCausalLM
+
             model_cls = AutoModelForCausalLM
             load_kwargs["trust_remote_code"] = True
         else:
             from transformers import Florence2ForConditionalGeneration
+
             model_cls = Florence2ForConditionalGeneration
 
         processor = AutoProcessor.from_pretrained(
-            self._model_id, **({k: v for k, v in load_kwargs.items() if k == "trust_remote_code"}),
+            self._model_id,
+            **({k: v for k, v in load_kwargs.items() if k == "trust_remote_code"}),
         )
         model = model_cls.from_pretrained(
-            self._model_id, torch_dtype=dtype, **load_kwargs,
+            self._model_id,
+            torch_dtype=dtype,
+            **load_kwargs,
         ).to(device)
         model.eval()
         return processor, model, device
 
-    def load(self, device: str = "auto") -> None:
-        pass
-
-    def caption_image(self, image: Image.Image, device: str = "auto") -> str:
+    def caption_image(self, image: Image.Image, device: str | None = None) -> str:
+        """Run the configured Florence-2 task and return its post-processed caption text."""
         import torch
 
+        # Canonical device placement flows through ``load(device)`` (#21), so
+        # the engine calls this device-free. ``device`` is retained as an
+        # optional override for backwards compatibility with direct callers
+        # (pre-0.3 API); when omitted, the device remembered by ``load`` is used.
         resolved = self.resolve_device(device)
         cache_key = self._cache_key(resolved)
 
@@ -102,14 +113,18 @@ class Florence2Backend(LocalBackend):
                 gen_ids = model.generate(**prepared, max_new_tokens=256, do_sample=False)
             gen_text = processor.batch_decode(gen_ids, skip_special_tokens=False)[0]
             parsed = processor.post_process_generation(
-                gen_text, task=self._task, image_size=(pil.width, pil.height),
+                gen_text,
+                task=self._task,
+                image_size=(pil.width, pil.height),
             )
             return parsed.get(self._task, "").strip()
 
     def unload(self) -> None:
+        """Do nothing; model lifetime is managed by the shared registry."""
         pass
 
     def is_available(self) -> bool:
+        """Return True if torch and transformers are importable."""
         try:
             __import__("torch")
             __import__("transformers")
@@ -118,6 +133,7 @@ class Florence2Backend(LocalBackend):
         return True
 
     def availability_reason(self) -> str | None:
+        """Name the missing package (torch or transformers), or None if usable."""
         try:
             __import__("torch")
         except ImportError:

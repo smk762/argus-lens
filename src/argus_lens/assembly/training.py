@@ -33,33 +33,81 @@ from argus_lens.types import (
 # Tag sets for tiered protection
 # ---------------------------------------------------------------------------
 
-FRAMING_TAGS: frozenset[str] = frozenset({
-    "close-up", "close_up", "closeup",
-    "upper_body", "upper body",
-    "full_body", "full body",
-    "portrait", "headshot",
-    "from_above", "from above",
-    "from_below", "from below",
-    "from_side", "from side",
-})
+FRAMING_TAGS: frozenset[str] = frozenset(
+    {
+        "close-up",
+        "close_up",
+        "closeup",
+        "upper_body",
+        "upper body",
+        "full_body",
+        "full body",
+        "portrait",
+        "headshot",
+        "from_above",
+        "from above",
+        "from_below",
+        "from below",
+        "from_side",
+        "from side",
+    }
+)
 
-PRIMARY_POSE_TAGS: frozenset[str] = frozenset({
-    "standing", "sitting", "kneeling", "leaning", "walking", "running",
-    "lying_down", "lying down", "crouching",
-})
+PRIMARY_POSE_TAGS: frozenset[str] = frozenset(
+    {
+        "standing",
+        "sitting",
+        "kneeling",
+        "leaning",
+        "walking",
+        "running",
+        "lying_down",
+        "lying down",
+        "crouching",
+    }
+)
 
-POSE_EXPRESSION_RESCUE: frozenset[str] = frozenset({
-    "looking_at_viewer", "looking at viewer", "looking_away", "looking away",
-    "looking_at_camera", "looking at camera",
-    "closed_mouth", "open_mouth", "closed mouth", "open mouth",
-    "smile", "smiling", "grin", "frown", "serious",
-    "upper_body", "upper body", "full_body", "full body",
-    "close-up", "close_up", "closeup",
-    "from_side", "from side", "from_above", "from above", "from_below", "from below",
-    "arms_crossed", "arms crossed", "hand_on_hip", "hand on hip",
-    "sitting", "standing", "kneeling", "leaning",
-    "cleavage",
-})
+POSE_EXPRESSION_RESCUE: frozenset[str] = frozenset(
+    {
+        "looking_at_viewer",
+        "looking at viewer",
+        "looking_away",
+        "looking away",
+        "looking_at_camera",
+        "looking at camera",
+        "closed_mouth",
+        "open_mouth",
+        "closed mouth",
+        "open mouth",
+        "smile",
+        "smiling",
+        "grin",
+        "frown",
+        "serious",
+        "upper_body",
+        "upper body",
+        "full_body",
+        "full body",
+        "close-up",
+        "close_up",
+        "closeup",
+        "from_side",
+        "from side",
+        "from_above",
+        "from above",
+        "from_below",
+        "from below",
+        "arms_crossed",
+        "arms crossed",
+        "hand_on_hip",
+        "hand on hip",
+        "sitting",
+        "standing",
+        "kneeling",
+        "leaning",
+        "cleavage",
+    }
+)
 
 OMISSION_CYCLES: tuple[dict[str, bool], ...] = (
     {},
@@ -187,12 +235,14 @@ def assemble_training_variant(
 
     # Phase 3: frequency-aware diversity pass
     def _freq_drop(fragment: str) -> bool:
+        """Randomly decide to drop a fragment, biased against short generic tags."""
         word_count = len(fragment.split())
         if word_count <= 2:
             return _rng.random() < drop_probability * 1.5
         return _rng.random() < drop_probability * 0.3
 
     def _diversity_pass(fragments: list[str]) -> tuple[list[str], list[str]]:
+        """Apply frequency-aware dropping and shuffle survivors; return ``(kept, dropped)``."""
         kept_f: list[str] = []
         dropped: list[str] = []
         for f in fragments:
@@ -216,43 +266,59 @@ def assemble_training_variant(
     kept: list[str] = []
 
     for fragment in tier1:
-        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        added, used_tokens = try_add_fragment(
+            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
+        )
         if not added:
             removed.append(fragment)
 
     for fragment in tier2:
-        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        added, used_tokens = try_add_fragment(
+            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
+        )
         if not added:
             removed.append(fragment)
 
     for fragment in pose_rest:
-        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        added, used_tokens = try_add_fragment(
+            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
+        )
         if not added:
             removed.append(fragment)
 
     for fragment in action_all:
-        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        added, used_tokens = try_add_fragment(
+            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
+        )
         if not added:
             removed.append(fragment)
 
     for fragment in wardrobe_all:
-        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        added, used_tokens = try_add_fragment(
+            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
+        )
         if not added:
             removed.append(fragment)
 
     for fragment in lighting_all:
-        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        added, used_tokens = try_add_fragment(
+            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
+        )
         if not added:
             removed.append(fragment)
 
     for fragment in setting_all:
-        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        added, used_tokens = try_add_fragment(
+            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
+        )
         if not added:
             removed.append(fragment)
 
     # Phase 5: prose enrichment (lowest priority, budget permitting)
     for fragment in enrichment or []:
-        added, used_tokens = try_add_fragment(fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend)
+        added, used_tokens = try_add_fragment(
+            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
+        )
         if not added:
             removed.append(fragment)
 

@@ -65,13 +65,32 @@ class CaptionBackend(ABC):
 
 
 class LocalBackend(CaptionBackend):
-    """Base class for backends that run inference locally (GPU/CPU)."""
+    """Base class for backends that run inference locally (GPU/CPU).
+
+    Device placement follows the :class:`CaptionBackend` contract: the
+    target device is supplied once via :meth:`load` and remembered on the
+    instance, so ``caption_image`` stays device-free. Subclasses read the
+    remembered intent via ``self._device`` (lazy model loaders should pass
+    it through :meth:`resolve_device`).
+    """
 
     kind = BackendKind.LOCAL
     requires_gpu = True
 
-    def resolve_device(self, device: str = "auto") -> str:
-        """Resolve ``"auto"`` to ``"cuda"`` or ``"cpu"``."""
+    # Raw device intent ("auto" | "cpu" | "cuda" | "cuda:N"), set by load().
+    _device: str = "auto"
+
+    def load(self, device: str = "auto") -> None:
+        """Remember the target device for subsequent (lazy) model loads."""
+        self._device = device
+
+    def resolve_device(self, device: str | None = None) -> str:
+        """Resolve ``"auto"`` to ``"cuda"`` or ``"cpu"``.
+
+        With no argument, resolves the device remembered by :meth:`load`.
+        """
+        if device is None:
+            device = self._device
         if device != "auto":
             return device
         from argus_lens.retry import resolve_device
@@ -98,6 +117,7 @@ class CloudBackend(CaptionBackend):
         system_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
+        """Store credentials and prompt overrides; nothing is validated until :meth:`load`."""
         self._api_key = api_key
         self._model_id = model_id
         self._system_prompt = system_prompt
@@ -112,17 +132,19 @@ class CloudBackend(CaptionBackend):
             if key:
                 return key
         raise ValueError(
-            f"{self.name} backend requires an API key. "
-            f"Pass api_key= or set {self.env_var} environment variable."
+            f"{self.name} backend requires an API key. Pass api_key= or set {self.env_var} environment variable."
         )
 
     def load(self, device: str = "auto") -> None:
+        """Validate the API key eagerly; *device* is ignored for cloud backends."""
         self.resolve_api_key()
 
     def unload(self) -> None:
+        """Do nothing by default; subclasses close HTTP clients here."""
         pass
 
     def is_available(self) -> bool:
+        """Return True if an API key can be resolved."""
         try:
             self.resolve_api_key()
             return True
@@ -130,12 +152,14 @@ class CloudBackend(CaptionBackend):
             return False
 
     def availability_reason(self) -> str | None:
+        """Return a hint naming the missing env var, or None if a key is configured."""
         if self.is_available():
             return None
         return f"API key not configured (set {self.env_var})"
 
     @property
     def default_system_prompt(self) -> str:
+        """Generic captioning instructions used when no custom prompt is supplied."""
         return (
             "You are an image captioning assistant. Describe the image in detail, "
             "focusing on the subject's appearance, clothing, pose, expression, "
@@ -145,4 +169,5 @@ class CloudBackend(CaptionBackend):
 
     @property
     def system_prompt(self) -> str:
+        """Effective system prompt: constructor override or the default."""
         return self._system_prompt or self.default_system_prompt
