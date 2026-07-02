@@ -175,6 +175,34 @@ Endpoints:
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
 
+### Immich
+
+Immich is strong at CLIP search and faces but weak at descriptive keywords and captions -- the gap Argus Lens fills. Immich has no in-process ML plugin hook, so Argus Lens runs as a companion service: pull assets via the Immich API, caption them, and push keywords + description back.
+
+Create an API key in Immich under Account Settings -> API Keys, then:
+
+```python
+from argus_lens import ArgusLens
+from argus_lens.connectors import ImmichSink, ImmichSource
+
+IMMICH_URL = "http://immich.local:2283"
+API_KEY = "..."
+
+source = ImmichSource(IMMICH_URL, API_KEY)
+sink = ImmichSink(IMMICH_URL, API_KEY)
+engine = ArgusLens(backend="hybrid")
+
+# Pass `since` (ISO 8601) to only process assets changed after your last run.
+for ref in source.list_assets(since="2026-07-01T00:00:00Z"):
+    result = engine.caption(source.fetch_image(ref))
+    keywords = [t.strip() for t in result.raw_tags.split(",") if t.strip()]
+    sink.write(ref, keywords=keywords, description=result.caption_variants["zeroshot"])
+```
+
+Keywords are upserted as Immich tags (existing tags are reused) and attached to the asset; the description lands in the asset's description field, both searchable in the Immich UI. Writes are idempotent, so re-running over the same assets is safe.
+
+If you'd rather keep Argus Lens decoupled from the Immich API entirely, use `XmpSink` instead: it writes standard `.xmp` sidecars next to your originals, which Immich (as well as Lightroom and digiKam) ingests on library scan.
+
 ### Docker
 
 For fresh hosts or isolated deployment with GPU passthrough. No pip install needed on the host.
@@ -227,7 +255,7 @@ The legacy [`microsoft/Florence-2-base`](https://huggingface.co/microsoft/Floren
 ## Related projects
 
 - [argus-vision-demo](https://github.com/smk762/argus-vision-demo) -- a thin Next.js web UI for exploring argus-lens interactively.
-- [awesome-immich](https://github.com/tlwhittaker/awesome-immich) -- a curated list of Immich plugins, tools, and community projects. Argus Lens is working toward self-hosted photo-library tagging and captioning, with Immich integration on the v2 roadmap.
+- [awesome-immich](https://github.com/tlwhittaker/awesome-immich) -- a curated list of Immich plugins, tools, and community projects. Argus Lens integrates with Immich as a companion tagging/captioning service -- see [Immich](#immich).
 
 ## License
 

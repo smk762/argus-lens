@@ -26,7 +26,10 @@ additive/opt-in and are not wired into the default captioning path.
   `argus-lens caption`. (#25)
 - **Connectors I/O layer** — `Source`/`Sink` protocols with `FilesystemSource`
   and `XmpSink`, plus an **Immich source + sink** for pulling/pushing assets and
-  writing caption sidecars. (#17, #18)
+  writing caption sidecars. `ImmichSource.list_assets` pages through the Immich
+  search API (with `since` for incremental sync) and `ImmichSink.write` pushes
+  keywords (tag upsert + assign) and descriptions back to Immich, making the
+  companion-service loop usable end to end. (#17, #18, #29)
 - **Structured backend output** — new `BackendOutput` / `Tag` types so backends
   can emit structured tags with scores instead of bare strings. (#12)
 - **Per-tag provenance** — provenance metadata built from `BackendOutput`,
