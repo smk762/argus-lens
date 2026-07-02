@@ -1,4 +1,4 @@
-"""Tests for the Immich connector scaffold (issue #7)."""
+"""Tests for the Immich connector (issues #7, #29)."""
 
 import io
 from unittest.mock import patch
@@ -15,6 +15,43 @@ def _png_bytes(size=(5, 5), color=(0, 0, 255)) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", size, color).save(buf, format="PNG")
     return buf.getvalue()
+
+
+def _search_page(ids: list[str], next_page: str | None) -> dict:
+    """Build a fake ``/api/search/metadata`` response page for *ids*."""
+    return {
+        "albums": {"total": 0, "count": 0, "items": [], "facets": []},
+        "assets": {
+            "total": len(ids),
+            "count": len(ids),
+            "items": [{"id": i, "originalPath": f"/on/server/{i}.jpg"} for i in ids],
+            "facets": [],
+            "nextPage": next_page,
+        },
+    }
+
+
+class _FakeResponse:
+    """Fake httpx response carrying canned bytes/JSON and a status code."""
+
+    def __init__(self, content: bytes = b"", json_data: dict | list | None = None, status_code: int = 200) -> None:
+        """Store the response body, optional JSON payload, and status code."""
+        self.content = content
+        self._json_data = json_data
+        self.status_code = status_code
+
+    def json(self):
+        """Return the canned JSON payload."""
+        return self._json_data
+
+    def raise_for_status(self) -> None:
+        """Raise httpx.HTTPStatusError for 4xx/5xx status codes, like the real client."""
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                "error",
+                request=httpx.Request("GET", "http://immich.local"),
+                response=httpx.Response(self.status_code),
+            )
 
 
 def test_immich_implements_protocols():
@@ -34,22 +71,49 @@ def test_url_and_headers():
     assert src._headers(accept="*/*")["Accept"] == "*/*"
 
 
-class _FakeResponse:
-    """Fake httpx response carrying canned bytes and a status code."""
+# --- ImmichSource.list_assets ---
 
-    def __init__(self, content: bytes, status_code: int = 200) -> None:
-        """Store the response body and status code."""
-        self.content = content
-        self.status_code = status_code
 
-    def raise_for_status(self) -> None:
-        """Raise httpx.HTTPStatusError for 4xx/5xx status codes, like the real client."""
-        if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                "error",
-                request=httpx.Request("GET", "http://immich.local"),
-                response=httpx.Response(self.status_code),
-            )
+def test_list_assets_pages_until_next_page_is_null():
+    """Follows the nextPage token across search pages and yields refs with API URIs."""
+    pages = [
+        _FakeResponse(json_data=_search_page(["a", "b"], next_page="2")),
+        _FakeResponse(json_data=_search_page(["c"], next_page=None)),
+    ]
+    with patch("httpx.post", side_effect=pages) as mock_post:
+        refs = list(ImmichSource("http://immich.local", "key", page_size=2).list_assets())
+
+    assert [r.id for r in refs] == ["a", "b", "c"]
+    # refs carry the API download URL, never a server-side filesystem path
+    assert refs[0].uri == "http://immich.local/api/assets/a/original"
+    assert refs[0].path is None
+
+    assert mock_post.call_count == 2
+    first, second = mock_post.call_args_list
+    assert first[0][0] == "http://immich.local/api/search/metadata"
+    assert first.kwargs["json"] == {"page": 1, "size": 2, "type": "IMAGE"}
+    assert second.kwargs["json"] == {"page": 2, "size": 2, "type": "IMAGE"}
+    assert first.kwargs["headers"]["x-api-key"] == "key"
+
+
+def test_list_assets_since_maps_to_updated_after():
+    """Maps the `since` cursor to Immich's updatedAfter filter for incremental sync."""
+    with patch("httpx.post", return_value=_FakeResponse(json_data=_search_page([], next_page=None))) as mock_post:
+        list(ImmichSource("http://immich.local", "key").list_assets(since="2026-07-01T00:00:00Z"))
+
+    assert mock_post.call_args.kwargs["json"]["updatedAfter"] == "2026-07-01T00:00:00Z"
+
+
+def test_list_assets_is_lazy_and_raises_on_http_error():
+    """Makes no request until consumed, then propagates HTTP errors from the search API."""
+    with patch("httpx.post", return_value=_FakeResponse(status_code=401)) as mock_post:
+        it = ImmichSource("http://immich.local", "key").list_assets()
+        mock_post.assert_not_called()  # generator: no request until consumed
+        with pytest.raises(httpx.HTTPStatusError):
+            next(it)
+
+
+# --- ImmichSource.fetch_image ---
 
 
 def test_fetch_image_hits_original_endpoint():
@@ -75,15 +139,74 @@ def test_fetch_image_percent_encodes_asset_id():
 def test_fetch_image_raises_on_http_error():
     """Propagates httpx.HTTPStatusError when the asset fetch returns an error status."""
     with (
-        patch("httpx.get", return_value=_FakeResponse(b"", status_code=404)),
+        patch("httpx.get", return_value=_FakeResponse(status_code=404)),
         pytest.raises(httpx.HTTPStatusError),
     ):
         ImmichSource("http://immich.local", "key").fetch_image(AssetRef(id="missing"))
 
 
-def test_listing_and_write_are_stubbed():
-    """list_assets and Sink.write raise NotImplementedError while still scaffolded."""
-    with pytest.raises(NotImplementedError):
-        next(ImmichSource("http://immich.local", "key").list_assets())
-    with pytest.raises(NotImplementedError):
+# --- ImmichSink.write ---
+
+
+def test_write_sets_description_and_upserts_and_assigns_tags():
+    """Sets the description, upserts keywords as tags, and bulk-assigns them to the asset."""
+    responses = [
+        _FakeResponse(json_data={"id": "x"}),  # PUT /api/assets/x
+        _FakeResponse(json_data=[{"id": "t1", "name": "beach"}, {"id": "t2", "name": "sunset"}]),  # PUT /api/tags
+        _FakeResponse(json_data={"count": 1}),  # PUT /api/tags/assets
+    ]
+    with patch("httpx.put", side_effect=responses) as mock_put:
+        ImmichSink("http://immich.local", "key").write(
+            AssetRef(id="x"), keywords=["beach", "sunset"], description="A sunset at the beach"
+        )
+
+    urls = [c[0][0] for c in mock_put.call_args_list]
+    assert urls == [
+        "http://immich.local/api/assets/x",
+        "http://immich.local/api/tags",
+        "http://immich.local/api/tags/assets",
+    ]
+    desc_call, upsert_call, assign_call = mock_put.call_args_list
+    assert desc_call.kwargs["json"] == {"description": "A sunset at the beach"}
+    assert upsert_call.kwargs["json"] == {"tags": ["beach", "sunset"]}
+    assert assign_call.kwargs["json"] == {"tagIds": ["t1", "t2"], "assetIds": ["x"]}
+    assert desc_call.kwargs["headers"]["x-api-key"] == "key"
+
+
+def test_write_percent_encodes_asset_id_in_description_update():
+    """Percent-encodes asset IDs when building the asset-update URL."""
+    with patch("httpx.put", return_value=_FakeResponse(json_data={})) as mock_put:
+        ImmichSink("http://immich.local", "key").write(AssetRef(id="x/../y"), keywords=[], description="d")
+
+    assert mock_put.call_args[0][0] == "http://immich.local/api/assets/x%2F..%2Fy"
+
+
+def test_write_skips_empty_description_and_empty_keywords():
+    """Skips API calls for empty values so blanks never clobber existing Immich metadata."""
+    with patch("httpx.put") as mock_put:
+        ImmichSink("http://immich.local", "key").write(AssetRef(id="x"), keywords=[], description="")
+
+    mock_put.assert_not_called()
+
+    with patch(
+        "httpx.put",
+        side_effect=[_FakeResponse(json_data=[{"id": "t1", "name": "a"}]), _FakeResponse(json_data={"count": 1})],
+    ) as mock_put:
         ImmichSink("http://immich.local", "key").write(AssetRef(id="x"), keywords=["a"])
+
+    # no description -> no PUT /api/assets, straight to tag upsert + assign
+    assert [c[0][0] for c in mock_put.call_args_list] == [
+        "http://immich.local/api/tags",
+        "http://immich.local/api/tags/assets",
+    ]
+
+
+def test_write_raises_on_http_error_and_stops():
+    """Stops after the first failing call and propagates the HTTP error."""
+    with (
+        patch("httpx.put", return_value=_FakeResponse(status_code=403)) as mock_put,
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        ImmichSink("http://immich.local", "key").write(AssetRef(id="x"), keywords=["a"], description="d")
+
+    mock_put.assert_called_once()  # failed on description update; no tag calls followed
