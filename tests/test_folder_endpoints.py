@@ -46,7 +46,7 @@ def test_caption_folder_non_recursive_writes_sidecars(tmp_path: Path) -> None:
     _png(tmp_path / "02.png")
     _png(tmp_path / "sub" / "03.jpg")  # ignored when non-recursive
 
-    client = TestClient(create_app(default_backend=_StubBackend()))
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
     resp = client.post("/caption/folder", json={"folder": str(tmp_path)})
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -61,7 +61,7 @@ def test_caption_folder_recursive(tmp_path: Path) -> None:
     _png(tmp_path / "01.jpg")
     _png(tmp_path / "sub" / "03.jpg")
 
-    client = TestClient(create_app(default_backend=_StubBackend()))
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
     resp = client.post(
         "/caption/folder",
         json={"folder": str(tmp_path), "recursive": True, "write_sidecar": False},
@@ -74,11 +74,59 @@ def test_caption_folder_recursive(tmp_path: Path) -> None:
     assert not (tmp_path / "01.txt").exists()  # sidecars disabled
 
 
+def test_caption_folder_accepts_relative_path(tmp_path: Path) -> None:
+    """A folder relative to the source root resolves inside it."""
+    _png(tmp_path / "sub" / "01.jpg")
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.post("/caption/folder", json={"folder": "sub"})
+    assert resp.status_code == 200
+    assert resp.json()["captioned"] == 1
+
+
 def test_caption_folder_rejects_missing_dir(tmp_path: Path) -> None:
-    """POST /caption/folder returns 400 for a nonexistent folder."""
-    client = TestClient(create_app(default_backend=_StubBackend()))
+    """POST /caption/folder returns 400 for a nonexistent folder under the root."""
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
     resp = client.post("/caption/folder", json={"folder": str(tmp_path / "nope")})
     assert resp.status_code == 400
+    assert "not a directory" in resp.json()["detail"]
+
+
+def test_caption_folder_requires_source_root(tmp_path: Path) -> None:
+    """POST /caption/folder returns 400 when no source root is configured."""
+    _png(tmp_path / "01.jpg")
+    client = TestClient(create_app(default_backend=_StubBackend()))
+    resp = client.post("/caption/folder", json={"folder": str(tmp_path)})
+    assert resp.status_code == 400
+    assert "source root" in resp.json()["detail"]
+
+
+def test_caption_folder_rejects_path_outside_root(tmp_path: Path) -> None:
+    """Absolute or traversal paths outside the source root are rejected with 400."""
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    _png(root / "01.jpg")
+    _png(outside / "02.jpg")
+
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(root)))
+    assert client.post("/caption/folder", json={"folder": str(outside)}).status_code == 400
+    assert client.post("/caption/folder", json={"folder": "../outside"}).status_code == 400
+    assert not (outside / "02.txt").exists()
+
+
+def test_caption_folder_reports_sidecar_stem_collision(tmp_path: Path) -> None:
+    """Same-stem images (cat.jpg + cat.png) don't silently overwrite one sidecar."""
+    _png(tmp_path / "cat.jpg")
+    _png(tmp_path / "cat.png")
+
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.post("/caption/folder", json={"folder": str(tmp_path)})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["captioned"] == 1
+    assert body["failed"] == 1
+    assert body["captioned"] + body["failed"] == body["total"] == 2
+    assert "collision" in body["errors"][0]["error"]
+    assert (tmp_path / "cat.txt").read_text().strip()
 
 
 def test_folders_browse(tmp_path: Path) -> None:

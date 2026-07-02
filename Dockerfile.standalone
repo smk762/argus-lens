@@ -24,4 +24,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install ".[${EXTRAS}]"
 
 EXPOSE 8100
+# Folder browsing/captioning is confined to this root — mount your images here.
+ENV LENS_SOURCE_PATH=/data
 CMD ["argus-lens", "serve", "--port", "8100", "--cors"]

@@ -120,7 +120,9 @@ def backends() -> None:
 def serve(
     port: int = Option(8080, "--port", "-p", help="Port to listen on"),
     host: str = Option("0.0.0.0", "--host", help="Host to bind to"),
-    backend: str = Option("hybrid", "--backend", "-b", help="Default backend for /caption endpoints"),
+    backend: str = Option(
+        "hybrid", "--backend", "-b", envvar="ARGUS_BACKEND", help="Default backend for /caption endpoints"
+    ),
     cors: bool = Option(False, "--cors", help="Enable CORS (allow all origins)"),
     source_root: str | None = Option(None, "--source-root", help="Root folder for /folders browsing (UI picker)"),
 ) -> None:

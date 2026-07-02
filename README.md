@@ -1,5 +1,10 @@
 # Argus Lens
 
+[![PyPI](https://img.shields.io/pypi/v/argus-lens)](https://pypi.org/project/argus-lens/)
+[![Python](https://img.shields.io/pypi/pyversions/argus-lens)](https://pypi.org/project/argus-lens/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/smk762/argus-lens/blob/main/LICENSE)
+[![CI](https://github.com/smk762/argus-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/smk762/argus-lens/actions/workflows/ci.yml)
+
 One image. A hundred perspectives.
 
 Multi-model captioning pipeline for LoRA training, dataset curation, and generative AI workflows. Unlike traditional captioners that describe an image, Argus Lens produces **intent-aware caption subsets** -- structured, filtered, and optimised for how captions are actually used downstream.
@@ -52,7 +57,7 @@ The model is just an input source. The real value is what happens after inferenc
 
 ## Features
 
-- **Multi-model backends**: WD14, Florence-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM, and any OpenAI-compatible server — Ollama, vLLM, LM Studio (cloud or self-hosted API)
+- **Multi-model backends**: WD14, Florence-2, BLIP-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM, and any OpenAI-compatible server — Ollama, vLLM, LM Studio (cloud or self-hosted API)
 - **Structured captions**: Category-bucketed variants (identity, wardrobe, pose, setting, lighting, action)
 - **Training-optimised**: Tiered tag protection, omission cycles, CLIP/T5 token budgets, identity suppression
 - **Zero-shot variant**: Identity-first, prose-preferred captions for generation without LoRA
@@ -71,17 +76,21 @@ pip handles all Python dependencies through extras. Pick the extras that match y
 pip install argus-lens
 
 # Local backends (GPU inference)
-pip install argus-lens[local]      # WD14 + Florence-2
+pip install argus-lens[local]      # WD14 + Florence-2 + BLIP-2
 pip install argus-lens[wd14]       # WD14 only (CPU, no torch)
-pip install argus-lens[torch]      # Florence-2 only
+pip install argus-lens[wd14-gpu]   # WD14 only, CUDA onnxruntime (no torch)
+pip install argus-lens[torch]      # Florence-2 / BLIP-2 only
 
 # Cloud backends (no GPU needed)
 pip install argus-lens[openai]     # GPT-4o vision
 pip install argus-lens[replicate]  # Replicate API
 # openai-compat, hf-inference, nvidia-nim need no extra — only the core httpx dep
 
-# Server (FastAPI + uvicorn)
-pip install argus-lens[server,local,openai]
+# CLI (the `argus-lens` command; combine with your backend extras)
+pip install argus-lens[cli,openai]
+
+# Server (FastAPI + uvicorn; add [cli] for the `argus-lens serve` command)
+pip install argus-lens[cli,server,local,openai]
 
 # Everything
 pip install argus-lens[all]
@@ -140,6 +149,8 @@ results = engine.caption_directory("./images/", output_format="txt")
 
 ### CLI
 
+The `argus-lens` command requires the `[cli]` extra (`pip install argus-lens[cli,<backend>]`).
+
 ```bash
 # Caption a single image
 argus-lens caption photo.jpg --trigger sks_person --backend openai
@@ -160,7 +171,7 @@ argus-lens backends
 Run the built-in FastAPI server for frontend consumers (e.g. [argus-vision-demo](https://github.com/smk762/argus-vision-demo)):
 
 ```bash
-pip install argus-lens[server,local]
+pip install argus-lens[cli,server,local]
 argus-lens serve --cors --port 8080
 ```
 
@@ -171,9 +182,11 @@ Endpoints:
 - `POST /caption/batch` -- multiple file upload
 - `POST /caption/stream` -- NDJSON streaming for batch
 - `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars)
-- `POST /caption/folder` -- batch-caption every image in a server-side folder (optionally recursive, writes `.txt` sidecars)
+- `POST /caption/manifest/stream` -- streaming variant of `/caption/manifest`: one NDJSON progress line per image, then a completion summary
+- `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars)
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
+- `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider)
 
 ### Immich
 
@@ -215,6 +228,16 @@ docker compose up
 
 This builds a CUDA 12.4 base image, installs all extras into it, and runs `argus-lens serve` on port 8080.
 
+#### Standalone image (GHCR)
+
+A self-contained image built from `Dockerfile.standalone` is published to GHCR on each release — no local build needed:
+
+```bash
+docker run -p 8100:8100 -v /path/to/images:/data ghcr.io/smk762/argus-lens:latest
+```
+
+Folder browsing and captioning are confined to the mounted `/data` (override with `LENS_SOURCE_PATH`).
+
 #### Configuration
 
 Copy or create a `.env` file for the Docker deployment:
@@ -222,7 +245,7 @@ Copy or create a `.env` file for the Docker deployment:
 | Variable | Default | Description |
 |---|---|---|
 | `ARGUS_BACKEND` | `hybrid` | Captioning backend (`hybrid`, `wd14`, `florence2`, `openai`, etc.) |
-| `ARGUS_API_KEY` | -- | API key for cloud backends |
+| `OPENAI_API_KEY` / `REPLICATE_API_TOKEN` / `HF_TOKEN` / `NVIDIA_API_KEY` | -- | API key for the matching cloud backend (each backend reads its own variable) |
 | `ARGUS_PORT` | `8080` | Host port for the server |
 | `WD14_MODEL_DIR` | `~/.cache/wd14_tagger/` | WD14 ONNX model directory (auto-downloads on first use) |
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |

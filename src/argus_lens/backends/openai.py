@@ -71,6 +71,8 @@ class OpenAIBackend(CloudBackend):
             ],
             max_tokens=self._max_tokens,
         )
+        if not response.choices or response.choices[0].message.content is None:
+            raise RuntimeError("OpenAI response contained no caption text (empty choices or null content)")
         return response.choices[0].message.content.strip()
 
     def unload(self) -> None:

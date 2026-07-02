@@ -28,6 +28,26 @@ _DEFAULT_BASE_URL = "http://localhost:11434/v1"  # Ollama default
 _DEFAULT_MODEL = "llava"
 
 
+def _extract_content(data: Any) -> str:
+    """Pull the assistant text out of a chat-completions response body.
+
+    Tolerates the shape variance of OpenAI-compatible servers: missing or
+    empty ``choices``, ``null`` content (refusals / content filters), and
+    list-form content parts. Raises a clear RuntimeError instead of an opaque
+    AttributeError/IndexError/KeyError when no caption text is present.
+    """
+    try:
+        content = data["choices"][0]["message"].get("content")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"unexpected chat-completions response shape: {exc!r}") from exc
+    if isinstance(content, list):
+        # Some vision servers return content as a list of typed parts.
+        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("chat-completions response contained no caption text (empty or null content)")
+    return content.strip()
+
+
 class OpenAICompatBackend(CloudBackend):
     """Caption via any OpenAI-compatible ``/chat/completions`` endpoint.
 
@@ -115,8 +135,7 @@ class OpenAICompatBackend(CloudBackend):
 
         response = self._client.post("/chat/completions", json=payload)
         response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
+        return _extract_content(response.json())
 
     def unload(self) -> None:
         """Close the HTTP client and drop the reference."""

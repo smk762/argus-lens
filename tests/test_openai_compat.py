@@ -112,3 +112,27 @@ def test_http_error_propagates():
     _mock_client(b, lambda _r: httpx.Response(500, json={"error": "boom"}))
     with pytest.raises(httpx.HTTPStatusError):
         b.caption_image(_image())
+
+
+def test_null_content_raises_clear_error():
+    """A 200 with content:null (refusal / content filter) raises RuntimeError, not AttributeError."""
+    b = OpenAICompatBackend(base_url="http://x/v1")
+    _mock_client(b, lambda _r: httpx.Response(200, json={"choices": [{"message": {"content": None}}]}))
+    with pytest.raises(RuntimeError, match="no caption text"):
+        b.caption_image(_image())
+
+
+def test_empty_choices_raises_clear_error():
+    """A 200 with an empty choices list raises RuntimeError, not IndexError."""
+    b = OpenAICompatBackend(base_url="http://x/v1")
+    _mock_client(b, lambda _r: httpx.Response(200, json={"choices": []}))
+    with pytest.raises(RuntimeError, match="response shape"):
+        b.caption_image(_image())
+
+
+def test_list_content_parts_are_joined():
+    """Servers returning content as typed parts still yield the joined caption text."""
+    parts = [{"type": "text", "text": "a red"}, {"type": "text", "text": " square"}]
+    b = OpenAICompatBackend(base_url="http://x/v1")
+    _mock_client(b, lambda _r: httpx.Response(200, json={"choices": [{"message": {"content": parts}}]}))
+    assert b.caption_image(_image()) == "a red square"

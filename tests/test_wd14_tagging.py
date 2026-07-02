@@ -91,3 +91,39 @@ def test_preprocess_pads_non_square_with_white():
     arr = WD14Backend._preprocess(Image.new("RGB", (8, 2), (255, 0, 0)), 8)
     assert list(arr[0, 0, 4]) == [255.0, 255.0, 255.0]  # white pad (BGR)
     assert list(arr[0, 3, 4]) == [0.0, 0.0, 255.0]  # red content (BGR)
+
+
+def test_cache_key_includes_model_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Backends pointing at different model dirs must never share a cached session."""
+    monkeypatch.delenv("WD14_MODEL_DIR", raising=False)
+    a = WD14Backend(model_dir="/models/base")
+    b = WD14Backend(model_dir="/models/finetuned")
+    default = WD14Backend()
+    assert a._cache_key("cpu") != b._cache_key("cpu")
+    assert a._cache_key("cpu") != default._cache_key("cpu")
+    assert default._cache_key("cpu") == "wd14:cpu:default"
+    monkeypatch.setenv("WD14_MODEL_DIR", "/env/dir")
+    assert WD14Backend()._cache_key("cpu") == "wd14:cpu:/env/dir"
+
+
+def test_ensure_model_refreshes_stale_tags_csv(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the model file is missing, a leftover CSV from a prior model is re-downloaded with it."""
+    from argus_lens.backends import wd14 as wd14_mod
+
+    def _fake_download(dest_dir: Any) -> None:
+        """Mimic _download_model's skip-if-exists behavior without the network."""
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for name in (wd14_mod._MODEL_FILENAME, wd14_mod._TAGS_FILENAME):
+            dest = dest_dir / name
+            if not dest.exists():
+                dest.write_text("v3-fresh")
+
+    monkeypatch.setattr(wd14_mod, "_download_model", _fake_download)
+    stale_csv = tmp_path / wd14_mod._TAGS_FILENAME
+    stale_csv.write_text("v2-stale")
+
+    backend = WD14Backend(model_dir=tmp_path)
+    model_path = backend._ensure_model()
+
+    assert model_path == tmp_path / wd14_mod._MODEL_FILENAME
+    assert stale_csv.read_text() == "v3-fresh"  # stale pair was replaced, not kept

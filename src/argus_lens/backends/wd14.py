@@ -111,6 +111,12 @@ class WD14Backend(LocalBackend):
             return model_path
 
         target_dir = self._model_dir or _DEFAULT_CACHE_DIR
+        # The model and tag CSV must stay a matched pair: when the model is
+        # missing (fresh install or a version bump renamed it), drop any CSV
+        # left over from a previous model so both are re-downloaded together.
+        stale_csv = target_dir / _TAGS_FILENAME
+        if stale_csv.exists():
+            stale_csv.unlink()
         _download_model(target_dir)
 
         model_path = target_dir / _MODEL_FILENAME
@@ -166,6 +172,17 @@ class WD14Backend(LocalBackend):
         """
         return "cpu" if device.startswith("cpu") else "gpu"
 
+    def _cache_key(self, device: str) -> str:
+        """Registry key for the cached session: device intent + model source.
+
+        Provider-coarse and import-light (the actual ONNX provider selection
+        happens lazily inside ``_loader``), but includes the configured model
+        directory so two backends pointing at different models never share
+        one cached session.
+        """
+        model_key = str(self._model_dir) if self._model_dir else os.environ.get("WD14_MODEL_DIR") or "default"
+        return f"wd14:{self._device_key(device)}:{model_key}"
+
     def _loader(self, device: str) -> tuple[Any, list[tuple[str, int]], str]:
         """Create the ONNX session and load the tag vocabulary from the CSV."""
         import csv
@@ -213,9 +230,7 @@ class WD14Backend(LocalBackend):
     def caption_image(self, image: Image.Image) -> str:
         """Return comma-separated booru tags above the threshold, excluding rating tags."""
         device = self._device
-        # Cache key is provider-coarse and import-light; the actual ONNX
-        # provider selection happens lazily inside ``_loader``.
-        cache_key = f"wd14:{self._device_key(device)}"
+        cache_key = self._cache_key(device)
         with self._registry.acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
             img_np = self._preprocess(image, self._input_size(session))
             probs = session.run(None, {input_name: img_np})[0][0]

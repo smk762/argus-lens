@@ -127,6 +127,71 @@ def test_manifest_rejects_bad_json(client: TestClient) -> None:
     assert resp.status_code == 400
 
 
+def test_manifest_rejects_non_object_rows(client: TestClient) -> None:
+    """Valid JSON that is not an object (null, scalar, array) is a 400, not a crash."""
+    for payload in (b"null\n", b"42\n", b"[1, 2]\n"):
+        resp = client.post(
+            "/caption/manifest",
+            files={"manifest": ("manifest.jsonl", io.BytesIO(payload), "application/x-ndjson")},
+        )
+        assert resp.status_code == 400, payload
+        assert "not a JSON object" in resp.json()["detail"]
+    # The streaming endpoint shares the parser.
+    resp = client.post(
+        "/caption/manifest/stream",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(b"null\n"), "application/x-ndjson")},
+    )
+    assert resp.status_code == 400
+
+
+def test_manifest_sidecar_failure_counts_once(client: TestClient, tmp_path: Path, monkeypatch) -> None:
+    """A caption that succeeds but whose sidecar write fails is failed-only, not double-counted."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    real_write_text = Path.write_text
+
+    def _failing_write_text(self: Path, *args, **kwargs):
+        """Simulate a read-only filesystem for .txt sidecars only."""
+        if self.suffix == ".txt":
+            raise OSError("read-only file system")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _failing_write_text)
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "true"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["captioned"] == 0
+    assert body["failed"] == 1
+    assert "sidecar write failed" in body["errors"][0]["error"]
+
+
+def test_manifest_reports_sidecar_stem_collision(client: TestClient, tmp_path: Path) -> None:
+    """Two same-stem images map to one .txt sidecar; the second is an error, not an overwrite."""
+    img_a = tmp_path / "cat.jpg"
+    img_b = tmp_path / "cat.png"
+    _png(img_a)
+    _png(img_b)
+    rows = [
+        {"rel_path": "cat.jpg", "abs_path": str(img_a), "target_profile": {}},
+        {"rel_path": "cat.png", "abs_path": str(img_b), "target_profile": {}},
+    ]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["captioned"] == 1
+    assert body["failed"] == 1
+    assert "collision" in body["errors"][0]["error"]
+
+
 def test_manifest_stream_yields_progress_then_complete(client: TestClient, tmp_path: Path) -> None:
     """Streams one NDJSON progress event per row (including failures) then a complete event."""
     img = tmp_path / "personA" / "01.jpg"

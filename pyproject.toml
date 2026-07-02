@@ -53,6 +53,7 @@ all = [
     "rich>=13.0",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "python-multipart>=0.0.7",
 ]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff==0.15.16", "interrogate>=1.7"]
 
@@ -60,7 +61,10 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff==0.15.16", "interrogate>=1.7
 argus-lens = "argus_lens.cli:app"
 
 [project.urls]
+Homepage = "https://github.com/smk762/argus-lens"
 Repository = "https://github.com/smk762/argus-lens"
+Issues = "https://github.com/smk762/argus-lens/issues"
+Changelog = "https://github.com/smk762/argus-lens/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 source = "vcs"

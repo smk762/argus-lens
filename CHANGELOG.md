@@ -54,7 +54,8 @@ additive/opt-in and are not wired into the default captioning path.
   - Fixes an explicitly-set engine device being dropped for hybrid prose
     backends, and lets `wd14` be pinned to CPU; `wd14` selects ONNX Runtime
     providers without requiring torch (so `[wd14-gpu]` still uses CUDA) and keys
-    its session cache by the effective provider to avoid duplicate sessions.
+    its session cache by device intent plus the configured model directory, so
+    backends pointing at different models never share a cached session.
 - **CUDA OOM retry** — backend inference retries on CUDA out-of-memory with cache
   cleanup; the wait budget is configurable and observable via the new keyword-only
   `ArgusLens(oom_retry_max_wait_s=..., oom_retry_interval_s=...)` parameters
@@ -72,6 +73,37 @@ additive/opt-in and are not wired into the default captioning path.
 - **Connectors robustness** — Immich asset IDs are URL-encoded and headers tidied;
   XMP sidecars are protected and illegal XML characters stripped. (#17, #18)
 - **Taxonomy** — immutable default and blank labels dropped. (#16)
+- **Server: folder captioning confined to the source root** — `POST /caption/folder`
+  now resolves its `folder` inside `--source-root` / `LENS_SOURCE_PATH` (relative
+  or absolute-within-root) and rejects anything else, closing an unauthenticated
+  arbitrary-directory walk + sidecar-write exposure; the standalone image sets
+  `LENS_SOURCE_PATH=/data`. CORS no longer combines a wildcard origin with
+  credentials.
+- **Server: batch loops unified and hardened** — the three batch endpoints
+  (`/caption/manifest`, `/caption/manifest/stream`, `/caption/folder`) share one
+  parse + caption/sidecar helper: manifest lines that aren't JSON objects are a
+  400 instead of a crash, a failed sidecar write counts the row as failed only
+  (no more `captioned + failed > total`), same-stem sidecar collisions
+  (`cat.jpg` + `cat.png` → `cat.txt`) are reported instead of silently
+  overwritten, both manifest endpoints accept `prose_enrichment`, and the
+  supported-extension list is shared with the connector layer (adds
+  bmp/tiff/gif).
+- **Server: no event-loop blocking** — `/caption/stream` now pulls its sync
+  generator via a worker thread and `/caption/folder` walks the tree off the
+  event loop, so long inference (including OOM-retry waits) no longer freezes
+  the server.
+- **`wd14` upgrade path** — when the model file is (re-)downloaded, a leftover
+  `selected_tags.csv` from a previous model version is refreshed with it, so
+  0.2.0 caches no longer trip the size-mismatch guard after upgrading.
+- **OpenAI backends: guarded response parsing** — `openai` and `openai-compat`
+  raise a clear `RuntimeError` on empty `choices` or null content (refusals /
+  content filters) instead of an opaque `AttributeError`/`IndexError`;
+  `openai-compat` also joins list-form content parts.
+- **Packaging/config** — the `all` extra now includes `python-multipart` (the
+  server's multipart endpoints 500'd under `pip install argus-lens[all]`);
+  `serve` honours `ARGUS_BACKEND`; the documented-but-unread `ARGUS_API_KEY`
+  is replaced by the real per-backend key variables in compose/docs; PyPI
+  metadata gains Homepage/Issues/Changelog URLs.
 
 ### Tests / CI / Docs
 - Backend class-contract smoke tests, including a variant that runs without
