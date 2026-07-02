@@ -324,6 +324,82 @@ def create_app(
 
         return await asyncio.to_thread(_run)
 
+    @app.post("/caption/manifest/stream")
+    async def caption_manifest_stream(
+        manifest: UploadFile = File(...),
+        trigger_word: str = Form(""),
+        write_sidecar: bool = Form(True),
+    ) -> StreamingResponse:
+        """Streaming variant of /caption/manifest for live progress.
+
+        Yields one NDJSON object per image as it is captioned
+        (``{type:"progress", done, total, rel_path, final_caption|error}``),
+        then a final ``{type:"complete", total, captioned, failed}`` line. As
+        with /caption/manifest, images are read from ``abs_path`` and a ``.txt``
+        sidecar is written next to each (shared volume with the curator).
+        """
+        raw = await manifest.read()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"manifest not UTF-8: {exc}") from exc
+
+        rows: list[dict[str, Any]] = []
+        for i, line in enumerate(text.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=400, detail=f"invalid JSON on line {i + 1}: {exc}") from exc
+
+        total = len(rows)
+
+        def _caption_row(row: dict[str, Any]) -> dict[str, Any]:
+            abs_path = row.get("abs_path")
+            rel_path = row.get("rel_path") or abs_path or "<unknown>"
+            if not abs_path:
+                return {"rel_path": rel_path, "error": "row missing abs_path"}
+            profile = row.get("target_profile") or {}
+            try:
+                result = engine.caption(
+                    abs_path,
+                    trigger_word=trigger_word,
+                    target_style=profile.get("target_style", "photo"),
+                    target_category=profile.get("target_category", "identity"),
+                    target_backend=profile.get("target_backend", "sdxl"),
+                    checkpoint=profile.get("checkpoint"),
+                )
+            except Exception as exc:  # noqa: BLE001 - report per-row, keep going
+                return {"rel_path": rel_path, "error": str(exc)}
+            if write_sidecar:
+                try:
+                    Path(abs_path).with_suffix(".txt").write_text(result.final_caption, encoding="utf-8")
+                except OSError as exc:
+                    return {"rel_path": rel_path, "error": f"sidecar write failed: {exc}"}
+            return {"rel_path": rel_path, "final_caption": result.final_caption}
+
+        async def _ndjson() -> Any:
+            captioned = 0
+            failed = 0
+            for i, row in enumerate(rows):
+                # Caption is blocking CPU/GPU work — run off the event loop so the
+                # stream flushes each line promptly.
+                outcome = await asyncio.to_thread(_caption_row, row)
+                if "error" in outcome:
+                    failed += 1
+                else:
+                    captioned += 1
+                yield json.dumps({"type": "progress", "done": i + 1, "total": total, **outcome}) + "\n"
+            yield json.dumps({"type": "complete", "total": total, "captioned": captioned, "failed": failed}) + "\n"
+
+        return StreamingResponse(
+            _ndjson(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.get("/folders")
     async def folders(path: str = "") -> dict[str, Any]:
         """Browse mounted folders under the configured source root (UI picker)."""

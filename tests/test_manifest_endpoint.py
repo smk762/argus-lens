@@ -114,3 +114,56 @@ def test_manifest_rejects_bad_json(client: TestClient) -> None:
         files={"manifest": ("manifest.jsonl", io.BytesIO(b"{not json}\n"), "application/x-ndjson")},
     )
     assert resp.status_code == 400
+
+
+def test_manifest_stream_yields_progress_then_complete(client: TestClient, tmp_path: Path) -> None:
+    img = tmp_path / "personA" / "01.jpg"
+    _png(img)
+    rows = [
+        {"rel_path": "personA/01.jpg", "abs_path": str(img), "target_profile": {}},
+        {"rel_path": "gone.jpg", "abs_path": str(tmp_path / "gone.jpg"), "target_profile": {}},
+    ]
+
+    resp = client.post(
+        "/caption/manifest/stream",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"trigger_word": "sks_person", "write_sidecar": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+
+    events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+    progress = [e for e in events if e["type"] == "progress"]
+    assert [e["done"] for e in progress] == [1, 2]
+    assert all(e["total"] == 2 for e in progress)
+    assert progress[0]["rel_path"] == "personA/01.jpg"
+    assert progress[0]["final_caption"]
+    assert progress[1]["rel_path"] == "gone.jpg"
+    assert "error" in progress[1]
+
+    assert events[-1] == {"type": "complete", "total": 2, "captioned": 1, "failed": 1}
+    assert img.with_suffix(".txt").read_text().strip()
+
+
+def test_manifest_stream_skips_sidecar_when_disabled(client: TestClient, tmp_path: Path) -> None:
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+
+    resp = client.post(
+        "/caption/manifest/stream",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false"},
+    )
+    assert resp.status_code == 200
+    events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+    assert events[-1]["captioned"] == 1
+    assert not img.with_suffix(".txt").exists()
+
+
+def test_manifest_stream_rejects_bad_json(client: TestClient) -> None:
+    resp = client.post(
+        "/caption/manifest/stream",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(b"{not json}\n"), "application/x-ndjson")},
+    )
+    assert resp.status_code == 400
