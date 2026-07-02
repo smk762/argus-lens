@@ -10,15 +10,18 @@ from argus_lens.connectors import AssetRef, FilesystemSource, Sink, Source, XmpS
 
 
 def _make_png(path):
+    """Write a tiny red 8x8 PNG to the given path."""
     Image.new("RGB", (8, 8), (255, 0, 0)).save(path, format="PNG")
 
 
 def test_protocols_are_runtime_checkable():
+    """FilesystemSource and XmpSink satisfy the Source/Sink protocols via isinstance."""
     assert isinstance(FilesystemSource("/tmp"), Source)
     assert isinstance(XmpSink(), Sink)
 
 
 def test_filesystem_source_lists_and_fetches(tmp_path):
+    """FilesystemSource lists only image files and fetches them as RGB PIL images."""
     _make_png(tmp_path / "a.png")
     (tmp_path / "notes.txt").write_text("ignore me")
 
@@ -32,6 +35,7 @@ def test_filesystem_source_lists_and_fetches(tmp_path):
 
 
 def test_xmp_render_contains_keywords_and_description():
+    """Rendered XMP includes keywords and description with XML entities escaped."""
     xmp = XmpSink().render(keywords=["mountain", "lake & sky"], description="a <scenic> view")
     assert "<rdf:li>mountain</rdf:li>" in xmp
     assert "lake &amp; sky" in xmp
@@ -39,6 +43,7 @@ def test_xmp_render_contains_keywords_and_description():
 
 
 def test_xmp_render_strips_illegal_xml_chars():
+    """Control characters illegal in XML are stripped so the sidecar stays well-formed."""
     # NUL / control chars are illegal in XML even when "escaped"; they must be
     # removed so the sidecar stays well-formed.
     doc = XmpSink().render(keywords=["cat\x00\x07dog"], description="line\x0bbreak")
@@ -49,6 +54,7 @@ def test_xmp_render_strips_illegal_xml_chars():
 
 
 def test_xmp_sink_writes_sidecar(tmp_path):
+    """XmpSink.write creates a .xmp sidecar next to the image containing the keywords."""
     img_path = tmp_path / "photo.jpg"
     _make_png(img_path)
     XmpSink().write(AssetRef(id="photo.jpg", path=str(img_path)), keywords=["cat"], description="a cat")
@@ -59,6 +65,7 @@ def test_xmp_sink_writes_sidecar(tmp_path):
 
 
 def test_xmp_sink_does_not_clobber_existing_sidecar(tmp_path):
+    """An existing sidecar raises FileExistsError by default; overwrite=True replaces it."""
     img_path = tmp_path / "photo.jpg"
     _make_png(img_path)
     sidecar = tmp_path / "photo.jpg.xmp"
@@ -76,16 +83,19 @@ def test_xmp_sink_does_not_clobber_existing_sidecar(tmp_path):
 
 
 def test_xmp_write_requires_local_path():
+    """XmpSink.write rejects assets that have a URI but no local path."""
     with pytest.raises(ValueError):
         XmpSink().write(AssetRef(id="remote", uri="https://example.com/x.jpg"), keywords=["x"])
 
 
 def test_fetch_image_requires_local_path():
+    """FilesystemSource.fetch_image rejects assets that have a URI but no local path."""
     with pytest.raises(ValueError):
         FilesystemSource("/tmp").fetch_image(AssetRef(id="remote", uri="https://example.com/x.jpg"))
 
 
 def test_fetch_image_roundtrip_from_bytes(tmp_path):
+    """A PNG written from raw bytes is listed and fetched back at its original size."""
     buf = io.BytesIO()
     Image.new("RGB", (4, 4), (0, 255, 0)).save(buf, format="PNG")
     (tmp_path / "g.png").write_bytes(buf.getvalue())

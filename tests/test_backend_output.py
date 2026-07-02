@@ -4,6 +4,7 @@ from argus_lens.backends.output import BackendOutput, Tag
 
 
 def test_tag_defaults():
+    """Tag defaults to no score, empty source, and no region."""
     tag = Tag(label="mountain")
     assert tag.score is None
     assert tag.source == ""
@@ -11,6 +12,7 @@ def test_tag_defaults():
 
 
 def test_tag_string_filters_by_score():
+    """tag_string(min_score=...) drops below-threshold scored tags but keeps unscored ones."""
     out = BackendOutput(
         tags=[
             Tag("mountain", score=0.9, source="ram"),
@@ -24,6 +26,7 @@ def test_tag_string_filters_by_score():
 
 
 def test_to_caption_string_prefers_prose():
+    """to_caption_string returns prose when present, else the joined tags."""
     out = BackendOutput(tags=[Tag("cat", score=0.8)], prose="a cat on a sofa")
     assert out.to_caption_string() == "a cat on a sofa"
 

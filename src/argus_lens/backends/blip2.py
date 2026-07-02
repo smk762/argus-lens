@@ -22,13 +22,16 @@ class BLIP2Backend(LocalBackend):
         model_id: str = "Salesforce/blip2-opt-2.7b",
         registry: ModelRegistry | None = None,
     ) -> None:
+        """Configure the HF model id and the registry used to cache loaded models."""
         self._model_id = model_id
         self._registry = registry or get_default_registry()
 
     def _cache_key(self, device: str) -> str:
+        """Return the registry cache key for this model/device pair."""
         return f"blip2:{self._model_id}:{device}"
 
     def _loader(self, device: str) -> tuple[Any, Any, str]:
+        """Load the BLIP-2 processor and model onto *device* (fp16 on CUDA)."""
         import torch
         from transformers import Blip2ForConditionalGeneration, Blip2Processor
 
@@ -42,6 +45,7 @@ class BLIP2Backend(LocalBackend):
         return processor, model, device
 
     def caption_image(self, image: Image.Image, device: str | None = None) -> str:
+        """Generate a prose caption with BLIP-2, loading the model through the registry."""
         import torch
 
         # Canonical device placement flows through ``load(device)`` (#21), so
@@ -70,9 +74,11 @@ class BLIP2Backend(LocalBackend):
             return processor.decode(out[0], skip_special_tokens=True).strip()
 
     def unload(self) -> None:
+        """Do nothing; model lifetime is managed by the shared registry."""
         pass
 
     def is_available(self) -> bool:
+        """Return True if torch and transformers are importable."""
         try:
             __import__("torch")
             __import__("transformers")
@@ -81,6 +87,7 @@ class BLIP2Backend(LocalBackend):
         return True
 
     def availability_reason(self) -> str | None:
+        """Name the missing package (torch or transformers), or None if usable."""
         try:
             __import__("torch")
         except ImportError:

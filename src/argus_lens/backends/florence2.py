@@ -36,6 +36,7 @@ class Florence2Backend(LocalBackend):
         trust_remote_code: bool | None = None,
         registry: ModelRegistry | None = None,
     ) -> None:
+        """Pick native or legacy weights based on *trust_remote_code* and set the caption task."""
         if trust_remote_code is None:
             trust_remote_code = os.environ.get(
                 "HF_TRUST_REMOTE_CODE",
@@ -50,9 +51,11 @@ class Florence2Backend(LocalBackend):
         self._registry = registry or get_default_registry()
 
     def _cache_key(self, device: str) -> str:
+        """Return the registry cache key for this model/device pair."""
         return f"florence2:{self._model_id}:{device}"
 
     def _loader(self, device: str) -> tuple[Any, Any, str]:
+        """Load the Florence-2 processor and model onto *device* (fp16 on CUDA)."""
         import torch
         from transformers import AutoProcessor
 
@@ -82,6 +85,7 @@ class Florence2Backend(LocalBackend):
         return processor, model, device
 
     def caption_image(self, image: Image.Image, device: str | None = None) -> str:
+        """Run the configured Florence-2 task and return its post-processed caption text."""
         import torch
 
         # Canonical device placement flows through ``load(device)`` (#21), so
@@ -116,9 +120,11 @@ class Florence2Backend(LocalBackend):
             return parsed.get(self._task, "").strip()
 
     def unload(self) -> None:
+        """Do nothing; model lifetime is managed by the shared registry."""
         pass
 
     def is_available(self) -> bool:
+        """Return True if torch and transformers are importable."""
         try:
             __import__("torch")
             __import__("transformers")
@@ -127,6 +133,7 @@ class Florence2Backend(LocalBackend):
         return True
 
     def availability_reason(self) -> str | None:
+        """Name the missing package (torch or transformers), or None if usable."""
         try:
             __import__("torch")
         except ImportError:

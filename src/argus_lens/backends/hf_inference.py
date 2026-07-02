@@ -29,14 +29,17 @@ class HFInferenceBackend(CloudBackend):
         system_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
+        """Store credentials and defer HTTP client creation to :meth:`load`."""
         super().__init__(api_key=api_key, model_id=model_id, system_prompt=system_prompt, **kwargs)
         self._client: Any = None
 
     @property
     def model_id(self) -> str:
+        """HF model to query, defaulting to ``Salesforce/blip2-opt-2.7b``."""
         return self._model_id or "Salesforce/blip2-opt-2.7b"
 
     def load(self, device: str = "auto") -> None:
+        """Create an authenticated httpx client for the HF Inference API."""
         import httpx
 
         self._client = httpx.Client(
@@ -46,6 +49,7 @@ class HFInferenceBackend(CloudBackend):
         )
 
     def caption_image(self, image: Image.Image) -> str:
+        """POST the image as JPEG to the model endpoint and return the generated text."""
         if self._client is None:
             self.load()
 
@@ -71,6 +75,7 @@ class HFInferenceBackend(CloudBackend):
         return str(data).strip()
 
     def unload(self) -> None:
+        """Close the HTTP client and drop the reference."""
         if self._client is not None:
             self._client.close()
             self._client = None

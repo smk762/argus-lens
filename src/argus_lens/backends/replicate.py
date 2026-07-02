@@ -28,14 +28,17 @@ class ReplicateBackend(CloudBackend):
         system_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
+        """Store credentials; defer importing the replicate SDK to :meth:`load`."""
         super().__init__(api_key=api_key, model_id=model_id, system_prompt=system_prompt, **kwargs)
         self._replicate: Any = None
 
     @property
     def model_id(self) -> str:
+        """Replicate model to run, defaulting to ``lucataco/florence-2-large``."""
         return self._model_id or "lucataco/florence-2-large"
 
     def load(self, device: str = "auto") -> None:
+        """Import the replicate SDK and export the API token to the environment."""
         try:
             import replicate
         except ImportError as exc:
@@ -46,6 +49,7 @@ class ReplicateBackend(CloudBackend):
         self._replicate = replicate
 
     def caption_image(self, image: Image.Image) -> str:
+        """Run a Replicate prediction on the JPEG-encoded image and return its text output."""
         if self._replicate is None:
             self.load()
 
@@ -66,4 +70,5 @@ class ReplicateBackend(CloudBackend):
         return str(output).strip()
 
     def unload(self) -> None:
+        """Drop the SDK module reference."""
         self._replicate = None

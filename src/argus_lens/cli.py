@@ -75,6 +75,7 @@ def caption(
         count = 0
 
         def _progress(current: int, total: int, name: str, _result: object) -> None:
+            """Track completion count and echo per-image progress when verbose."""
             nonlocal count
             count = current
             if verbose:

@@ -18,6 +18,7 @@ class OOMDeadlineExceededError(RuntimeError):
     """Raised when OOM retries exceed the configured wait budget."""
 
     def __init__(self, *, attempts: int, max_wait_s: float, last_error: Exception):
+        """Record retry statistics and keep the last OOM exception for inspection."""
         super().__init__(f"OOM wait deadline exceeded after {attempts} attempts in {max_wait_s:.1f}s")
         self.attempts = attempts
         self.max_wait_s = max_wait_s

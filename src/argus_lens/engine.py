@@ -162,6 +162,7 @@ class ArgusLens:
         oom_retry_interval_s: float = 5.0,
         **kwargs: Any,
     ) -> None:
+        """Resolve the backend and store configuration; models load lazily on first caption."""
         self._backend = _resolve_backend(backend, **kwargs)
         self._device = device
         self._categories = categories
@@ -173,6 +174,7 @@ class ArgusLens:
 
     @property
     def backend(self) -> CaptionBackend:
+        """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
 
     def _ensure_loaded(self) -> None:
@@ -203,6 +205,7 @@ class ArgusLens:
         self._ensure_loaded()
 
         def _call() -> tuple[str, str]:
+            """Invoke the backend once, normalising its output into ``(tags, prose)``."""
             if isinstance(self._backend, HybridPipeline):
                 return self._backend.caption_image_split(pil)
             raw = self._backend.caption_image(pil)
@@ -211,9 +214,11 @@ class ArgusLens:
             return "", raw
 
         def _on_oom(exc: Exception, attempt: int) -> None:
+            """Log the OOM failure for this attempt."""
             logger.warning("backend_oom", backend=self._backend.name, attempt=attempt, error=str(exc))
 
         def _on_retry(wait_s: float, attempt: int) -> None:
+            """Log the backoff wait before the next retry."""
             logger.info("backend_oom_retry", backend=self._backend.name, attempt=attempt, wait_s=round(wait_s, 1))
 
         tags, prose = run_with_oom_retry(  # type: ignore[misc]

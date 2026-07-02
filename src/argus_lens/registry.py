@@ -56,6 +56,7 @@ class ModelRegistry:
     """
 
     def __init__(self, idle_seconds: float | None = None) -> None:
+        """Initialise an empty cache; *idle_seconds* defaults to ``ARGUS_MODEL_IDLE_SECONDS``."""
         self._models: dict[str, Any] = {}
         self._refs: dict[str, int] = {}
         self._last_used: dict[str, float] = {}
@@ -65,6 +66,7 @@ class ModelRegistry:
         self._evict_thread: threading.Thread | None = None
 
     def _ensure_evict_thread(self) -> None:
+        """Start the daemon eviction thread if it is not already running."""
         if self._evict_thread and self._evict_thread.is_alive():
             return
         t = threading.Thread(target=self._evict_loop, daemon=True, name="argus-model-evict")
@@ -72,11 +74,13 @@ class ModelRegistry:
         self._evict_thread = t
 
     def _evict_loop(self) -> None:
+        """Sweep for idle models every 30 seconds, forever."""
         while True:
             time.sleep(30)
             self._evict_idle()
 
     def _evict_idle(self) -> None:
+        """Evict and free models with no live references that exceeded the idle timeout."""
         now = time.monotonic()
         with self._lock:
             to_evict = [

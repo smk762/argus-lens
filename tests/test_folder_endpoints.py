@@ -16,25 +16,32 @@ from argus_lens.server import create_app  # noqa: E402
 
 
 class _StubBackend(CaptionBackend):
+    """CPU-only stub backend that returns a fixed caption without loading a model."""
+
     name = "stub"
     requires_gpu = False
 
     def load(self, device: str = "auto") -> None:
+        """No-op."""
         pass
 
     def caption_image(self, image: Image.Image) -> str:
+        """Return a fixed caption."""
         return "a person, plain studio background, soft lighting"
 
     def unload(self) -> None:
+        """No-op."""
         pass
 
 
 def _png(path: Path, size: int = 64) -> None:
+    """Write a small grey PNG at the path, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (size, size), (120, 120, 120)).save(path)
 
 
 def test_caption_folder_non_recursive_writes_sidecars(tmp_path: Path) -> None:
+    """Non-recursive captioning writes .txt sidecars for top-level images and skips subfolders."""
     _png(tmp_path / "01.jpg")
     _png(tmp_path / "02.png")
     _png(tmp_path / "sub" / "03.jpg")  # ignored when non-recursive
@@ -50,6 +57,7 @@ def test_caption_folder_non_recursive_writes_sidecars(tmp_path: Path) -> None:
 
 
 def test_caption_folder_recursive(tmp_path: Path) -> None:
+    """Recursive captioning includes subfolder images; write_sidecar=False skips sidecar files."""
     _png(tmp_path / "01.jpg")
     _png(tmp_path / "sub" / "03.jpg")
 
@@ -67,12 +75,14 @@ def test_caption_folder_recursive(tmp_path: Path) -> None:
 
 
 def test_caption_folder_rejects_missing_dir(tmp_path: Path) -> None:
+    """POST /caption/folder returns 400 for a nonexistent folder."""
     client = TestClient(create_app(default_backend=_StubBackend()))
     resp = client.post("/caption/folder", json={"folder": str(tmp_path / "nope")})
     assert resp.status_code == 400
 
 
 def test_folders_browse(tmp_path: Path) -> None:
+    """GET /folders lists subfolders with image counts and rejects path traversal with 400."""
     _png(tmp_path / "personA" / "01.jpg")
     _png(tmp_path / "personA" / "02.jpg")
     _png(tmp_path / "personB" / "01.jpg")
@@ -91,5 +101,6 @@ def test_folders_browse(tmp_path: Path) -> None:
 
 
 def test_folders_requires_source_root() -> None:
+    """GET /folders returns 400 when the app was created without a source root."""
     client = TestClient(create_app(default_backend=_StubBackend()))
     assert client.get("/folders").status_code == 400

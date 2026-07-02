@@ -7,6 +7,7 @@ from argus_lens.backends.ram import DEFAULT_MODEL_ID, RamBackend
 
 
 def test_ram_backend_metadata():
+    """Exposes the expected name, style, and GPU requirement."""
     backend = RamBackend()
     assert backend.name == "ram"
     assert backend.style == "photo"
@@ -14,12 +15,14 @@ def test_ram_backend_metadata():
 
 
 def test_ram_backend_not_available_while_scaffold():
+    """Reports unavailable with a "not yet implemented" reason while scaffolded."""
     backend = RamBackend()
     assert backend.is_available() is False
     assert "not yet implemented" in (backend.availability_reason() or "")
 
 
 def test_constructor_defaults_and_overrides():
+    """Uses the default model ID and threshold unless overridden in the constructor."""
     default = RamBackend()
     assert default._model_id == DEFAULT_MODEL_ID
     assert default._threshold == 0.35
@@ -30,6 +33,7 @@ def test_constructor_defaults_and_overrides():
 
 
 def test_build_output_sets_source_and_scores():
+    """_build_output produces BackendOutput tags with scores and source "ram"."""
     backend = RamBackend()
     out = backend._build_output([("mountain", 0.9), ("lake", 0.7)])
     assert isinstance(out, BackendOutput)
@@ -39,11 +43,13 @@ def test_build_output_sets_source_and_scores():
 
 
 def test_load_not_yet_implemented():
+    """load raises NotImplementedError while the backend is a scaffold."""
     with pytest.raises(NotImplementedError):
         RamBackend().load()
 
 
 def test_inference_not_yet_implemented():
+    """annotate_image and its caption_image shim both raise NotImplementedError."""
     backend = RamBackend()
     with pytest.raises(NotImplementedError):
         backend.annotate_image(None)

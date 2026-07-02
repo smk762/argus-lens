@@ -17,6 +17,8 @@ from argus_lens.backends.wd14 import WD14Backend
 
 
 class _FakeInput:
+    """Fake ONNX input descriptor exposing a fixed shape and name."""
+
     shape = [None, 4, 4, 3]
     name = "input"
 
@@ -25,14 +27,17 @@ class _FakeSession:
     """Minimal stand-in for an ONNX InferenceSession."""
 
     def __init__(self, probs: list[float]) -> None:
+        """Store the probabilities to return from run()."""
         import numpy as np
 
         self._probs = np.asarray([probs], dtype=np.float32)
 
     def get_inputs(self) -> list[_FakeInput]:
+        """Return the single fake input descriptor."""
         return [_FakeInput()]
 
     def run(self, outputs: Any, feed: Any) -> list[Any]:
+        """Return the canned probability array, ignoring the feed."""
         return [self._probs]
 
 
@@ -40,14 +45,17 @@ class _FakeRegistry:
     """Yields a prebuilt payload, ignoring the loader."""
 
     def __init__(self, payload: Any) -> None:
+        """Store the payload to yield from acquire()."""
         self._payload = payload
 
     @contextlib.contextmanager
     def acquire(self, key: str, loader: Any):  # noqa: ANN201
+        """Yield the prebuilt payload without invoking the loader."""
         yield self._payload
 
 
 def test_excludes_rating_tags_and_applies_threshold():
+    """Drops category-9 rating tags and tags scoring below the threshold from the caption."""
     pytest.importorskip("numpy")
     tags = [
         ("general", 9),
@@ -67,6 +75,7 @@ def test_excludes_rating_tags_and_applies_threshold():
 
 
 def test_preprocess_is_bgr_float32_square():
+    """_preprocess yields a float32 NHWC batch with channels flipped RGB to BGR."""
     np = pytest.importorskip("numpy")
     arr = WD14Backend._preprocess(Image.new("RGB", (8, 8), (255, 0, 0)), 8)
     assert arr.shape == (1, 8, 8, 3)
@@ -76,6 +85,7 @@ def test_preprocess_is_bgr_float32_square():
 
 
 def test_preprocess_pads_non_square_with_white():
+    """_preprocess pads non-square images to a white square before resizing."""
     pytest.importorskip("numpy")
     # 8x2 wide image -> padded to 8x8 square; top rows become white.
     arr = WD14Backend._preprocess(Image.new("RGB", (8, 2), (255, 0, 0)), 8)

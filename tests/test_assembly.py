@@ -29,31 +29,40 @@ from argus_lens.types import resolve_target_profile
 
 
 class TestFillerStripping:
+    """Filler-prefix stripping and fragment normalisation."""
+
     def test_removes_common_prefixes(self):
+        """Filler prefixes like 'the image shows' are stripped and reported as removed."""
         text = "The image shows a woman standing in a park."
         cleaned, removed = strip_filler_prefixes(text)
         assert "the image shows" not in cleaned.lower()
         assert len(removed) > 0
 
     def test_preserves_content(self):
+        """Text without filler prefixes is left intact and nothing is reported removed."""
         text = "a woman standing in a park"
         cleaned, removed = strip_filler_prefixes(text)
         assert "woman" in cleaned
         assert removed == []
 
     def test_normalise_fragment_lowercases(self):
+        """normalise_fragment lowercases the cleaned text."""
         cleaned, _ = normalise_fragment("The Image Shows A Tall WOMAN")
         assert cleaned == cleaned.lower()
 
 
 class TestRedundancyFilter:
+    """Removal of prose clauses that repeat tag content."""
+
     def test_removes_overlapping_clauses(self):
+        """Clauses overlapping the tag list are dropped while novel clauses like 'park' remain."""
         tags = "blonde hair, black t-shirt"
         description = "A woman with blonde hair relaxing in a park with tall trees."
         filtered = filter_redundant_clauses(description, tags)
         assert "park" in filtered
 
     def test_keeps_novel_clauses(self):
+        """Clauses with no tag overlap survive filtering."""
         tags = "blonde hair"
         description = "She is cooking dinner in a modern kitchen."
         filtered = filter_redundant_clauses(description, tags)
@@ -61,19 +70,27 @@ class TestRedundancyFilter:
 
 
 class TestDedup:
+    """Fragment deduplication."""
+
     def test_removes_case_insensitive_dupes(self):
+        """Duplicates differing only in case are removed, keeping the first occurrence."""
         result = dedupe_fragments(["Hello", "hello", "World", "HELLO"])
         assert result == ["Hello", "World"]
 
 
 class TestTrigger:
+    """Prepending the trigger word to caption bodies."""
+
     def test_prepends_trigger(self):
+        """The trigger word is prepended with a comma separator."""
         assert with_trigger("sks", "hello") == "sks, hello"
 
     def test_empty_trigger(self):
+        """An empty trigger leaves the body unchanged."""
         assert with_trigger("", "hello") == "hello"
 
     def test_empty_body(self):
+        """An empty body yields just the trigger word."""
         assert with_trigger("sks", "") == "sks"
 
 
@@ -83,7 +100,10 @@ class TestTrigger:
 
 
 class TestNoiseFiltering:
+    """Training-noise filtering of tag fragments."""
+
     def test_strips_rating_and_meta_tags(self):
+        """Rating/meta tags (sensitive, 1girl) are removed while content tags are kept."""
         fragments = ["sensitive", "1girl", "solo", "black t-shirt", "standing", "realistic"]
         kept, removed = filter_training_noise(fragments, strip_identity=False)
         assert "black t-shirt" in kept
@@ -92,6 +112,7 @@ class TestNoiseFiltering:
         assert "1girl" in removed
 
     def test_strips_identity_redundant_tags(self):
+        """Identity tags like hair colour are stripped when strip_identity is enabled."""
         fragments = ["brown_hair", "brown_eyes", "black t-shirt", "looking_at_viewer", "standing"]
         kept, removed = filter_training_noise(fragments, strip_identity=True)
         assert "black t-shirt" in kept
@@ -99,12 +120,14 @@ class TestNoiseFiltering:
         assert "brown_hair" in removed
 
     def test_normalises_spaces_to_underscores(self):
+        """Identity matching treats space-separated tags like their underscore forms."""
         fragments = ["brown hair", "brown eyes", "black jacket"]
         kept, removed = filter_training_noise(fragments, strip_identity=True)
         assert "black jacket" in kept
         assert "brown hair" in removed
 
     def test_preserves_all_when_identity_off(self):
+        """Identity tags are kept when strip_identity is disabled."""
         fragments = ["brown_hair", "brown_eyes", "black t-shirt"]
         kept, removed = filter_training_noise(fragments, strip_identity=False)
         assert len(kept) == 3
@@ -117,18 +140,24 @@ class TestNoiseFiltering:
 
 
 class TestTokenEstimation:
+    """CLIP and T5 token-count estimation."""
+
     def test_empty_string(self):
+        """Empty text estimates zero CLIP tokens."""
         assert estimate_clip_tokens("") == 0
 
     def test_basic_text(self):
+        """Non-empty text estimates a positive CLIP token count."""
         assert estimate_clip_tokens("hello world") > 0
 
     def test_commas_add_tokens(self):
+        """Comma-separated lists estimate more tokens than plain text."""
         plain = estimate_clip_tokens("black t-shirt standing")
         with_commas = estimate_clip_tokens("black t-shirt, standing, outdoors")
         assert with_commas > plain
 
     def test_t5_estimation(self):
+        """The T5 estimator returns positive counts for text and zero for empty input."""
         assert estimate_t5_tokens("hello world") > 0
         assert estimate_t5_tokens("") == 0
 
@@ -139,22 +168,30 @@ class TestTokenEstimation:
 
 
 class TestClassifier:
+    """Fragment classification into caption categories."""
+
     def test_classifies_wardrobe(self):
+        """Clothing fragments classify as wardrobe."""
         assert classify_fragment("black t-shirt") == "wardrobe"
 
     def test_classifies_setting(self):
+        """Location fragments classify as setting."""
         assert classify_fragment("living room with green curtains") == "setting"
 
     def test_classifies_pose(self):
+        """Body-position fragments classify as pose_composition."""
         assert classify_fragment("standing with arms crossed") == "pose_composition"
 
     def test_classifies_lighting(self):
+        """Lighting fragments classify as lighting."""
         assert classify_fragment("dramatic backlighting with rim light") == "lighting"
 
     def test_classifies_action(self):
+        """Activity fragments classify as action."""
         assert classify_fragment("reading a book while drinking coffee") == "action"
 
     def test_fallback_to_identity(self):
+        """Fragments matching no other category fall back to identity."""
         assert classify_fragment("gentle dignified aura") == "identity"
 
 
@@ -164,7 +201,10 @@ class TestClassifier:
 
 
 class TestComposeCaptionResult:
+    """End-to-end caption composition from tags and prose."""
+
     def test_strips_filler_and_builds_variants(self):
+        """The final caption starts with the trigger, drops filler, and per-category variants are built."""
         profile = resolve_target_profile(target_style="photo", target_category="identity")
         result = compose_caption_result(
             trigger_word="sks_eva",
@@ -178,6 +218,7 @@ class TestComposeCaptionResult:
         assert "living room" in result.caption_variants["setting"]
 
     def test_prefers_selected_category(self):
+        """The requested target category is selected and its fragments appear in the final caption."""
         profile = resolve_target_profile(target_style="photo", target_category="wardrobe")
         result = compose_caption_result(
             trigger_word="sks_eva",
@@ -189,6 +230,7 @@ class TestComposeCaptionResult:
         assert "black t-shirt" in result.final_caption
 
     def test_produces_training_variant(self):
+        """A training variant is produced that keeps the trigger and drops rating/meta tags."""
         profile = resolve_target_profile(target_style="photo", target_category="identity")
         result = compose_caption_result(
             trigger_word="sks_eva",
@@ -203,6 +245,7 @@ class TestComposeCaptionResult:
         assert "1girl" not in training
 
     def test_produces_zeroshot_variant(self):
+        """A zeroshot variant keeps identity tags but still drops rating tags."""
         profile = resolve_target_profile(target_style="photo", target_category="identity")
         result = compose_caption_result(
             trigger_word="sks_eva",
@@ -216,6 +259,7 @@ class TestComposeCaptionResult:
         assert "sensitive" not in zeroshot
 
     def test_zeroshot_restores_useful_noise(self):
+        """Zeroshot restores useful meta tags (1girl, solo) while still dropping rating tags."""
         profile = resolve_target_profile(target_style="photo", target_category="identity")
         result = compose_caption_result(
             trigger_word="sks_eva",
@@ -229,6 +273,7 @@ class TestComposeCaptionResult:
         assert "sensitive" not in zeroshot
 
     def test_training_vs_zeroshot_identity(self):
+        """Identity tags are excluded from the training variant but present in zeroshot."""
         profile = resolve_target_profile(target_style="photo", target_category="identity")
         result = compose_caption_result(
             trigger_word="sks_eva",
@@ -248,7 +293,10 @@ class TestComposeCaptionResult:
 
 
 class TestTrainingVariant:
+    """Training-caption assembly from category buckets."""
+
     def test_excludes_identity(self):
+        """Identity fragments are excluded from the caption and reported as removed."""
         buckets = {
             "identity": ["blonde hair", "blue eyes"],
             "wardrobe": ["black jacket", "blue jeans"],
@@ -269,6 +317,7 @@ class TestTrainingVariant:
         assert "blonde hair" in removed
 
     def test_protects_framing_tags(self):
+        """Framing tags like 'upper body' survive a tight token budget."""
         buckets = {
             "identity": [],
             "wardrobe": ["outfit_a", "outfit_b"],
@@ -288,6 +337,7 @@ class TestTrainingVariant:
         assert "upper body" in caption
 
     def test_wardrobe_capped(self):
+        """At most two wardrobe fragments make it into the caption."""
         buckets = {
             "identity": [],
             "wardrobe": ["black jacket", "blue jeans", "white sneakers", "red hat", "silver watch"],
@@ -309,6 +359,7 @@ class TestTrainingVariant:
         assert wardrobe_count <= 2
 
     def test_rescues_pose_from_identity(self):
+        """Pose-like tags misfiled under identity are rescued; true identity tags stay removed."""
         buckets = {
             "identity": ["looking_at_viewer", "smile", "upper_body", "jewelry", "brown_hair"],
             "wardrobe": ["black dress", "high heels"],
@@ -331,6 +382,7 @@ class TestTrainingVariant:
         assert "brown_hair" in removed
 
     def test_omission_cycle_drops_setting(self):
+        """The image_index omission cycle drops the setting bucket on some images."""
         buckets = {
             "identity": [],
             "wardrobe": ["black jacket"],
@@ -359,6 +411,7 @@ class TestTrainingVariant:
         assert "park" not in caption_no_setting
 
     def test_respects_token_budget(self):
+        """A tighter CLIP token budget removes more fragments than a loose one."""
         buckets = {
             "identity": [],
             "wardrobe": ["jacket", "jeans"],
@@ -392,7 +445,10 @@ class TestTrainingVariant:
 
 
 class TestZeroshotVariant:
+    """Zeroshot-caption assembly from category buckets."""
+
     def test_keeps_identity(self):
+        """Identity fragments are kept in the zeroshot caption."""
         buckets = {
             "identity": ["blonde hair", "blue eyes", "freckles"],
             "wardrobe": ["black jacket"],
@@ -406,6 +462,7 @@ class TestZeroshotVariant:
         assert "blue eyes" in caption
 
     def test_prefers_prose_over_tags(self):
+        """Prose identity fragments are ordered before bare tags in the caption."""
         buckets = {
             "identity": [
                 "a young woman with long brown hair and green eyes",
@@ -426,6 +483,7 @@ class TestZeroshotVariant:
             assert prose_idx < idx
 
     def test_deterministic(self):
+        """Repeated assembly of the same buckets yields an identical caption."""
         buckets = {
             "identity": ["blonde hair"],
             "wardrobe": ["black jacket"],
@@ -444,23 +502,30 @@ class TestZeroshotVariant:
 
 
 class TestTokenBudgetPerBackend:
+    """Token budgets resolved per target diffusion backend."""
+
     def test_sdxl_budget(self):
+        """SDXL resolves to a 60-token budget."""
         profile = resolve_target_profile(target_backend="sdxl")
         assert profile.token_budget.budget == 60
 
     def test_flux_budget(self):
+        """Flux resolves to a 200-token budget."""
         profile = resolve_target_profile(target_backend="flux")
         assert profile.token_budget.budget == 200
 
     def test_sd3_budget(self):
+        """SD3 resolves to a 200-token budget."""
         profile = resolve_target_profile(target_backend="sd3")
         assert profile.token_budget.budget == 200
 
     def test_override(self):
+        """token_budget_override takes precedence over the backend default."""
         profile = resolve_target_profile(target_backend="sdxl", token_budget_override=100)
         assert profile.token_budget.budget == 100
 
     def test_unknown_backend_uses_default(self):
+        """Unknown backends fall back to the default 60-token budget."""
         profile = resolve_target_profile(target_backend="unknown_model")
         assert profile.token_budget.budget == 60
 
@@ -471,7 +536,10 @@ class TestTokenBudgetPerBackend:
 
 
 class TestNewCategories:
+    """The lighting and action caption categories."""
+
     def test_lighting_in_compose_output(self):
+        """compose_caption_result emits a lighting variant when the prose describes lighting."""
         profile = resolve_target_profile(target_style="photo", target_category="identity")
         result = compose_caption_result(
             trigger_word="sks_eva",
@@ -482,10 +550,12 @@ class TestNewCategories:
         assert "lighting" in result.caption_variants
 
     def test_action_classification(self):
+        """Activity descriptions classify as action."""
         assert classify_fragment("reading a thick novel") == "action"
         assert classify_fragment("cooking pasta in a large pot") == "action"
         assert classify_fragment("dancing and jumping around") == "action"
 
     def test_lighting_classification(self):
+        """Lighting descriptions classify as lighting."""
         assert classify_fragment("dramatic backlighting with harsh shadows") == "lighting"
         assert classify_fragment("golden hour rim light and silhouette") == "lighting"

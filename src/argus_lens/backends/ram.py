@@ -25,19 +25,23 @@ class RamBackend(LocalBackend):
     requires_gpu = True
 
     def __init__(self, model_id: str | None = None, threshold: float = 0.35) -> None:
+        """Configure the model id and the score threshold applied when flattening tags."""
         self._model_id = model_id or DEFAULT_MODEL_ID
         self._threshold = threshold
         self._model = None
 
     def is_available(self) -> bool:
+        """Return False; the backend is a scaffold pending implementation (#3)."""
         # Scaffold: model loading/inference are not implemented yet, so the
         # backend must not advertise itself as usable once it is registered.
         return False
 
     def availability_reason(self) -> str | None:
+        """Explain that the RAM++ backend is not yet implemented."""
         return "RAM++ backend not yet implemented (#3)"
 
     def load(self, device: str = "auto") -> None:
+        """Raise NotImplementedError; model loading is pending (#3)."""
         raise NotImplementedError("RAM++ model loading is not yet implemented (#3)")
 
     def annotate_image(self, image: Image.Image) -> BackendOutput:
@@ -49,6 +53,7 @@ class RamBackend(LocalBackend):
         return self.annotate_image(image).tag_string(min_score=self._threshold)
 
     def unload(self) -> None:
+        """Drop the model reference."""
         self._model = None
 
     def _build_output(self, labels_with_scores: list[tuple[str, float]]) -> BackendOutput:

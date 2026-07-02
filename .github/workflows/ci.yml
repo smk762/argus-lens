@@ -16,3 +16,4 @@ jobs:
     with:
       ruff-version: "0.15.16"
       test-extras: "dev"
+      post-test: "uv run --no-sync interrogate src/ tests/"

@@ -27,6 +27,7 @@ class _ImmichClient:
     """Shared base: holds connection details and auth header."""
 
     def __init__(self, base_url: str, api_key: str, *, timeout: float = DEFAULT_TIMEOUT) -> None:
+        """Store server URL (trailing slash stripped), API key, and request timeout."""
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
@@ -37,6 +38,7 @@ class _ImmichClient:
         return {"x-api-key": self._api_key, "Accept": accept}
 
     def _url(self, path: str) -> str:
+        """Join *path* onto the server base URL."""
         return f"{self._base_url}/{path.lstrip('/')}"
 
     def _asset_path(self, asset_id: str, suffix: str = "") -> str:
@@ -48,10 +50,12 @@ class ImmichSource(_ImmichClient):
     """Lists and fetches assets from an Immich server."""
 
     def list_assets(self, since: str | None = None) -> Iterator[AssetRef]:
+        """Page through Immich assets — stub, not yet implemented (#7)."""
         # TODO(#7): page through POST /api/search/metadata (use `since` -> updatedAfter).
         raise NotImplementedError("Immich asset listing is not yet implemented (#7)")
 
     def fetch_image(self, ref: AssetRef) -> Image.Image:
+        """Download the asset's original file from Immich and decode it as RGB."""
         resp = httpx.get(
             self._url(self._asset_path(ref.id, "/original")),
             headers=self._headers(accept="*/*"),
@@ -67,5 +71,6 @@ class ImmichSink(_ImmichClient):
     """Writes keywords/description back to Immich."""
 
     def write(self, ref: AssetRef, *, keywords: list[str], description: str = "") -> None:
+        """Push keywords and description to an Immich asset — stub, not yet implemented (#7)."""
         # TODO(#7): PUT /api/assets/{id} description; upsert tags via /api/tags + assign.
         raise NotImplementedError("Immich write-back is not yet implemented (#7)")

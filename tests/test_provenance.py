@@ -5,6 +5,7 @@ from argus_lens.provenance import build_provenance
 
 
 def test_build_provenance_records_source_and_score():
+    """Records label, score, source, and region per tag, defaulting source to the backend name."""
     out = BackendOutput(
         tags=[
             Tag("mountain", score=0.91, source="ram", region=(0, 0, 10, 10)),
@@ -28,6 +29,7 @@ def test_build_provenance_records_source_and_score():
 
 
 def test_build_provenance_included_flag_tracks_threshold():
+    """Keeps all tags but marks included=False for those scoring below min_score."""
     out = BackendOutput(
         tags=[
             Tag("mountain", score=0.91, source="ram"),
@@ -44,6 +46,7 @@ def test_build_provenance_included_flag_tracks_threshold():
 
 
 def test_build_provenance_includes_all_without_threshold():
+    """Marks every tag as included when no min_score threshold is given."""
     out = BackendOutput(tags=[Tag("a", score=0.1), Tag("b", score=None)])
     meta = build_provenance(out, backend_name="ram")
 
