@@ -28,15 +28,18 @@ class HybridPipeline(CaptionBackend):
         tag_backend: CaptionBackend,
         prose_backend: CaptionBackend,
     ) -> None:
+        """Wire up the two sub-backends; GPU is required if either sub-backend needs it."""
         self._tag = tag_backend
         self._prose = prose_backend
         self.requires_gpu = tag_backend.requires_gpu or prose_backend.requires_gpu
 
     def load(self, device: str = "auto") -> None:
+        """Forward the device to both sub-backends."""
         self._tag.load(device)
         self._prose.load(device)
 
     def caption_image(self, image: Image.Image) -> str:
+        """Run both stages and merge tags with redundancy-filtered prose."""
         tags = self._tag.caption_image(image)
         prose = self._prose.caption_image(image)
         filtered = filter_redundant_clauses(prose, tags) if prose and tags else prose
@@ -54,13 +57,16 @@ class HybridPipeline(CaptionBackend):
         return tags, prose
 
     def unload(self) -> None:
+        """Unload both sub-backends."""
         self._tag.unload()
         self._prose.unload()
 
     def is_available(self) -> bool:
+        """Return True only if both sub-backends are available."""
         return self._tag.is_available() and self._prose.is_available()
 
     def availability_reason(self) -> str | None:
+        """Combine the sub-backend reasons, labelling which stage is blocked."""
         tag_reason = self._tag.availability_reason()
         prose_reason = self._prose.availability_reason()
         if tag_reason and prose_reason:

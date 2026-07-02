@@ -54,6 +54,7 @@ class OpenAICompatBackend(CloudBackend):
         timeout: float = 300.0,
         **kwargs: Any,
     ) -> None:
+        """Resolve the endpoint from argument, env var, or the Ollama localhost default."""
         super().__init__(api_key=api_key, model_id=model_id, system_prompt=system_prompt, **kwargs)
         self._base_url = base_url or os.environ.get("ARGUS_OPENAI_COMPAT_BASE_URL") or _DEFAULT_BASE_URL
         self._max_tokens = max_tokens
@@ -62,6 +63,7 @@ class OpenAICompatBackend(CloudBackend):
 
     @property
     def model_id(self) -> str:
+        """Model to query: constructor, ``ARGUS_OPENAI_COMPAT_MODEL``, or ``llava``."""
         return self._model_id or os.environ.get("ARGUS_OPENAI_COMPAT_MODEL") or _DEFAULT_MODEL
 
     def _optional_api_key(self) -> str | None:
@@ -74,6 +76,7 @@ class OpenAICompatBackend(CloudBackend):
         return os.environ.get(self.env_var) or None
 
     def load(self, device: str = "auto") -> None:
+        """Create an httpx client for the endpoint, attaching a bearer token only if one is set."""
         import httpx
 
         headers = {"Content-Type": "application/json"}
@@ -84,6 +87,7 @@ class OpenAICompatBackend(CloudBackend):
         self._client = httpx.Client(base_url=self._base_url, headers=headers, timeout=self._timeout)
 
     def caption_image(self, image: Image.Image) -> str:
+        """Send the image as a base64 data URI to ``/chat/completions`` and return the reply."""
         if self._client is None:
             self.load()
 
@@ -115,6 +119,7 @@ class OpenAICompatBackend(CloudBackend):
         return data["choices"][0]["message"]["content"].strip()
 
     def unload(self) -> None:
+        """Close the HTTP client and drop the reference."""
         if self._client is not None:
             self._client.close()
             self._client = None
@@ -127,4 +132,5 @@ class OpenAICompatBackend(CloudBackend):
         return True
 
     def availability_reason(self) -> str | None:
+        """Return None; this backend is always considered configurable."""
         return None

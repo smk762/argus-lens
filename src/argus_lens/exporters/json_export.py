@@ -10,6 +10,7 @@ from argus_lens.types import CaptionResult
 
 
 def _result_to_dict(name: str, result: CaptionResult) -> dict:
+    """Convert a ``CaptionResult`` to a dict with the image name included."""
     d = asdict(result)
     d["name"] = name
     return d

@@ -33,6 +33,7 @@ BACKENDS = [
 
 @pytest.mark.parametrize(("module", "class_name"), BACKENDS)
 def test_backend_class_contract(module, class_name):
+    """Each backend class subclasses CaptionBackend and declares valid name/kind/style/requires_gpu."""
     try:
         mod = importlib.import_module(module)
     except ModuleNotFoundError as exc:

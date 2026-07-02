@@ -31,15 +31,18 @@ class NVIDIANIMBackend(CloudBackend):
         base_url: str = "https://integrate.api.nvidia.com/v1",
         **kwargs: Any,
     ) -> None:
+        """Store credentials and endpoint; defer HTTP client creation to :meth:`load`."""
         super().__init__(api_key=api_key, model_id=model_id, system_prompt=system_prompt, **kwargs)
         self._base_url = base_url
         self._client: Any = None
 
     @property
     def model_id(self) -> str:
+        """NIM model to query, defaulting to ``microsoft/kosmos-2``."""
         return self._model_id or "microsoft/kosmos-2"
 
     def load(self, device: str = "auto") -> None:
+        """Create an authenticated httpx client for the NVIDIA NIM endpoint."""
         import httpx
 
         self._client = httpx.Client(
@@ -52,6 +55,7 @@ class NVIDIANIMBackend(CloudBackend):
         )
 
     def caption_image(self, image: Image.Image) -> str:
+        """Send the image as a base64 data URI to NIM chat completions and return the reply."""
         if self._client is None:
             self.load()
 
@@ -83,6 +87,7 @@ class NVIDIANIMBackend(CloudBackend):
         return data["choices"][0]["message"]["content"].strip()
 
     def unload(self) -> None:
+        """Close the HTTP client and drop the reference."""
         if self._client is not None:
             self._client.close()
             self._client = None

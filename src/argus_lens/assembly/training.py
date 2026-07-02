@@ -235,12 +235,14 @@ def assemble_training_variant(
 
     # Phase 3: frequency-aware diversity pass
     def _freq_drop(fragment: str) -> bool:
+        """Randomly decide to drop a fragment, biased against short generic tags."""
         word_count = len(fragment.split())
         if word_count <= 2:
             return _rng.random() < drop_probability * 1.5
         return _rng.random() < drop_probability * 0.3
 
     def _diversity_pass(fragments: list[str]) -> tuple[list[str], list[str]]:
+        """Apply frequency-aware dropping and shuffle survivors; return ``(kept, dropped)``."""
         kept_f: list[str] = []
         dropped: list[str] = []
         for f in fragments:

@@ -28,6 +28,8 @@ _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing sn
 
 
 class CaptionURLRequest(BaseModel):
+    """Caption a single image fetched from a URL."""
+
     image_url: str
     trigger_word: str = ""
     target_style: str = "photo"
@@ -51,6 +53,7 @@ class CaptionFolderRequest(BaseModel):
 
 
 def _result_to_dict(result: CaptionResult) -> dict[str, Any]:
+    """Convert a ``CaptionResult`` dataclass into a JSON-serialisable dict."""
     return asdict(result)
 
 
@@ -156,6 +159,7 @@ def create_app(
 
     @app.get("/backends")
     async def list_backends() -> dict[str, Any]:
+        """List all registered captioning backends with availability status."""
         return {"backends": engine.available_backends()}
 
     @app.post("/caption")
@@ -166,6 +170,7 @@ def create_app(
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
     ) -> dict[str, Any]:
+        """Caption a single uploaded image and return the structured result."""
         data = await file.read()
         try:
             pil = Image.open(io.BytesIO(data)).convert("RGB")
@@ -207,6 +212,7 @@ def create_app(
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
     ) -> dict[str, Any]:
+        """Caption multiple uploaded images in one request; unreadable files are skipped."""
         images: list[tuple[str, Image.Image]] = []
         for f in files:
             data = await f.read()
@@ -234,6 +240,7 @@ def create_app(
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
     ) -> StreamingResponse:
+        """Caption uploaded images, streaming one NDJSON result line per image."""
         images: list[Image.Image] = []
         for f in files:
             data = await f.read()
@@ -244,6 +251,7 @@ def create_app(
                 continue
 
         async def _ndjson():
+            """Yield one JSON line per captioned image."""
             for name, result in engine.caption_stream(
                 images,
                 trigger_word=trigger_word,
@@ -286,6 +294,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail=f"invalid JSON on line {i + 1}: {exc}") from exc
 
         def _run() -> dict[str, Any]:
+            """Caption every manifest row sequentially, collecting results and per-row errors."""
             results: list[dict[str, Any]] = []
             errors: list[dict[str, Any]] = []
             for row in rows:
@@ -357,6 +366,7 @@ def create_app(
         total = len(rows)
 
         def _caption_row(row: dict[str, Any]) -> dict[str, Any]:
+            """Caption one manifest row, returning a result dict or an error dict."""
             abs_path = row.get("abs_path")
             rel_path = row.get("rel_path") or abs_path or "<unknown>"
             if not abs_path:
@@ -381,6 +391,7 @@ def create_app(
             return {"rel_path": rel_path, "final_caption": result.final_caption}
 
         async def _ndjson() -> Any:
+            """Yield a progress line per row, then a final completion summary line."""
             captioned = 0
             failed = 0
             for i, row in enumerate(rows):
@@ -426,6 +437,7 @@ def create_app(
         images = sorted(p for p in walker if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS)
 
         def _run() -> dict[str, Any]:
+            """Caption every discovered image, collecting results and per-image errors."""
             results: list[dict[str, Any]] = []
             errors: list[dict[str, Any]] = []
             for p in images:

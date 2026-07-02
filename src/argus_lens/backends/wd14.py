@@ -81,11 +81,13 @@ class WD14Backend(LocalBackend):
         threshold: float = 0.35,
         registry: ModelRegistry | None = None,
     ) -> None:
+        """Configure the model directory, tag confidence threshold, and model registry."""
         self._model_dir = Path(model_dir) if model_dir else None
         self.threshold = threshold
         self._registry = registry or get_default_registry()
 
     def _search_dirs(self) -> list[Path]:
+        """Return candidate model directories in search-priority order."""
         dirs: list[Path] = []
         if self._model_dir:
             dirs.append(self._model_dir)
@@ -96,6 +98,7 @@ class WD14Backend(LocalBackend):
         return dirs
 
     def _find_model(self) -> Path | None:
+        """Return the first existing model file among the search dirs, or None."""
         for d in self._search_dirs():
             if (d / _MODEL_FILENAME).exists():
                 return d / _MODEL_FILENAME
@@ -116,6 +119,7 @@ class WD14Backend(LocalBackend):
         return model_path
 
     def is_available(self) -> bool:
+        """Return True if onnxruntime and numpy are importable."""
         try:
             __import__("onnxruntime")
             __import__("numpy")
@@ -124,6 +128,7 @@ class WD14Backend(LocalBackend):
         return True
 
     def availability_reason(self) -> str | None:
+        """Name the missing package (onnxruntime or numpy), or None if usable."""
         try:
             __import__("onnxruntime")
         except ImportError:
@@ -162,6 +167,7 @@ class WD14Backend(LocalBackend):
         return "cpu" if device.startswith("cpu") else "gpu"
 
     def _loader(self, device: str) -> tuple[Any, list[tuple[str, int]], str]:
+        """Create the ONNX session and load the tag vocabulary from the CSV."""
         import csv
 
         import onnxruntime as ort
@@ -205,6 +211,7 @@ class WD14Backend(LocalBackend):
         return np.ascontiguousarray(np.expand_dims(arr, 0))
 
     def caption_image(self, image: Image.Image) -> str:
+        """Return comma-separated booru tags above the threshold, excluding rating tags."""
         device = self._device
         # Cache key is provider-coarse and import-light; the actual ONNX
         # provider selection happens lazily inside ``_loader``.
@@ -224,4 +231,5 @@ class WD14Backend(LocalBackend):
             )
 
     def unload(self) -> None:
+        """Do nothing; session lifetime is managed by the shared registry."""
         pass

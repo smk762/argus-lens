@@ -18,34 +18,43 @@ from argus_lens.server import create_app  # noqa: E402
 
 
 class _StubBackend(CaptionBackend):
+    """Caption backend stub that returns a fixed caption without any model."""
+
     name = "stub"
     requires_gpu = False
 
     def load(self, device: str = "auto") -> None:
+        """No-op load."""
         pass
 
     def caption_image(self, image: Image.Image) -> str:
+        """Return a fixed caption for any image."""
         return "a person, plain studio background, soft lighting"
 
     def unload(self) -> None:
+        """No-op unload."""
         pass
 
 
 def _png(path: Path, size: int = 64) -> None:
+    """Write a solid-gray square PNG to *path*, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (size, size), (120, 120, 120)).save(path)
 
 
 @pytest.fixture
 def client() -> TestClient:
+    """FastAPI test client wired to the stub caption backend."""
     return TestClient(create_app(default_backend=_StubBackend()))
 
 
 def _manifest_bytes(rows: list[dict]) -> bytes:
+    """Encode manifest rows as newline-delimited JSON bytes."""
     return ("\n".join(json.dumps(r) for r in rows) + "\n").encode("utf-8")
 
 
 def test_manifest_captions_and_writes_sidecars(client: TestClient, tmp_path: Path) -> None:
+    """Captions every manifest row and writes a .txt sidecar next to each image."""
     img_a = tmp_path / "personA" / "01.jpg"
     img_b = tmp_path / "personB" / "02.jpg"
     _png(img_a)
@@ -95,6 +104,7 @@ def test_manifest_captions_and_writes_sidecars(client: TestClient, tmp_path: Pat
 
 
 def test_manifest_reports_missing_image(client: TestClient, tmp_path: Path) -> None:
+    """Counts a nonexistent image as failed and reports it in the errors list."""
     rows = [{"rel_path": "gone.jpg", "abs_path": str(tmp_path / "gone.jpg"), "target_profile": {}}]
     resp = client.post(
         "/caption/manifest",
@@ -109,6 +119,7 @@ def test_manifest_reports_missing_image(client: TestClient, tmp_path: Path) -> N
 
 
 def test_manifest_rejects_bad_json(client: TestClient) -> None:
+    """Returns 400 when a manifest line is not valid JSON."""
     resp = client.post(
         "/caption/manifest",
         files={"manifest": ("manifest.jsonl", io.BytesIO(b"{not json}\n"), "application/x-ndjson")},
@@ -117,6 +128,7 @@ def test_manifest_rejects_bad_json(client: TestClient) -> None:
 
 
 def test_manifest_stream_yields_progress_then_complete(client: TestClient, tmp_path: Path) -> None:
+    """Streams one NDJSON progress event per row (including failures) then a complete event."""
     img = tmp_path / "personA" / "01.jpg"
     _png(img)
     rows = [
@@ -146,6 +158,7 @@ def test_manifest_stream_yields_progress_then_complete(client: TestClient, tmp_p
 
 
 def test_manifest_stream_skips_sidecar_when_disabled(client: TestClient, tmp_path: Path) -> None:
+    """Does not write a .txt sidecar when write_sidecar is false."""
     img = tmp_path / "01.jpg"
     _png(img)
     rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
@@ -162,6 +175,7 @@ def test_manifest_stream_skips_sidecar_when_disabled(client: TestClient, tmp_pat
 
 
 def test_manifest_stream_rejects_bad_json(client: TestClient) -> None:
+    """The streaming endpoint also returns 400 for invalid manifest JSON."""
     resp = client.post(
         "/caption/manifest/stream",
         files={"manifest": ("manifest.jsonl", io.BytesIO(b"{not json}\n"), "application/x-ndjson")},

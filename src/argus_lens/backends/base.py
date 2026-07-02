@@ -117,6 +117,7 @@ class CloudBackend(CaptionBackend):
         system_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
+        """Store credentials and prompt overrides; nothing is validated until :meth:`load`."""
         self._api_key = api_key
         self._model_id = model_id
         self._system_prompt = system_prompt
@@ -135,12 +136,15 @@ class CloudBackend(CaptionBackend):
         )
 
     def load(self, device: str = "auto") -> None:
+        """Validate the API key eagerly; *device* is ignored for cloud backends."""
         self.resolve_api_key()
 
     def unload(self) -> None:
+        """Do nothing by default; subclasses close HTTP clients here."""
         pass
 
     def is_available(self) -> bool:
+        """Return True if an API key can be resolved."""
         try:
             self.resolve_api_key()
             return True
@@ -148,12 +152,14 @@ class CloudBackend(CaptionBackend):
             return False
 
     def availability_reason(self) -> str | None:
+        """Return a hint naming the missing env var, or None if a key is configured."""
         if self.is_available():
             return None
         return f"API key not configured (set {self.env_var})"
 
     @property
     def default_system_prompt(self) -> str:
+        """Generic captioning instructions used when no custom prompt is supplied."""
         return (
             "You are an image captioning assistant. Describe the image in detail, "
             "focusing on the subject's appearance, clothing, pose, expression, "
@@ -163,4 +169,5 @@ class CloudBackend(CaptionBackend):
 
     @property
     def system_prompt(self) -> str:
+        """Effective system prompt: constructor override or the default."""
         return self._system_prompt or self.default_system_prompt
