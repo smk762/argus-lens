@@ -129,6 +129,64 @@ def test_caption_folder_reports_sidecar_stem_collision(tmp_path: Path) -> None:
     assert (tmp_path / "cat.txt").read_text().strip()
 
 
+def test_caption_folder_write_xmp_writes_xmp_sidecars(tmp_path: Path) -> None:
+    """write_xmp=true writes an <image>.xmp sidecar per image, independent of write_sidecar."""
+    _png(tmp_path / "01.jpg")
+    _png(tmp_path / "02.png")
+
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.post(
+        "/caption/folder",
+        json={"folder": str(tmp_path), "write_sidecar": False, "write_xmp": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["captioned"] == 2
+    assert body["xmp_written"] == 2
+    assert {r["xmp_path"] for r in body["results"]} == {
+        str(tmp_path / "01.jpg.xmp"),
+        str(tmp_path / "02.png.xmp"),
+    }
+    doc = (tmp_path / "01.jpg.xmp").read_text(encoding="utf-8")
+    assert "dc:description" in doc
+    assert body["results"][0]["final_caption"] in doc
+    assert not (tmp_path / "01.txt").exists()  # write_sidecar was off
+
+
+def test_caption_folder_write_xmp_off_by_default(tmp_path: Path) -> None:
+    """Without write_xmp, only the .txt sidecar is written and xmp_written is 0."""
+    _png(tmp_path / "01.jpg")
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.post("/caption/folder", json={"folder": str(tmp_path)})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["xmp_written"] == 0
+    assert "xmp_path" not in body["results"][0]
+    assert not (tmp_path / "01.jpg.xmp").exists()
+    assert (tmp_path / "01.txt").exists()
+
+
+def test_caption_folder_write_xmp_overwrites_existing_sidecar(tmp_path: Path) -> None:
+    """A pre-existing .xmp is replaced, matching the .txt sidecar overwrite semantics."""
+    _png(tmp_path / "01.jpg")
+    stale_xmp = tmp_path / "01.jpg.xmp"
+    stale_xmp.write_text("<stale/>", encoding="utf-8")
+    stale_txt = tmp_path / "01.txt"
+    stale_txt.write_text("stale caption", encoding="utf-8")
+
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.post("/caption/folder", json={"folder": str(tmp_path), "write_xmp": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["captioned"] == 1
+    assert body["failed"] == 0
+    assert body["xmp_written"] == 1
+    # both sidecars were replaced with the fresh caption
+    assert "stale" not in stale_xmp.read_text(encoding="utf-8")
+    assert body["results"][0]["final_caption"] in stale_xmp.read_text(encoding="utf-8")
+    assert stale_txt.read_text(encoding="utf-8") == body["results"][0]["final_caption"]
+
+
 def test_folders_browse(tmp_path: Path) -> None:
     """GET /folders lists subfolders with image counts and rejects path traversal with 400."""
     _png(tmp_path / "personA" / "01.jpg")

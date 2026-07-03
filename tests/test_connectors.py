@@ -88,6 +88,14 @@ def test_xmp_write_requires_local_path():
         XmpSink().write(AssetRef(id="remote", uri="https://example.com/x.jpg"), keywords=["x"])
 
 
+def test_xmp_sidecar_path():
+    """sidecar_path appends .xmp to the full image name and rejects path-less refs."""
+    ref = AssetRef(id="photo.jpg", path="/pics/photo.jpg")
+    assert str(XmpSink.sidecar_path(ref)) == "/pics/photo.jpg.xmp"
+    with pytest.raises(ValueError):
+        XmpSink.sidecar_path(AssetRef(id="remote", uri="https://example.com/x.jpg"))
+
+
 def test_fetch_image_requires_local_path():
     """FilesystemSource.fetch_image rejects assets that have a URI but no local path."""
     with pytest.raises(ValueError):

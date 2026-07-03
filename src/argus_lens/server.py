@@ -26,6 +26,7 @@ from argus_lens.assembly.profiles import available_profiles
 from argus_lens.connectors.base import AssetRef
 from argus_lens.connectors.filesystem import IMAGE_SUFFIXES
 from argus_lens.connectors.immich import ImmichSink, ImmichSource
+from argus_lens.connectors.xmp import XmpSink
 from argus_lens.engine import ArgusLens
 from argus_lens.openai_compat import create_openai_router
 from argus_lens.types import (
@@ -39,6 +40,7 @@ logger = structlog.get_logger()
 
 # One source of truth for what counts as an image, shared with the connector layer.
 SUPPORTED_EXTS = IMAGE_SUFFIXES
+_XMP_SINK = XmpSink()  # stateless; shared by every endpoint that writes XMP sidecars
 _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing snappy)
 
 
@@ -59,6 +61,7 @@ class CaptionFolderRequest(BaseModel):
     folder: str
     recursive: bool = False
     write_sidecar: bool = True
+    write_xmp: bool = False
     trigger_word: str = ""
     target_style: str = "photo"
     target_category: str = "identity"
@@ -87,6 +90,7 @@ class ImmichCaptionRequest(BaseModel):
     checkpoint: str | None = None
     prose_enrichment: bool = True
     write_back: bool = False
+    write_xmp: bool = False
 
 
 def _immich_config() -> tuple[str, str]:
@@ -193,16 +197,20 @@ def _caption_and_write(
     checkpoint: str | None,
     prose_enrichment: bool,
     write_sidecar: bool,
+    write_xmp: bool,
     written: set[Path],
 ) -> dict[str, Any]:
-    """Caption one image and (optionally) write its ``.txt`` sidecar.
+    """Caption one image and (optionally) write its ``.txt``/``.xmp`` sidecars.
 
-    Returns ``{"rel_path", "final_caption"}`` on success or ``{"rel_path",
-    "error"}`` on failure — never both, so batch counts stay consistent.
-    ``written`` tracks sidecar paths already written in this batch: same-stem
-    images (``cat.jpg`` + ``cat.png``) map to the same ``cat.txt``, and the
-    collision is reported as an error instead of silently overwriting the
-    first caption.
+    Returns ``{"rel_path", "final_caption"}`` on success (plus ``xmp_path``
+    when an XMP sidecar was written) or ``{"rel_path", "error"}`` on failure —
+    never both, so batch counts stay consistent. ``written`` tracks sidecar
+    paths already written in this batch: same-stem images (``cat.jpg`` +
+    ``cat.png``) map to the same ``cat.txt``, and the collision is reported as
+    an error instead of silently overwriting the first caption. XMP sidecars
+    follow the same overwrite semantics as the ``.txt`` sidecars: an existing
+    file on disk is replaced, but a path already written by this batch is a
+    collision error.
     """
     try:
         result = engine.caption(
@@ -228,7 +236,25 @@ def _caption_and_write(
         except OSError as exc:
             return {"rel_path": rel_path, "error": f"sidecar write failed: {exc}"}
         written.add(sidecar)
-    return {"rel_path": rel_path, "final_caption": result.final_caption}
+    outcome: dict[str, Any] = {"rel_path": rel_path, "final_caption": result.final_caption}
+    if write_xmp:
+        ref = AssetRef(id=rel_path, path=image_path)
+        xmp_path = XmpSink.sidecar_path(ref)
+        if xmp_path in written:
+            return {
+                "rel_path": rel_path,
+                "error": f"xmp sidecar collision: {xmp_path.name} was already written for another image in this batch",
+            }
+        keywords = [t.strip() for t in result.raw_tags.split(",") if t.strip()]
+        try:
+            # overwrite=True mirrors the .txt sidecar semantics above: a
+            # pre-existing file on disk is replaced by the fresh caption.
+            _XMP_SINK.write(ref, keywords=keywords, description=result.final_caption, overwrite=True)
+        except OSError as exc:
+            return {"rel_path": rel_path, "error": f"xmp write failed: {exc}"}
+        written.add(xmp_path)
+        outcome["xmp_path"] = str(xmp_path)
+    return outcome
 
 
 def _caption_manifest_row(
@@ -237,6 +263,7 @@ def _caption_manifest_row(
     *,
     trigger_word: str,
     write_sidecar: bool,
+    write_xmp: bool,
     prose_enrichment: bool,
     written: set[Path],
 ) -> dict[str, Any]:
@@ -259,6 +286,7 @@ def _caption_manifest_row(
         checkpoint=profile.get("checkpoint"),
         prose_enrichment=prose_enrichment,
         write_sidecar=write_sidecar,
+        write_xmp=write_xmp,
         written=written,
     )
 
@@ -504,13 +532,17 @@ def create_app(
         manifest: UploadFile = File(...),
         trigger_word: str = Form(""),
         write_sidecar: bool = Form(True),
+        write_xmp: bool = Form(False),
         prose_enrichment: bool = Form(True),
     ) -> dict[str, Any]:
         """Batch-caption an argus-curator JSONL manifest.
 
         Each line carries ``abs_path`` and the shared ``target_profile``; images
         are captioned with that profile (no category remapping) and, by default,
-        a ``.txt`` sidecar is written next to each image. Assumes the images are
+        a ``.txt`` sidecar is written next to each image. ``write_xmp`` also
+        writes an ``<image>.xmp`` sidecar (dc:subject keywords +
+        dc:description caption) that Lightroom/digiKam/Immich ingest natively;
+        it is independent of ``write_sidecar``. Assumes the images are
         reachable at ``abs_path`` (e.g. a shared volume with the curator).
         """
         rows = _parse_manifest(await manifest.read())
@@ -526,6 +558,7 @@ def create_app(
                     row,
                     trigger_word=trigger_word,
                     write_sidecar=write_sidecar,
+                    write_xmp=write_xmp,
                     prose_enrichment=prose_enrichment,
                     written=written,
                 )
@@ -534,6 +567,7 @@ def create_app(
                 "total": len(rows),
                 "captioned": len(results),
                 "failed": len(errors),
+                "xmp_written": sum(1 for r in results if "xmp_path" in r),
                 "results": results,
                 "errors": errors,
             }
@@ -545,13 +579,15 @@ def create_app(
         manifest: UploadFile = File(...),
         trigger_word: str = Form(""),
         write_sidecar: bool = Form(True),
+        write_xmp: bool = Form(False),
         prose_enrichment: bool = Form(True),
     ) -> StreamingResponse:
         """Streaming variant of /caption/manifest for live progress.
 
         Yields one NDJSON object per image as it is captioned
-        (``{type:"progress", done, total, rel_path, final_caption|error}``),
-        then a final ``{type:"complete", total, captioned, failed}`` line. As
+        (``{type:"progress", done, total, rel_path, final_caption|error}``,
+        plus ``xmp_path`` when ``write_xmp`` wrote a sidecar), then a final
+        ``{type:"complete", total, captioned, failed, xmp_written}`` line. As
         with /caption/manifest, images are read from ``abs_path`` and a ``.txt``
         sidecar is written next to each (shared volume with the curator).
         """
@@ -563,6 +599,7 @@ def create_app(
             """Yield a progress line per row, then a final completion summary line."""
             captioned = 0
             failed = 0
+            xmp_written = 0
             for i, row in enumerate(rows):
                 # Caption is blocking CPU/GPU work — run off the event loop so the
                 # stream flushes each line promptly.
@@ -572,6 +609,7 @@ def create_app(
                     row,
                     trigger_word=trigger_word,
                     write_sidecar=write_sidecar,
+                    write_xmp=write_xmp,
                     prose_enrichment=prose_enrichment,
                     written=written,
                 )
@@ -579,8 +617,21 @@ def create_app(
                     failed += 1
                 else:
                     captioned += 1
+                    if "xmp_path" in outcome:
+                        xmp_written += 1
                 yield json.dumps({"type": "progress", "done": i + 1, "total": total, **outcome}) + "\n"
-            yield json.dumps({"type": "complete", "total": total, "captioned": captioned, "failed": failed}) + "\n"
+            yield (
+                json.dumps(
+                    {
+                        "type": "complete",
+                        "total": total,
+                        "captioned": captioned,
+                        "failed": failed,
+                        "xmp_written": xmp_written,
+                    }
+                )
+                + "\n"
+            )
 
         return StreamingResponse(
             _ndjson(),
@@ -606,7 +657,9 @@ def create_app(
         path inside it; anything outside the root is rejected. Walks the folder
         (optionally recursively), captions each image with the given target
         profile, and — by default — writes a ``.txt`` sidecar next to each
-        image. Returns the same shape as ``/caption/manifest``.
+        image. ``write_xmp`` additionally (and independently) writes an
+        ``<image>.xmp`` sidecar for Lightroom/digiKam/Immich ingestion.
+        Returns the same shape as ``/caption/manifest``.
         """
         root = _confine_folder(default_source, req.folder)
         if not root.is_dir():
@@ -631,6 +684,7 @@ def create_app(
                     checkpoint=req.checkpoint,
                     prose_enrichment=req.prose_enrichment,
                     write_sidecar=req.write_sidecar,
+                    write_xmp=req.write_xmp,
                     written=written,
                 )
                 (errors if "error" in outcome else results).append(outcome)
@@ -638,6 +692,7 @@ def create_app(
                 "total": len(images),
                 "captioned": len(results),
                 "failed": len(errors),
+                "xmp_written": sum(1 for r in results if "xmp_path" in r),
                 "results": results,
                 "errors": errors,
             }
@@ -732,7 +787,23 @@ def create_app(
         then a final ``{type:"complete", total, captioned, failed}`` line.
         When ``write_back`` is true, the caption is pushed back to Immich as
         the asset description, with the raw tags (when available) as keywords.
+
+        ``write_xmp`` is rejected here (400): assets are fetched via the Immich
+        API and never touch local disk, so there is no image path to place a
+        sidecar next to. To get XMP sidecars for Immich assets, pull them to a
+        folder first (``POST /immich/pull``) and caption that folder with
+        ``POST /caption/folder`` and ``write_xmp: true``.
         """
+        if req.write_xmp:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "write_xmp is not supported on /immich/caption/stream: Immich assets are "
+                    "captioned in memory and have no local path for a sidecar. Pull the album "
+                    "into a folder with POST /immich/pull, then caption it via POST /caption/folder "
+                    "with write_xmp=true (or use write_back to store captions in Immich itself)."
+                ),
+            )
         url, api_key = _immich_config()
         source = ImmichSource(url, api_key)
         sink = ImmichSink(url, api_key) if req.write_back else None

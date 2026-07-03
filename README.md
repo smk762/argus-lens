@@ -181,16 +181,16 @@ Endpoints:
 - `POST /caption/url` -- JSON body with image URL
 - `POST /caption/batch` -- multiple file upload
 - `POST /caption/stream` -- NDJSON streaming for batch
-- `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars)
-- `POST /caption/manifest/stream` -- streaming variant of `/caption/manifest`: one NDJSON progress line per image, then a completion summary
-- `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars)
+- `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars)
+- `POST /caption/manifest/stream` -- streaming variant of `/caption/manifest`: one NDJSON progress line per image, then a completion summary (supports `write_xmp` too)
+- `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars)
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
 - `GET /health` -- liveness probe: `{status, service, version, source_root}`
 - `GET /profiles` -- caption taxonomy for UIs: `{assembly_profiles, target_styles, target_categories, target_backends, token_budgets}`
 - `GET /immich/albums` -- list Immich albums (`{albums: [{id, name, asset_count}]}`); requires `IMMICH_URL` + `IMMICH_API_KEY`
 - `POST /immich/pull` -- download an Immich album (or selected `asset_ids`) into a folder under the source root; NDJSON progress stream, skips existing files
-- `POST /immich/caption/stream` -- caption Immich album assets in memory (NDJSON progress); `write_back: true` pushes captions back to Immich
+- `POST /immich/caption/stream` -- caption Immich album assets in memory (NDJSON progress); `write_back: true` pushes captions back to Immich (`write_xmp` is rejected here -- assets never touch disk; pull first, then `/caption/folder`)
 - `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider)
 
 The `/immich/*` endpoints read `IMMICH_URL` and `IMMICH_API_KEY` from the environment at request time; if either is unset they return `503` and the rest of the server is unaffected.
@@ -221,7 +221,7 @@ for ref in source.list_assets(since="2026-07-01T00:00:00Z"):
 
 Keywords are upserted as Immich tags (existing tags are reused) and attached to the asset; the description lands in the asset's description field, both searchable in the Immich UI. Writes are idempotent, so re-running over the same assets is safe.
 
-If you'd rather keep Argus Lens decoupled from the Immich API entirely, use `XmpSink` instead: it writes standard `.xmp` sidecars next to your originals, which Immich (as well as Lightroom and digiKam) ingests on library scan.
+If you'd rather keep Argus Lens decoupled from the Immich API entirely, use `XmpSink` instead: it writes standard `.xmp` sidecars next to your originals, which Immich (as well as Lightroom and digiKam) ingests on library scan. The captioning endpoints expose this directly: pass `write_xmp: true` to `/caption/folder`, `/caption/manifest`, or `/caption/manifest/stream` and each image gets an `<image>.xmp` sidecar with the raw tags as `dc:subject` keywords and the final caption as `dc:description` -- no Immich/Lightroom/digiKam API integration required, just point their library scan at the folder.
 
 ### Docker
 

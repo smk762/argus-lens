@@ -265,6 +265,16 @@ def test_immich_caption_stream_reports_per_asset_errors(immich_env, album_assets
     assert events[-1] == {"type": "complete", "total": 2, "captioned": 1, "failed": 1}
 
 
+def test_immich_caption_stream_rejects_write_xmp(immich_env, album_assets, monkeypatch) -> None:
+    """write_xmp is a 400: Immich assets are in-memory and have no local path for a sidecar."""
+    monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))
+    resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "write_xmp": True})
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "write_xmp" in detail
+    assert "/immich/pull" in detail  # points at the supported route to XMP sidecars
+
+
 def test_immich_caption_stream_filters_to_requested_asset_ids(immich_env, album_assets, monkeypatch) -> None:
     """When asset_ids is given, only those album assets are captioned."""
     monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))

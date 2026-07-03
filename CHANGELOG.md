@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `POST /immich/caption/stream` — caption album assets in memory (no disk
     writes), streaming NDJSON progress, optionally pushing captions back to
     Immich (`write_back`) as description + tag keywords.
+- **`write_xmp` option on the captioning endpoints** — `POST /caption/folder`
+  (JSON body), `POST /caption/manifest`, and `POST /caption/manifest/stream`
+  (form field) can now also write an `<image>.xmp` sidecar next to each source
+  image via `XmpSink` (`dc:subject` = raw tag keywords, `dc:description` =
+  final caption). XMP sidecars are the zero-coupling interop surface:
+  Lightroom, digiKam, and Immich all ingest them natively on library scan.
+  Independent of `write_sidecar` (write either or both); follows the same
+  overwrite semantics as the `.txt` sidecars (pre-existing files on disk are
+  replaced; duplicate targets within one batch are per-image collision
+  errors). Responses gain an additive `xmp_written` count, and successful
+  results/progress lines an `xmp_path`. On `POST /immich/caption/stream`,
+  `write_xmp: true` is rejected with 400 — Immich assets are captioned in
+  memory with no local path; pull the album first (`/immich/pull`) and caption
+  the folder, or use `write_back`.
+- **`XmpSink.sidecar_path`** — public helper returning the `<image>.xmp`
+  sidecar path for an `AssetRef` (used by the server endpoints).
 - **Immich connector album support** — `ImmichSource.list_albums`,
   `ImmichSource.list_album_assets`, and `ImmichSource.fetch_original` (raw
   bytes download backing both the pull endpoint and `fetch_image`).
