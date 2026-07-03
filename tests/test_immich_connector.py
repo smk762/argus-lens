@@ -113,6 +113,64 @@ def test_list_assets_is_lazy_and_raises_on_http_error():
             next(it)
 
 
+# --- ImmichSource.list_albums / list_album_assets ---
+
+
+def test_list_albums_maps_immich_fields():
+    """Maps Immich's albumName/assetCount to snake_case with safe fallbacks."""
+    albums_json = [
+        {"id": "al1", "albumName": "Trip", "assetCount": 3},
+        {"id": "al2"},  # missing name/count fall back to "" / 0
+    ]
+    with patch("httpx.get", return_value=_FakeResponse(json_data=albums_json)) as mock_get:
+        albums = ImmichSource("http://immich.local", "key").list_albums()
+
+    assert albums == [
+        {"id": "al1", "name": "Trip", "asset_count": 3},
+        {"id": "al2", "name": "", "asset_count": 0},
+    ]
+    assert mock_get.call_args[0][0] == "http://immich.local/api/albums"
+    assert mock_get.call_args.kwargs["headers"]["x-api-key"] == "key"
+
+
+def test_list_albums_raises_on_http_error():
+    """Propagates httpx.HTTPStatusError when the album listing fails."""
+    with (
+        patch("httpx.get", return_value=_FakeResponse(status_code=401)),
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        ImmichSource("http://immich.local", "key").list_albums()
+
+
+def test_list_album_assets_keeps_images_and_encodes_album_id():
+    """Keeps image assets only, falls back to the id for missing filenames, and encodes the album id."""
+    album_json = {
+        "assets": [
+            {"id": "a", "originalFileName": "a.jpg", "type": "IMAGE"},
+            {"id": "v", "originalFileName": "v.mp4", "type": "VIDEO"},
+            {"id": "b"},  # missing type is treated as IMAGE; name falls back to id
+        ]
+    }
+    with patch("httpx.get", return_value=_FakeResponse(json_data=album_json)) as mock_get:
+        assets = ImmichSource("http://immich.local", "key").list_album_assets("al/1")
+
+    assert assets == [{"id": "a", "name": "a.jpg"}, {"id": "b", "name": "b"}]
+    assert mock_get.call_args[0][0] == "http://immich.local/api/albums/al%2F1"
+
+
+# --- ImmichSource.fetch_original ---
+
+
+def test_fetch_original_returns_raw_bytes():
+    """Returns the undecoded original bytes with a binary Accept header."""
+    with patch("httpx.get", return_value=_FakeResponse(b"raw-bytes")) as mock_get:
+        data = ImmichSource("http://immich.local", "key").fetch_original(AssetRef(id="abc"))
+
+    assert data == b"raw-bytes"
+    assert mock_get.call_args[0][0] == "http://immich.local/api/assets/abc/original"
+    assert mock_get.call_args.kwargs["headers"]["Accept"] == "*/*"
+
+
 # --- ImmichSource.fetch_image ---
 
 

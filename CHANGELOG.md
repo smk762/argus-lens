@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`GET /health`** — service liveness/identity probe returning
+  `{status, service, version, source_root}`, mirroring argus-curator's shape.
+- **`GET /profiles`** — exposes the caption taxonomy (`assembly_profiles`,
+  `target_styles`, `target_categories`, `target_backends`, `token_budgets`)
+  derived from the registry and `types.py`, so UIs no longer hardcode it.
+- **Immich HTTP endpoints** — the server now wraps the Immich connector,
+  configured via `IMMICH_URL`/`IMMICH_API_KEY` (read per request; without them
+  the endpoints return 503 and the rest of the server works normally):
+  - `GET /immich/albums` — list albums with asset counts.
+  - `POST /immich/pull` — download an album's originals (or a subset via
+    `asset_ids`) into a folder under the source root, streaming NDJSON
+    progress; existing same-name files are skipped.
+  - `POST /immich/caption/stream` — caption album assets in memory (no disk
+    writes), streaming NDJSON progress, optionally pushing captions back to
+    Immich (`write_back`) as description + tag keywords.
+- **Immich connector album support** — `ImmichSource.list_albums`,
+  `ImmichSource.list_album_assets`, and `ImmichSource.fetch_original` (raw
+  bytes download backing both the pull endpoint and `fetch_image`).
+
 ## [0.3.0] - 2026-07-01
 
 Backwards compatible with `0.2.0` — no breaking API or default-behavior changes.

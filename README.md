@@ -9,7 +9,7 @@ One image. A hundred perspectives.
 
 Multi-model captioning pipeline for LoRA training, dataset curation, and generative AI workflows. Unlike traditional captioners that describe an image, Argus Lens produces **intent-aware caption subsets** -- structured, filtered, and optimised for how captions are actually used downstream.
 
-> **Looking for the web UI?** See [argus-vision-demo](https://github.com/smk762/argus-vision-demo) -- a thin Next.js frontend for exploring argus-lens interactively.
+> **Looking for the web UI?** See [argus-studio](https://github.com/smk762/argus-studio) -- a thin Next.js frontend for exploring argus-lens interactively.
 
 ## Quick Start
 
@@ -168,7 +168,7 @@ argus-lens backends
 
 ### HTTP Server
 
-Run the built-in FastAPI server for frontend consumers (e.g. [argus-vision-demo](https://github.com/smk762/argus-vision-demo)):
+Run the built-in FastAPI server for frontend consumers (e.g. [argus-studio](https://github.com/smk762/argus-studio)):
 
 ```bash
 pip install argus-lens[cli,server,local]
@@ -186,7 +186,14 @@ Endpoints:
 - `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars)
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
+- `GET /health` -- liveness probe: `{status, service, version, source_root}`
+- `GET /profiles` -- caption taxonomy for UIs: `{assembly_profiles, target_styles, target_categories, target_backends, token_budgets}`
+- `GET /immich/albums` -- list Immich albums (`{albums: [{id, name, asset_count}]}`); requires `IMMICH_URL` + `IMMICH_API_KEY`
+- `POST /immich/pull` -- download an Immich album (or selected `asset_ids`) into a folder under the source root; NDJSON progress stream, skips existing files
+- `POST /immich/caption/stream` -- caption Immich album assets in memory (NDJSON progress); `write_back: true` pushes captions back to Immich
 - `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider)
+
+The `/immich/*` endpoints read `IMMICH_URL` and `IMMICH_API_KEY` from the environment at request time; if either is unset they return `503` and the rest of the server is unaffected.
 
 ### Immich
 
@@ -246,6 +253,7 @@ Copy or create a `.env` file for the Docker deployment:
 |---|---|---|
 | `ARGUS_BACKEND` | `hybrid` | Captioning backend (`hybrid`, `wd14`, `florence2`, `openai`, etc.) |
 | `OPENAI_API_KEY` / `REPLICATE_API_TOKEN` / `HF_TOKEN` / `NVIDIA_API_KEY` | -- | API key for the matching cloud backend (each backend reads its own variable) |
+| `IMMICH_URL` / `IMMICH_API_KEY` | -- | Immich server URL + API key for the `/immich/*` endpoints (unset: those endpoints return 503) |
 | `ARGUS_PORT` | `8080` | Host port for the server |
 | `WD14_MODEL_DIR` | `~/.cache/wd14_tagger/` | WD14 ONNX model directory (auto-downloads on first use) |
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
@@ -277,7 +285,7 @@ The legacy [`microsoft/Florence-2-base`](https://huggingface.co/microsoft/Floren
 
 ## Related projects
 
-- [argus-vision-demo](https://github.com/smk762/argus-vision-demo) -- a thin Next.js web UI for exploring argus-lens interactively.
+- [argus-studio](https://github.com/smk762/argus-studio) -- a thin Next.js web UI for exploring argus-lens interactively.
 - [awesome-immich](https://github.com/tlwhittaker/awesome-immich) -- a curated list of Immich plugins, tools, and community projects. Argus Lens integrates with Immich as a companion tagging/captioning service -- see [Immich](#immich).
 
 ## License

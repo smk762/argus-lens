@@ -89,8 +89,43 @@ class ImmichSource(_ImmichClient):
             next_page = assets.get("nextPage")
             page = int(next_page) if next_page else None
 
-    def fetch_image(self, ref: AssetRef) -> Image.Image:
-        """Download the asset's original file from Immich and decode it as RGB."""
+    def list_albums(self) -> list[dict[str, Any]]:
+        """List albums via ``GET /api/albums``.
+
+        Returns one ``{"id", "name", "asset_count"}`` dict per album, mapping
+        Immich's ``albumName``/``assetCount`` fields to snake_case.
+        """
+        resp = httpx.get(self._url("/api/albums"), headers=self._headers(), timeout=self._timeout)
+        resp.raise_for_status()
+        return [
+            {
+                "id": album["id"],
+                "name": album.get("albumName", ""),
+                "asset_count": int(album.get("assetCount") or 0),
+            }
+            for album in resp.json()
+        ]
+
+    def list_album_assets(self, album_id: str) -> list[dict[str, Any]]:
+        """List an album's image assets via ``GET /api/albums/{id}``.
+
+        Returns one ``{"id", "name"}`` dict per image asset (``name`` is
+        Immich's ``originalFileName``); non-image assets (videos) are skipped.
+        """
+        resp = httpx.get(
+            self._url(f"/api/albums/{quote(album_id, safe='')}"),
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return [
+            {"id": asset["id"], "name": asset.get("originalFileName") or asset["id"]}
+            for asset in resp.json().get("assets", [])
+            if asset.get("type", "IMAGE") == "IMAGE"
+        ]
+
+    def fetch_original(self, ref: AssetRef) -> bytes:
+        """Download the asset's original file bytes from Immich (no decoding)."""
         resp = httpx.get(
             self._url(self._asset_path(ref.id, "/original")),
             headers=self._headers(accept="*/*"),
@@ -98,7 +133,12 @@ class ImmichSource(_ImmichClient):
             follow_redirects=True,
         )
         resp.raise_for_status()
-        with Image.open(io.BytesIO(resp.content)) as img:
+        return resp.content
+
+    def fetch_image(self, ref: AssetRef) -> Image.Image:
+        """Download the asset's original file from Immich and decode it as RGB."""
+        data = self.fetch_original(ref)
+        with Image.open(io.BytesIO(data)) as img:
             return img.convert("RGB")
 
 

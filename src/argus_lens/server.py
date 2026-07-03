@@ -17,12 +17,25 @@ try:
 except ImportError as exc:
     raise ImportError("Server requires: pip install argus-lens[server]") from exc
 
+import httpx
+import structlog
 from PIL import Image
 
+from argus_lens._version import __version__
+from argus_lens.assembly.profiles import available_profiles
+from argus_lens.connectors.base import AssetRef
 from argus_lens.connectors.filesystem import IMAGE_SUFFIXES
+from argus_lens.connectors.immich import ImmichSink, ImmichSource
 from argus_lens.engine import ArgusLens
 from argus_lens.openai_compat import create_openai_router
-from argus_lens.types import CaptionResult
+from argus_lens.types import (
+    BACKEND_TOKEN_BUDGETS,
+    CAPTION_TARGET_STYLES,
+    CaptionResult,
+    get_category_names,
+)
+
+logger = structlog.get_logger()
 
 # One source of truth for what counts as an image, shared with the connector layer.
 SUPPORTED_EXTS = IMAGE_SUFFIXES
@@ -52,6 +65,57 @@ class CaptionFolderRequest(BaseModel):
     target_backend: str = "sdxl"
     checkpoint: str | None = None
     prose_enrichment: bool = True
+
+
+class ImmichPullRequest(BaseModel):
+    """Pull an Immich album's assets into a folder under the source root."""
+
+    album_id: str
+    asset_ids: list[str] | None = None
+    dest_folder: str
+
+
+class ImmichCaptionRequest(BaseModel):
+    """Caption an Immich album's assets in memory, optionally writing back."""
+
+    album_id: str
+    asset_ids: list[str] | None = None
+    trigger_word: str = ""
+    target_style: str = "photo"
+    target_category: str = "identity"
+    target_backend: str = "sdxl"
+    checkpoint: str | None = None
+    prose_enrichment: bool = True
+    write_back: bool = False
+
+
+def _immich_config() -> tuple[str, str]:
+    """Read Immich connection settings from the environment at request time.
+
+    Returns ``(url, api_key)`` or raises HTTP 503 when either is unset, so the
+    server can start (and serve every other endpoint) without Immich.
+    """
+    url = os.environ.get("IMMICH_URL")
+    api_key = os.environ.get("IMMICH_API_KEY")
+    if not url or not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Immich is not configured: set IMMICH_URL and IMMICH_API_KEY",
+        )
+    return url, api_key
+
+
+def _immich_album_assets(
+    source: ImmichSource,
+    album_id: str,
+    asset_ids: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Resolve an album's ``{"id", "name"}`` assets, filtered to *asset_ids* when given."""
+    assets = source.list_album_assets(album_id)
+    if asset_ids:
+        wanted = set(asset_ids)
+        assets = [a for a in assets if a["id"] in wanted]
+    return assets
 
 
 def _result_to_dict(result: CaptionResult) -> dict[str, Any]:
@@ -293,6 +357,32 @@ def create_app(
     # Always mounted — Frigate's genai block uses POST /v1/chat/completions.
     # Engine kwargs are forwarded so model_dir / florence_model_id are honoured.
     app.include_router(create_openai_router(**kwargs), prefix="/v1")
+
+    @app.get("/health")
+    async def health() -> dict[str, Any]:
+        """Service liveness/identity probe (mirrors argus-curator's /health shape)."""
+        return {
+            "status": "ok",
+            "service": "argus-lens",
+            "version": __version__,
+            "source_root": str(Path(default_source).resolve()) if default_source else None,
+        }
+
+    @app.get("/profiles")
+    async def profiles() -> dict[str, Any]:
+        """Expose the caption taxonomy so UIs don't have to hardcode it.
+
+        Values are derived from the real sources of truth: the assembly-profile
+        registry, ``CAPTION_TARGET_STYLES``, ``DEFAULT_CATEGORY_CONFIGS``, and
+        ``BACKEND_TOKEN_BUDGETS``.
+        """
+        return {
+            "assembly_profiles": list(available_profiles()),
+            "target_styles": list(CAPTION_TARGET_STYLES),
+            "target_categories": list(get_category_names()),
+            "target_backends": list(BACKEND_TOKEN_BUDGETS),
+            "token_budgets": dict(BACKEND_TOKEN_BUDGETS),
+        }
 
     @app.get("/backends")
     async def list_backends() -> dict[str, Any]:
@@ -553,5 +643,151 @@ def create_app(
             }
 
         return await asyncio.to_thread(_run)
+
+    @app.get("/immich/albums")
+    async def immich_albums() -> dict[str, Any]:
+        """List Immich albums with asset counts (requires IMMICH_URL/IMMICH_API_KEY)."""
+        url, api_key = _immich_config()
+        source = ImmichSource(url, api_key)
+        try:
+            albums = await asyncio.to_thread(source.list_albums)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Immich request failed: {exc}") from exc
+        return {"albums": albums}
+
+    @app.post("/immich/pull")
+    async def immich_pull(req: ImmichPullRequest) -> StreamingResponse:
+        """Download Immich album assets into a folder under the source root.
+
+        Streams NDJSON: one ``{type:"progress", done, total, name}`` line per
+        asset (with an ``error`` field on per-asset failure), then a final
+        ``{type:"complete", folder, downloaded, skipped, failed}`` line. Files
+        that already exist with the same name are skipped, and ``dest_folder``
+        must resolve inside the configured source root.
+        """
+        url, api_key = _immich_config()
+        dest = _confine_folder(default_source, req.dest_folder)
+        source = ImmichSource(url, api_key)
+        try:
+            assets = await asyncio.to_thread(_immich_album_assets, source, req.album_id, req.asset_ids)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Immich request failed: {exc}") from exc
+        dest.mkdir(parents=True, exist_ok=True)
+        total = len(assets)
+        root_resolved = Path(default_source).resolve()  # default_source is set: _confine_folder passed
+        folder_rel = str(dest.relative_to(root_resolved))
+        logger.info("immich_pull_start", album_id=req.album_id, total=total, folder=folder_rel)
+
+        def _download(asset: dict[str, Any], target: Path) -> None:
+            """Fetch one asset's original bytes from Immich and write them to *target*."""
+            data = source.fetch_original(AssetRef(id=asset["id"]))
+            target.write_bytes(data)
+
+        async def _ndjson() -> Any:
+            """Yield a progress line per asset, then a final completion summary line."""
+            downloaded = skipped = failed = 0
+            for i, asset in enumerate(assets):
+                # basename only: an Immich filename can never climb out of dest
+                name = Path(asset["name"]).name
+                line: dict[str, Any] = {"type": "progress", "done": i + 1, "total": total, "name": name}
+                target = dest / name
+                if target.exists():
+                    skipped += 1
+                else:
+                    try:
+                        # Network + disk I/O off the event loop so lines flush promptly.
+                        await asyncio.to_thread(_download, asset, target)
+                        downloaded += 1
+                    except Exception as exc:  # noqa: BLE001 - report per-asset, keep going
+                        failed += 1
+                        line["error"] = str(exc)
+                yield json.dumps(line) + "\n"
+            logger.info("immich_pull_done", downloaded=downloaded, skipped=skipped, failed=failed)
+            yield (
+                json.dumps(
+                    {
+                        "type": "complete",
+                        "folder": folder_rel,
+                        "downloaded": downloaded,
+                        "skipped": skipped,
+                        "failed": failed,
+                    }
+                )
+                + "\n"
+            )
+
+        return StreamingResponse(
+            _ndjson(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/immich/caption/stream")
+    async def immich_caption_stream(req: ImmichCaptionRequest) -> StreamingResponse:
+        """Caption Immich album assets in memory, streaming NDJSON progress.
+
+        Each asset is fetched via the Immich API (no disk writes) and captioned
+        with the requested target profile. Streams one ``{type:"progress",
+        done, total, asset_id, name, final_caption|error}`` line per asset,
+        then a final ``{type:"complete", total, captioned, failed}`` line.
+        When ``write_back`` is true, the caption is pushed back to Immich as
+        the asset description, with the raw tags (when available) as keywords.
+        """
+        url, api_key = _immich_config()
+        source = ImmichSource(url, api_key)
+        sink = ImmichSink(url, api_key) if req.write_back else None
+        try:
+            assets = await asyncio.to_thread(_immich_album_assets, source, req.album_id, req.asset_ids)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Immich request failed: {exc}") from exc
+        total = len(assets)
+        logger.info("immich_caption_start", album_id=req.album_id, total=total, write_back=req.write_back)
+
+        def _caption_one(asset: dict[str, Any]) -> dict[str, Any]:
+            """Fetch, caption, and optionally write back one asset.
+
+            Returns ``{"asset_id", "name", "final_caption"}`` on success or
+            ``{"asset_id", "name", "error"}`` on failure — never both.
+            """
+            ref = AssetRef(id=asset["id"])
+            try:
+                pil = source.fetch_image(ref)
+                result = engine.caption(
+                    pil,
+                    trigger_word=req.trigger_word,
+                    target_style=req.target_style,
+                    target_category=req.target_category,
+                    target_backend=req.target_backend,
+                    checkpoint=req.checkpoint,
+                    prose_enrichment=req.prose_enrichment,
+                )
+                if sink is not None:
+                    keywords = [t.strip() for t in result.raw_tags.split(",") if t.strip()]
+                    sink.write(ref, keywords=keywords, description=result.final_caption)
+            except Exception as exc:  # noqa: BLE001 - report per-asset, keep going
+                return {"asset_id": asset["id"], "name": asset["name"], "error": str(exc)}
+            return {"asset_id": asset["id"], "name": asset["name"], "final_caption": result.final_caption}
+
+        async def _ndjson() -> Any:
+            """Yield a progress line per asset, then a final completion summary line."""
+            captioned = 0
+            failed = 0
+            for i, asset in enumerate(assets):
+                # Fetch + caption + write-back is blocking network/GPU work —
+                # run off the event loop so the stream flushes each line promptly.
+                outcome = await asyncio.to_thread(_caption_one, asset)
+                if "error" in outcome:
+                    failed += 1
+                else:
+                    captioned += 1
+                yield json.dumps({"type": "progress", "done": i + 1, "total": total, **outcome}) + "\n"
+            logger.info("immich_caption_done", captioned=captioned, failed=failed)
+            yield json.dumps({"type": "complete", "total": total, "captioned": captioned, "failed": failed}) + "\n"
+
+        return StreamingResponse(
+            _ndjson(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     return app
