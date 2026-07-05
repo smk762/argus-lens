@@ -80,7 +80,7 @@ def test_list_assets_pages_until_next_page_is_null():
         _FakeResponse(json_data=_search_page(["a", "b"], next_page="2")),
         _FakeResponse(json_data=_search_page(["c"], next_page=None)),
     ]
-    with patch("httpx.post", side_effect=pages) as mock_post:
+    with patch("httpx.Client.post", side_effect=pages) as mock_post:
         refs = list(ImmichSource("http://immich.local", "key", page_size=2).list_assets())
 
     assert [r.id for r in refs] == ["a", "b", "c"]
@@ -98,7 +98,9 @@ def test_list_assets_pages_until_next_page_is_null():
 
 def test_list_assets_since_maps_to_updated_after():
     """Maps the `since` cursor to Immich's updatedAfter filter for incremental sync."""
-    with patch("httpx.post", return_value=_FakeResponse(json_data=_search_page([], next_page=None))) as mock_post:
+    with patch(
+        "httpx.Client.post", return_value=_FakeResponse(json_data=_search_page([], next_page=None))
+    ) as mock_post:
         list(ImmichSource("http://immich.local", "key").list_assets(since="2026-07-01T00:00:00Z"))
 
     assert mock_post.call_args.kwargs["json"]["updatedAfter"] == "2026-07-01T00:00:00Z"
@@ -106,7 +108,7 @@ def test_list_assets_since_maps_to_updated_after():
 
 def test_list_assets_is_lazy_and_raises_on_http_error():
     """Makes no request until consumed, then propagates HTTP errors from the search API."""
-    with patch("httpx.post", return_value=_FakeResponse(status_code=401)) as mock_post:
+    with patch("httpx.Client.post", return_value=_FakeResponse(status_code=401)) as mock_post:
         it = ImmichSource("http://immich.local", "key").list_assets()
         mock_post.assert_not_called()  # generator: no request until consumed
         with pytest.raises(httpx.HTTPStatusError):
@@ -122,7 +124,7 @@ def test_list_albums_maps_immich_fields():
         {"id": "al1", "albumName": "Trip", "assetCount": 3},
         {"id": "al2"},  # missing name/count fall back to "" / 0
     ]
-    with patch("httpx.get", return_value=_FakeResponse(json_data=albums_json)) as mock_get:
+    with patch("httpx.Client.get", return_value=_FakeResponse(json_data=albums_json)) as mock_get:
         albums = ImmichSource("http://immich.local", "key").list_albums()
 
     assert albums == [
@@ -136,7 +138,7 @@ def test_list_albums_maps_immich_fields():
 def test_list_albums_raises_on_http_error():
     """Propagates httpx.HTTPStatusError when the album listing fails."""
     with (
-        patch("httpx.get", return_value=_FakeResponse(status_code=401)),
+        patch("httpx.Client.get", return_value=_FakeResponse(status_code=401)),
         pytest.raises(httpx.HTTPStatusError),
     ):
         ImmichSource("http://immich.local", "key").list_albums()
@@ -151,7 +153,7 @@ def test_list_album_assets_keeps_images_and_encodes_album_id():
             {"id": "b"},  # missing type is treated as IMAGE; name falls back to id
         ]
     }
-    with patch("httpx.get", return_value=_FakeResponse(json_data=album_json)) as mock_get:
+    with patch("httpx.Client.get", return_value=_FakeResponse(json_data=album_json)) as mock_get:
         assets = ImmichSource("http://immich.local", "key").list_album_assets("al/1")
 
     assert assets == [{"id": "a", "name": "a.jpg"}, {"id": "b", "name": "b"}]
@@ -163,7 +165,7 @@ def test_list_album_assets_keeps_images_and_encodes_album_id():
 
 def test_fetch_original_returns_raw_bytes():
     """Returns the undecoded original bytes with a binary Accept header."""
-    with patch("httpx.get", return_value=_FakeResponse(b"raw-bytes")) as mock_get:
+    with patch("httpx.Client.get", return_value=_FakeResponse(b"raw-bytes")) as mock_get:
         data = ImmichSource("http://immich.local", "key").fetch_original(AssetRef(id="abc"))
 
     assert data == b"raw-bytes"
@@ -176,7 +178,7 @@ def test_fetch_original_returns_raw_bytes():
 
 def test_fetch_image_hits_original_endpoint():
     """Fetches the original-asset endpoint with a binary Accept header and decodes the image."""
-    with patch("httpx.get", return_value=_FakeResponse(_png_bytes())) as mock_get:
+    with patch("httpx.Client.get", return_value=_FakeResponse(_png_bytes())) as mock_get:
         img = ImmichSource("http://immich.local", "key").fetch_image(AssetRef(id="abc123"))
 
     assert img.size == (5, 5)
@@ -187,7 +189,7 @@ def test_fetch_image_hits_original_endpoint():
 
 def test_fetch_image_percent_encodes_asset_id():
     """Percent-encodes asset IDs when building the original-asset URL."""
-    with patch("httpx.get", return_value=_FakeResponse(_png_bytes())) as mock_get:
+    with patch("httpx.Client.get", return_value=_FakeResponse(_png_bytes())) as mock_get:
         ImmichSource("http://immich.local", "key").fetch_image(AssetRef(id="x?a=1/../y"))
 
     # The id is encoded into a single safe path segment (no raw ? or / leaking).
@@ -197,7 +199,7 @@ def test_fetch_image_percent_encodes_asset_id():
 def test_fetch_image_raises_on_http_error():
     """Propagates httpx.HTTPStatusError when the asset fetch returns an error status."""
     with (
-        patch("httpx.get", return_value=_FakeResponse(status_code=404)),
+        patch("httpx.Client.get", return_value=_FakeResponse(status_code=404)),
         pytest.raises(httpx.HTTPStatusError),
     ):
         ImmichSource("http://immich.local", "key").fetch_image(AssetRef(id="missing"))
@@ -213,7 +215,7 @@ def test_write_sets_description_and_upserts_and_assigns_tags():
         _FakeResponse(json_data=[{"id": "t1", "name": "beach"}, {"id": "t2", "name": "sunset"}]),  # PUT /api/tags
         _FakeResponse(json_data={"count": 1}),  # PUT /api/tags/assets
     ]
-    with patch("httpx.put", side_effect=responses) as mock_put:
+    with patch("httpx.Client.put", side_effect=responses) as mock_put:
         ImmichSink("http://immich.local", "key").write(
             AssetRef(id="x"), keywords=["beach", "sunset"], description="A sunset at the beach"
         )
@@ -233,7 +235,7 @@ def test_write_sets_description_and_upserts_and_assigns_tags():
 
 def test_write_percent_encodes_asset_id_in_description_update():
     """Percent-encodes asset IDs when building the asset-update URL."""
-    with patch("httpx.put", return_value=_FakeResponse(json_data={})) as mock_put:
+    with patch("httpx.Client.put", return_value=_FakeResponse(json_data={})) as mock_put:
         ImmichSink("http://immich.local", "key").write(AssetRef(id="x/../y"), keywords=[], description="d")
 
     assert mock_put.call_args[0][0] == "http://immich.local/api/assets/x%2F..%2Fy"
@@ -241,13 +243,13 @@ def test_write_percent_encodes_asset_id_in_description_update():
 
 def test_write_skips_empty_description_and_empty_keywords():
     """Skips API calls for empty values so blanks never clobber existing Immich metadata."""
-    with patch("httpx.put") as mock_put:
+    with patch("httpx.Client.put") as mock_put:
         ImmichSink("http://immich.local", "key").write(AssetRef(id="x"), keywords=[], description="")
 
     mock_put.assert_not_called()
 
     with patch(
-        "httpx.put",
+        "httpx.Client.put",
         side_effect=[_FakeResponse(json_data=[{"id": "t1", "name": "a"}]), _FakeResponse(json_data={"count": 1})],
     ) as mock_put:
         ImmichSink("http://immich.local", "key").write(AssetRef(id="x"), keywords=["a"])
@@ -262,7 +264,7 @@ def test_write_skips_empty_description_and_empty_keywords():
 def test_write_raises_on_http_error_and_stops():
     """Stops after the first failing call and propagates the HTTP error."""
     with (
-        patch("httpx.put", return_value=_FakeResponse(status_code=403)) as mock_put,
+        patch("httpx.Client.put", return_value=_FakeResponse(status_code=403)) as mock_put,
         pytest.raises(httpx.HTTPStatusError),
     ):
         ImmichSink("http://immich.local", "key").write(AssetRef(id="x"), keywords=["a"], description="d")

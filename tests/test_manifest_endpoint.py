@@ -299,6 +299,48 @@ def test_manifest_write_xmp_reports_duplicate_row_collision(client: TestClient, 
     assert "collision" in body["errors"][0]["error"]
 
 
+def test_manifest_write_xmp_collision_detected_across_path_spellings(client: TestClient, tmp_path: Path) -> None:
+    """The same image spelled two ways ('sub/../') is one collision error, not a silent double write."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    (tmp_path / "sub").mkdir()
+    alias = str(tmp_path / "sub" / ".." / "01.jpg")
+    rows = [
+        {"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}},
+        {"rel_path": "01.jpg-alias", "abs_path": alias, "target_profile": {}},
+    ]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "write_xmp": "true"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["captioned"] == 1
+    assert body["failed"] == 1
+    assert body["xmp_written"] == 1
+    assert "collision" in body["errors"][0]["error"]
+
+
+def test_manifest_write_xmp_overwrite_false_protects_existing_sidecar(client: TestClient, tmp_path: Path) -> None:
+    """xmp_overwrite=false turns a pre-existing .xmp into a per-image error instead of replacing it."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    existing = tmp_path / "01.jpg.xmp"
+    existing.write_text("<precious/>", encoding="utf-8")
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "write_xmp": "true", "xmp_overwrite": "false"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["failed"] == 1
+    assert "already exists" in body["errors"][0]["error"]
+    assert existing.read_text(encoding="utf-8") == "<precious/>"
+
+
 def test_manifest_stream_write_xmp(client: TestClient, tmp_path: Path) -> None:
     """The stream reports xmp_path per progress line and an xmp_written total on complete."""
     img = tmp_path / "01.jpg"

@@ -187,6 +187,26 @@ def test_caption_folder_write_xmp_overwrites_existing_sidecar(tmp_path: Path) ->
     assert stale_txt.read_text(encoding="utf-8") == body["results"][0]["final_caption"]
 
 
+def test_caption_folder_xmp_overwrite_false_protects_existing_sidecar(tmp_path: Path) -> None:
+    """xmp_overwrite=false reports a pre-existing .xmp as a per-image error instead of replacing it."""
+    _png(tmp_path / "01.jpg")
+    existing = tmp_path / "01.jpg.xmp"
+    existing.write_text("<precious digikam metadata/>", encoding="utf-8")
+
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.post(
+        "/caption/folder",
+        json={"folder": str(tmp_path), "write_sidecar": False, "write_xmp": True, "xmp_overwrite": False},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["failed"] == 1
+    assert body["xmp_written"] == 0
+    assert "already exists" in body["errors"][0]["error"]
+    # the third-party sidecar is untouched
+    assert existing.read_text(encoding="utf-8") == "<precious digikam metadata/>"
+
+
 def test_folders_browse(tmp_path: Path) -> None:
     """GET /folders lists subfolders with image counts and rejects path traversal with 400."""
     _png(tmp_path / "personA" / "01.jpg")

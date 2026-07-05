@@ -189,7 +189,7 @@ Endpoints:
 - `GET /health` -- liveness probe: `{status, service, version, source_root}`
 - `GET /profiles` -- caption taxonomy for UIs: `{assembly_profiles, target_styles, target_categories, target_backends, token_budgets}`
 - `GET /immich/albums` -- list Immich albums (`{albums: [{id, name, asset_count}]}`); requires `IMMICH_URL` + `IMMICH_API_KEY`
-- `POST /immich/pull` -- download an Immich album (or selected `asset_ids`) into a folder under the source root; NDJSON progress stream, skips existing files
+- `POST /immich/pull` -- download an Immich album (or selected `asset_ids`) into a folder under the source root; NDJSON progress stream, atomic concurrent downloads, skips existing files (in-request filename collisions are per-asset errors, and non-captionable originals like HEIC/DNG get a `warning`)
 - `POST /immich/caption/stream` -- caption Immich album assets in memory (NDJSON progress); `write_back: true` pushes captions back to Immich (`write_xmp` is rejected here -- assets never touch disk; pull first, then `/caption/folder`)
 - `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider)
 
@@ -221,7 +221,7 @@ for ref in source.list_assets(since="2026-07-01T00:00:00Z"):
 
 Keywords are upserted as Immich tags (existing tags are reused) and attached to the asset; the description lands in the asset's description field, both searchable in the Immich UI. Writes are idempotent, so re-running over the same assets is safe.
 
-If you'd rather keep Argus Lens decoupled from the Immich API entirely, use `XmpSink` instead: it writes standard `.xmp` sidecars next to your originals, which Immich (as well as Lightroom and digiKam) ingests on library scan. The captioning endpoints expose this directly: pass `write_xmp: true` to `/caption/folder`, `/caption/manifest`, or `/caption/manifest/stream` and each image gets an `<image>.xmp` sidecar with the raw tags as `dc:subject` keywords and the final caption as `dc:description` -- no Immich/Lightroom/digiKam API integration required, just point their library scan at the folder.
+If you'd rather keep Argus Lens decoupled from the Immich API entirely, use `XmpSink` instead: it writes standard `.xmp` sidecars next to your originals, which Immich (as well as Lightroom and digiKam) ingests on library scan. The captioning endpoints expose this directly: pass `write_xmp: true` to `/caption/folder`, `/caption/manifest`, or `/caption/manifest/stream` and each image gets an `<image>.xmp` sidecar with the raw tags as `dc:subject` keywords and the final caption as `dc:description` -- no Immich/Lightroom/digiKam API integration required, just point their library scan at the folder. Existing `.xmp` files are replaced by default; pass `xmp_overwrite: false` to report them as per-image errors instead (XMP writes never merge, so this protects sidecars other tools populated).
 
 ### Docker
 

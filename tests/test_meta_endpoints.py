@@ -67,6 +67,8 @@ def test_profiles_exposes_taxonomy_from_sources_of_truth() -> None:
     client = TestClient(create_app(default_backend=_StubBackend()))
     body = client.get("/profiles").json()
     assert body["assembly_profiles"] == list(available_profiles())
+    # non-vacuous: the trunk pipeline is registered, so the list is never empty
+    assert "lora_training" in body["assembly_profiles"]
     assert body["target_styles"] == list(CAPTION_TARGET_STYLES)
     assert body["target_categories"] == list(get_category_names())
     assert body["target_backends"] == list(BACKEND_TOKEN_BUDGETS)

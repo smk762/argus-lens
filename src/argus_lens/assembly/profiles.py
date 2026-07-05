@@ -5,17 +5,16 @@ The assembly pipeline is currently hard-specialised for diffusion training
 introduces an ``AssemblyProfile`` protocol so the same normalised model output
 can be assembled for different downstream intents.
 
-The existing logic should move into a ``lora_training`` profile; new verticals
-(``dam_keywording``, ``alt_text``, ``search_index``, ``surveillance``) plug in
-alongside it without forking the trunk.
-
-Status: scaffold (protocol + registry). Concrete profiles to follow.
+The trunk pipeline is registered as the ``lora_training`` profile; new
+verticals (``dam_keywording``, ``alt_text``, ``search_index``,
+``surveillance``) plug in alongside it without forking the trunk.
 """
 
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from argus_lens.assembly.composer import compose_caption_result
 from argus_lens.types import CaptionResult
 
 
@@ -69,3 +68,21 @@ def get_profile(name: str) -> AssemblyProfile:
 def available_profiles() -> tuple[str, ...]:
     """Return the names of all registered profiles."""
     return tuple(sorted(_REGISTRY))
+
+
+class LoraTrainingProfile:
+    """The trunk diffusion-training assembly pipeline as a named profile.
+
+    Wraps :func:`compose_caption_result` — the assembly path behind
+    ``ArgusLens.caption`` — so the registry (and ``GET /profiles``) reflects
+    the pipeline that actually ships rather than an empty scaffold.
+    """
+
+    name = "lora_training"
+
+    def assemble(self, *, tags: str = "", prose: str = "", **kwargs) -> CaptionResult:
+        """Assemble via the trunk composer (``trigger_word``/``target_profile`` etc. pass through)."""
+        return compose_caption_result(tags=tags, prose=prose, **kwargs)
+
+
+register_profile(LoraTrainingProfile())

@@ -124,6 +124,19 @@ def test_immich_albums_maps_http_errors_to_502(immich_env, monkeypatch) -> None:
     assert "Immich request failed" in resp.json()["detail"]
 
 
+def test_immich_albums_maps_garbled_payload_to_502(immich_env, monkeypatch) -> None:
+    """A 200 response that isn't the expected JSON (e.g. an HTML login page) is a 502, not a 500."""
+
+    def _bad(self):
+        """Simulate resp.json() choking on a non-JSON body."""
+        raise json.JSONDecodeError("Expecting value", "<html>", 0)
+
+    monkeypatch.setattr(ImmichSource, "list_albums", _bad)
+    resp = _client().get("/immich/albums")
+    assert resp.status_code == 502
+    assert "Immich request failed" in resp.json()["detail"]
+
+
 # --- POST /immich/pull ---
 
 
@@ -177,6 +190,20 @@ def test_immich_pull_reports_per_asset_failures(immich_env, album_assets, monkey
     assert events[-1] == {"type": "complete", "folder": "trip", "downloaded": 1, "skipped": 0, "failed": 1}
 
 
+def test_immich_pull_duplicate_basename_in_request_is_a_failure(immich_env, monkeypatch, tmp_path: Path) -> None:
+    """Two assets sharing a basename in one request: the second is a collision error, not a skip."""
+    assets = [{"id": "a1", "name": "same.jpg"}, {"id": "a2", "name": "sub/same.jpg"}]
+    monkeypatch.setattr(ImmichSource, "list_album_assets", lambda self, album_id: list(assets))
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
+
+    resp = _client(tmp_path).post("/immich/pull", json={"album_id": "al1", "dest_folder": "trip"})
+    events = _events(resp)
+    progress = [e for e in events if e["type"] == "progress"]
+    assert "error" not in progress[0]
+    assert "collision" in progress[1]["error"]
+    assert events[-1] == {"type": "complete", "folder": "trip", "downloaded": 1, "skipped": 0, "failed": 1}
+
+
 def test_immich_pull_requires_source_root(immich_env) -> None:
     """Returns 400 when the app has no configured source root."""
     resp = _client().post("/immich/pull", json={"album_id": "al1", "dest_folder": "trip"})
@@ -191,6 +218,69 @@ def test_immich_pull_rejects_path_traversal(immich_env, tmp_path: Path) -> None:
     resp = _client(root).post("/immich/pull", json={"album_id": "al1", "dest_folder": "../outside"})
     assert resp.status_code == 400
     assert not (tmp_path / "outside").exists()
+
+
+def test_immich_pull_rejects_file_dest_folder(immich_env, album_assets, tmp_path: Path) -> None:
+    """A dest_folder that is an existing regular file is a 400, not a 500."""
+    (tmp_path / "cat.jpg").write_bytes(b"file")
+    resp = _client(tmp_path).post("/immich/pull", json={"album_id": "al1", "dest_folder": "cat.jpg"})
+    assert resp.status_code == 400
+    assert "not a directory" in resp.json()["detail"]
+
+
+def test_immich_pull_empty_asset_ids_pulls_nothing(immich_env, album_assets, monkeypatch, tmp_path: Path) -> None:
+    """asset_ids=[] is an explicit empty selection, not 'the whole album'."""
+
+    def _fail(self, ref):
+        """Nothing may be fetched for an empty selection."""
+        raise AssertionError("nothing should be fetched for an empty selection")
+
+    monkeypatch.setattr(ImmichSource, "fetch_original", _fail)
+    resp = _client(tmp_path).post("/immich/pull", json={"album_id": "al1", "asset_ids": [], "dest_folder": "trip"})
+    assert resp.status_code == 200
+    assert _events(resp) == [{"type": "complete", "folder": "trip", "downloaded": 0, "skipped": 0, "failed": 0}]
+
+
+def test_immich_pull_unknown_asset_ids_is_404(immich_env, album_assets, tmp_path: Path) -> None:
+    """Requesting ids that are not in the album is a 404, not a silent zero-work success."""
+    resp = _client(tmp_path).post(
+        "/immich/pull", json={"album_id": "al1", "asset_ids": ["a2", "ghost"], "dest_folder": "trip"}
+    )
+    assert resp.status_code == 404
+    assert "ghost" in resp.json()["detail"]
+
+
+def test_immich_pull_failed_download_leaves_no_file_behind(
+    immich_env, album_assets, monkeypatch, tmp_path: Path
+) -> None:
+    """A failed download leaves neither the target nor a .part temp file, so re-pulling retries it."""
+
+    def _fetch(self, ref):
+        """Fail for the first asset only."""
+        if ref.id == "a1":
+            raise httpx.ConnectError("boom")
+        return _png_bytes()
+
+    monkeypatch.setattr(ImmichSource, "fetch_original", _fetch)
+    resp = _client(tmp_path).post("/immich/pull", json={"album_id": "al1", "dest_folder": "trip"})
+    assert _events(resp)[-1]["failed"] == 1
+    dest = tmp_path / "trip"
+    assert not (dest / "01.jpg").exists()
+    assert (dest / "02.jpg").exists()
+    assert not list(dest.glob("*.part"))
+
+
+def test_immich_pull_warns_on_uncaptionable_extension(immich_env, monkeypatch, tmp_path: Path) -> None:
+    """Pulled originals /caption/folder cannot walk (e.g. HEIC) carry a warning on their progress line."""
+    assets = [{"id": "a1", "name": "IMG_0001.HEIC"}, {"id": "a2", "name": "02.jpg"}]
+    monkeypatch.setattr(ImmichSource, "list_album_assets", lambda self, album_id: list(assets))
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
+
+    resp = _client(tmp_path).post("/immich/pull", json={"album_id": "al1", "dest_folder": "trip"})
+    progress = [e for e in _events(resp) if e["type"] == "progress"]
+    assert "not captionable" in progress[0]["warning"]
+    assert ".heic" in progress[0]["warning"]
+    assert "warning" not in progress[1]
 
 
 # --- POST /immich/caption/stream ---
@@ -282,3 +372,39 @@ def test_immich_caption_stream_filters_to_requested_asset_ids(immich_env, album_
     events = _events(resp)
     assert [e["asset_id"] for e in events if e["type"] == "progress"] == ["a2"]
     assert events[-1]["total"] == 1
+
+
+def test_immich_caption_stream_empty_asset_ids_captions_nothing(immich_env, album_assets, monkeypatch) -> None:
+    """asset_ids=[] captions nothing rather than the whole album (or mass write-back)."""
+
+    def _fail(self, ref):
+        """Nothing may be fetched for an empty selection."""
+        raise AssertionError("nothing should be fetched for an empty selection")
+
+    monkeypatch.setattr(ImmichSource, "fetch_image", _fail)
+    resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "asset_ids": [], "write_back": True})
+    assert _events(resp) == [{"type": "complete", "total": 0, "captioned": 0, "failed": 0}]
+
+
+def test_immich_caption_stream_unknown_asset_ids_is_404(immich_env, album_assets) -> None:
+    """Requesting ids that are not in the album is a 404, not a silent zero-work success."""
+    resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "asset_ids": ["ghost"]})
+    assert resp.status_code == 404
+    assert "ghost" in resp.json()["detail"]
+
+
+def test_immich_caption_stream_write_back_failure_keeps_caption(immich_env, album_assets, monkeypatch) -> None:
+    """A failed write-back still reports the computed caption on the progress line (and counts as failed)."""
+    monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))
+
+    def _boom(self, ref, *, keywords, description=""):
+        """Simulate Immich rejecting the write-back."""
+        raise httpx.ConnectError("tags rejected")
+
+    monkeypatch.setattr(ImmichSink, "write", _boom)
+    resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "write_back": True})
+    events = _events(resp)
+    progress = [e for e in events if e["type"] == "progress"]
+    assert all("write_back failed" in e["error"] for e in progress)
+    assert all(e["final_caption"] for e in progress)
+    assert events[-1] == {"type": "complete", "total": 2, "captioned": 0, "failed": 2}

@@ -42,6 +42,7 @@ logger = structlog.get_logger()
 SUPPORTED_EXTS = IMAGE_SUFFIXES
 _XMP_SINK = XmpSink()  # stateless; shared by every endpoint that writes XMP sidecars
 _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing snappy)
+_PULL_CONCURRENCY = 4  # parallel Immich downloads per /immich/pull request
 
 
 class CaptionURLRequest(BaseModel):
@@ -62,6 +63,7 @@ class CaptionFolderRequest(BaseModel):
     recursive: bool = False
     write_sidecar: bool = True
     write_xmp: bool = False
+    xmp_overwrite: bool = True
     trigger_word: str = ""
     target_style: str = "photo"
     target_category: str = "identity"
@@ -109,22 +111,51 @@ def _immich_config() -> tuple[str, str]:
     return url, api_key
 
 
+# Failures talking to Immich that must surface as 502, not a 500 traceback:
+# transport errors, a malformed IMMICH_URL, and 200-but-garbled bodies —
+# json.JSONDecodeError is a ValueError (e.g. a reverse proxy answering with an
+# HTML login page) and KeyError covers responses missing expected fields.
+_IMMICH_UPSTREAM_ERRORS = (httpx.HTTPError, httpx.InvalidURL, ValueError, KeyError)
+
+
+def _immich_502(exc: Exception) -> HTTPException:
+    """502 for a failed or garbled Immich exchange."""
+    return HTTPException(status_code=502, detail=f"Immich request failed: {exc!r}")
+
+
 def _immich_album_assets(
     source: ImmichSource,
     album_id: str,
     asset_ids: list[str] | None,
 ) -> list[dict[str, Any]]:
-    """Resolve an album's ``{"id", "name"}`` assets, filtered to *asset_ids* when given."""
+    """Resolve an album's ``{"id", "name"}`` assets, filtered to *asset_ids* when given.
+
+    ``asset_ids=None`` means the whole album; an explicit list selects exactly
+    those assets (``[]`` selects none — a UI posting an emptied selection must
+    not operate on the full album). Ids missing from the album raise 404
+    instead of being silently dropped as a zero-work success.
+    """
     assets = source.list_album_assets(album_id)
-    if asset_ids:
+    if asset_ids is not None:
         wanted = set(asset_ids)
         assets = [a for a in assets if a["id"] in wanted]
+        missing = wanted - {a["id"] for a in assets}
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"asset ids not found in album {album_id!r}: {sorted(missing)}",
+            )
     return assets
 
 
 def _result_to_dict(result: CaptionResult) -> dict[str, Any]:
     """Convert a ``CaptionResult`` dataclass into a JSON-serialisable dict."""
     return asdict(result)
+
+
+def _parse_keywords(raw_tags: str) -> list[str]:
+    """Split a comma-separated raw-tags string into trimmed, non-empty keywords."""
+    return [t.strip() for t in raw_tags.split(",") if t.strip()]
 
 
 def _resolve_within(root: Path, rel: str) -> Path:
@@ -198,19 +229,23 @@ def _caption_and_write(
     prose_enrichment: bool,
     write_sidecar: bool,
     write_xmp: bool,
+    xmp_overwrite: bool,
     written: set[Path],
 ) -> dict[str, Any]:
     """Caption one image and (optionally) write its ``.txt``/``.xmp`` sidecars.
 
     Returns ``{"rel_path", "final_caption"}`` on success (plus ``xmp_path``
     when an XMP sidecar was written) or ``{"rel_path", "error"}`` on failure —
-    never both, so batch counts stay consistent. ``written`` tracks sidecar
-    paths already written in this batch: same-stem images (``cat.jpg`` +
-    ``cat.png``) map to the same ``cat.txt``, and the collision is reported as
-    an error instead of silently overwriting the first caption. XMP sidecars
-    follow the same overwrite semantics as the ``.txt`` sidecars: an existing
-    file on disk is replaced, but a path already written by this batch is a
-    collision error.
+    never both, so batch counts stay consistent (an XMP failure after the
+    ``.txt`` sidecar landed says so in the error text, since that file is
+    already on disk). ``written`` tracks sidecar paths already written in this
+    batch, resolved so two spellings of one target still collide: same-stem
+    images (``cat.jpg`` + ``cat.png``) map to the same ``cat.txt``, and the
+    collision is reported as an error instead of silently overwriting the
+    first caption. With ``xmp_overwrite`` (the default) an existing ``.xmp``
+    on disk is replaced like the ``.txt`` sidecars; without it a pre-existing
+    sidecar (e.g. written by Lightroom/digiKam, whose metadata is not merged)
+    is a per-image error instead.
     """
     try:
         result = engine.caption(
@@ -226,7 +261,10 @@ def _caption_and_write(
         return {"rel_path": rel_path, "error": str(exc)}
     if write_sidecar:
         sidecar = Path(image_path).with_suffix(".txt")
-        if sidecar in written:
+        # Collision keys are resolved: '..' segments or symlinked spellings of
+        # the same target must not sneak past the duplicate check.
+        sidecar_key = sidecar.resolve()
+        if sidecar_key in written:
             return {
                 "rel_path": rel_path,
                 "error": f"sidecar collision: {sidecar.name} was already written for another image in this batch",
@@ -235,24 +273,37 @@ def _caption_and_write(
             sidecar.write_text(result.final_caption, encoding="utf-8")
         except OSError as exc:
             return {"rel_path": rel_path, "error": f"sidecar write failed: {exc}"}
-        written.add(sidecar)
+        written.add(sidecar_key)
     outcome: dict[str, Any] = {"rel_path": rel_path, "final_caption": result.final_caption}
     if write_xmp:
         ref = AssetRef(id=rel_path, path=image_path)
         xmp_path = XmpSink.sidecar_path(ref)
-        if xmp_path in written:
+        xmp_key = xmp_path.resolve()
+        # If the .txt sidecar landed above, that is on-disk state the XMP error
+        # rows below must not hide from the caller.
+        txt_note = " (the .txt sidecar for this image was already written)" if write_sidecar else ""
+        if xmp_key in written:
             return {
                 "rel_path": rel_path,
-                "error": f"xmp sidecar collision: {xmp_path.name} was already written for another image in this batch",
+                "error": (
+                    f"xmp sidecar collision: {xmp_path.name} was already written "
+                    f"for another image in this batch{txt_note}"
+                ),
             }
-        keywords = [t.strip() for t in result.raw_tags.split(",") if t.strip()]
+        keywords = _parse_keywords(result.raw_tags)
         try:
-            # overwrite=True mirrors the .txt sidecar semantics above: a
-            # pre-existing file on disk is replaced by the fresh caption.
-            _XMP_SINK.write(ref, keywords=keywords, description=result.final_caption, overwrite=True)
+            # xmp_overwrite=True mirrors the .txt sidecar semantics above (a
+            # pre-existing file on disk is replaced); False protects sidecars
+            # other tools already populated, since XmpSink never merges.
+            _XMP_SINK.write(ref, keywords=keywords, description=result.final_caption, overwrite=xmp_overwrite)
+        except FileExistsError:
+            return {
+                "rel_path": rel_path,
+                "error": f"xmp sidecar already exists: {xmp_path.name} (xmp_overwrite is false){txt_note}",
+            }
         except OSError as exc:
-            return {"rel_path": rel_path, "error": f"xmp write failed: {exc}"}
-        written.add(xmp_path)
+            return {"rel_path": rel_path, "error": f"xmp write failed: {exc}{txt_note}"}
+        written.add(xmp_key)
         outcome["xmp_path"] = str(xmp_path)
     return outcome
 
@@ -264,6 +315,7 @@ def _caption_manifest_row(
     trigger_word: str,
     write_sidecar: bool,
     write_xmp: bool,
+    xmp_overwrite: bool,
     prose_enrichment: bool,
     written: set[Path],
 ) -> dict[str, Any]:
@@ -287,6 +339,7 @@ def _caption_manifest_row(
         prose_enrichment=prose_enrichment,
         write_sidecar=write_sidecar,
         write_xmp=write_xmp,
+        xmp_overwrite=xmp_overwrite,
         written=written,
     )
 
@@ -533,6 +586,7 @@ def create_app(
         trigger_word: str = Form(""),
         write_sidecar: bool = Form(True),
         write_xmp: bool = Form(False),
+        xmp_overwrite: bool = Form(True),
         prose_enrichment: bool = Form(True),
     ) -> dict[str, Any]:
         """Batch-caption an argus-curator JSONL manifest.
@@ -542,7 +596,9 @@ def create_app(
         a ``.txt`` sidecar is written next to each image. ``write_xmp`` also
         writes an ``<image>.xmp`` sidecar (dc:subject keywords +
         dc:description caption) that Lightroom/digiKam/Immich ingest natively;
-        it is independent of ``write_sidecar``. Assumes the images are
+        it is independent of ``write_sidecar``, and ``xmp_overwrite: false``
+        turns a pre-existing ``.xmp`` (e.g. one another tool populated) into a
+        per-image error instead of replacing it. Assumes the images are
         reachable at ``abs_path`` (e.g. a shared volume with the curator).
         """
         rows = _parse_manifest(await manifest.read())
@@ -559,6 +615,7 @@ def create_app(
                     trigger_word=trigger_word,
                     write_sidecar=write_sidecar,
                     write_xmp=write_xmp,
+                    xmp_overwrite=xmp_overwrite,
                     prose_enrichment=prose_enrichment,
                     written=written,
                 )
@@ -580,6 +637,7 @@ def create_app(
         trigger_word: str = Form(""),
         write_sidecar: bool = Form(True),
         write_xmp: bool = Form(False),
+        xmp_overwrite: bool = Form(True),
         prose_enrichment: bool = Form(True),
     ) -> StreamingResponse:
         """Streaming variant of /caption/manifest for live progress.
@@ -610,6 +668,7 @@ def create_app(
                     trigger_word=trigger_word,
                     write_sidecar=write_sidecar,
                     write_xmp=write_xmp,
+                    xmp_overwrite=xmp_overwrite,
                     prose_enrichment=prose_enrichment,
                     written=written,
                 )
@@ -658,8 +717,10 @@ def create_app(
         (optionally recursively), captions each image with the given target
         profile, and — by default — writes a ``.txt`` sidecar next to each
         image. ``write_xmp`` additionally (and independently) writes an
-        ``<image>.xmp`` sidecar for Lightroom/digiKam/Immich ingestion.
-        Returns the same shape as ``/caption/manifest``.
+        ``<image>.xmp`` sidecar for Lightroom/digiKam/Immich ingestion;
+        ``xmp_overwrite: false`` makes a pre-existing ``.xmp`` a per-image
+        error instead of replacing it. Returns the same shape as
+        ``/caption/manifest``.
         """
         root = _confine_folder(default_source, req.folder)
         if not root.is_dir():
@@ -685,6 +746,7 @@ def create_app(
                     prose_enrichment=req.prose_enrichment,
                     write_sidecar=req.write_sidecar,
                     write_xmp=req.write_xmp,
+                    xmp_overwrite=req.xmp_overwrite,
                     written=written,
                 )
                 (errors if "error" in outcome else results).append(outcome)
@@ -706,8 +768,10 @@ def create_app(
         source = ImmichSource(url, api_key)
         try:
             albums = await asyncio.to_thread(source.list_albums)
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Immich request failed: {exc}") from exc
+        except _IMMICH_UPSTREAM_ERRORS as exc:
+            raise _immich_502(exc) from exc
+        finally:
+            source.close()
         return {"albums": albums}
 
     @app.post("/immich/pull")
@@ -715,61 +779,131 @@ def create_app(
         """Download Immich album assets into a folder under the source root.
 
         Streams NDJSON: one ``{type:"progress", done, total, name}`` line per
-        asset (with an ``error`` field on per-asset failure), then a final
-        ``{type:"complete", folder, downloaded, skipped, failed}`` line. Files
-        that already exist with the same name are skipped, and ``dest_folder``
-        must resolve inside the configured source root.
+        asset (with an ``error`` field on per-asset failure, and a ``warning``
+        when the pulled file's extension is one ``/caption/folder`` will not
+        pick up, e.g. HEIC/DNG originals), then a final ``{type:"complete",
+        folder, downloaded, skipped, failed}`` line. Downloads run a few at a
+        time and land via a temp file + atomic rename, so an interrupted write
+        never leaves a truncated image behind. Files that already exist with
+        the same name are skipped; when two assets in the same request share a
+        basename, the second is reported as a failure instead of being
+        silently dropped. ``dest_folder`` must resolve inside the configured
+        source root.
         """
         url, api_key = _immich_config()
         dest = _confine_folder(default_source, req.dest_folder)
         source = ImmichSource(url, api_key)
         try:
-            assets = await asyncio.to_thread(_immich_album_assets, source, req.album_id, req.asset_ids)
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Immich request failed: {exc}") from exc
-        dest.mkdir(parents=True, exist_ok=True)
+            try:
+                assets = await asyncio.to_thread(_immich_album_assets, source, req.album_id, req.asset_ids)
+            except _IMMICH_UPSTREAM_ERRORS as exc:
+                raise _immich_502(exc) from exc
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+            except (FileExistsError, NotADirectoryError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"dest_folder is not a directory: {req.dest_folder}"
+                ) from exc
+        except HTTPException:
+            source.close()
+            raise
         total = len(assets)
         root_resolved = Path(default_source).resolve()  # default_source is set: _confine_folder passed
         folder_rel = str(dest.relative_to(root_resolved))
         logger.info("immich_pull_start", album_id=req.album_id, total=total, folder=folder_rel)
 
         def _download(asset: dict[str, Any], target: Path) -> None:
-            """Fetch one asset's original bytes from Immich and write them to *target*."""
+            """Fetch one asset's original bytes and write them via temp file + atomic rename.
+
+            A direct write would leave a truncated file on ENOSPC/kill, which
+            the exists()-skip below would then treat as complete on every
+            later pull.
+            """
             data = source.fetch_original(AssetRef(id=asset["id"]))
-            target.write_bytes(data)
+            tmp = target.with_name(target.name + ".part")
+            try:
+                tmp.write_bytes(data)
+                tmp.replace(target)
+            finally:
+                tmp.unlink(missing_ok=True)
 
         async def _ndjson() -> Any:
             """Yield a progress line per asset, then a final completion summary line."""
             downloaded = skipped = failed = 0
-            for i, asset in enumerate(assets):
+            sem = asyncio.Semaphore(_PULL_CONCURRENCY)
+
+            async def _fetch(asset: dict[str, Any], target: Path) -> None:
+                """Download one asset under the concurrency cap, off the event loop."""
+                async with sem:
+                    await asyncio.to_thread(_download, asset, target)
+
+            # Plan every asset first (duplicate/skip decisions are order-
+            # dependent), then let downloads overlap under the semaphore while
+            # progress lines still stream in album order.
+            plans: list[tuple[str, str, Any]] = []
+            seen_names: set[str] = set()
+            for asset in assets:
                 # basename only: an Immich filename can never climb out of dest
                 name = Path(asset["name"]).name
-                line: dict[str, Any] = {"type": "progress", "done": i + 1, "total": total, "name": name}
+                if name in seen_names:
+                    # Two assets in this request share a basename: skipping would
+                    # silently drop the second one, so report it as a failure
+                    # (mirrors the sidecar collision handling in _caption_and_write).
+                    plans.append((name, "collision", None))
+                    continue
+                seen_names.add(name)
                 target = dest / name
                 if target.exists():
-                    skipped += 1
+                    plans.append((name, "skip", None))
                 else:
-                    try:
-                        # Network + disk I/O off the event loop so lines flush promptly.
-                        await asyncio.to_thread(_download, asset, target)
-                        downloaded += 1
-                    except Exception as exc:  # noqa: BLE001 - report per-asset, keep going
+                    plans.append((name, "fetch", asyncio.create_task(_fetch(asset, target))))
+            try:
+                for i, (name, action, task) in enumerate(plans):
+                    line: dict[str, Any] = {"type": "progress", "done": i + 1, "total": total, "name": name}
+                    if action == "collision":
                         failed += 1
-                        line["error"] = str(exc)
-                yield json.dumps(line) + "\n"
-            logger.info("immich_pull_done", downloaded=downloaded, skipped=skipped, failed=failed)
-            yield (
-                json.dumps(
-                    {
-                        "type": "complete",
-                        "folder": folder_rel,
-                        "downloaded": downloaded,
-                        "skipped": skipped,
-                        "failed": failed,
-                    }
+                        line["error"] = (
+                            f"filename collision: {name} was already written for another asset in this request"
+                        )
+                    elif action == "skip":
+                        skipped += 1
+                    else:
+                        try:
+                            await task
+                            downloaded += 1
+                        except Exception as exc:  # noqa: BLE001 - report per-asset, keep going
+                            failed += 1
+                            line["error"] = str(exc)
+                    suffix = Path(name).suffix.lower()
+                    if "error" not in line and suffix not in SUPPORTED_EXTS:
+                        # The pull succeeds, but /caption/folder only walks
+                        # SUPPORTED_EXTS — say so instead of letting the
+                        # pull-then-caption workflow dead-end silently.
+                        line["warning"] = (
+                            f"not captionable: {suffix!r} is not a supported image type"
+                            if suffix
+                            else "not captionable: file has no extension"
+                        )
+                    yield json.dumps(line) + "\n"
+                logger.info("immich_pull_done", downloaded=downloaded, skipped=skipped, failed=failed)
+                yield (
+                    json.dumps(
+                        {
+                            "type": "complete",
+                            "folder": folder_rel,
+                            "downloaded": downloaded,
+                            "skipped": skipped,
+                            "failed": failed,
+                        }
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
+            finally:
+                pending = [t for _, _, t in plans if t is not None]
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                source.close()
 
         return StreamingResponse(
             _ndjson(),
@@ -786,7 +920,9 @@ def create_app(
         done, total, asset_id, name, final_caption|error}`` line per asset,
         then a final ``{type:"complete", total, captioned, failed}`` line.
         When ``write_back`` is true, the caption is pushed back to Immich as
-        the asset description, with the raw tags (when available) as keywords.
+        the asset description, with the raw tags (when available) as keywords;
+        if only the write-back step fails, the progress line keeps
+        ``final_caption`` alongside ``error`` (and counts as failed).
 
         ``write_xmp`` is rejected here (400): assets are fetched via the Immich
         API and never touch local disk, so there is no image path to place a
@@ -807,10 +943,21 @@ def create_app(
         url, api_key = _immich_config()
         source = ImmichSource(url, api_key)
         sink = ImmichSink(url, api_key) if req.write_back else None
+
+        def _close() -> None:
+            """Release the pooled Immich connections."""
+            source.close()
+            if sink is not None:
+                sink.close()
+
         try:
-            assets = await asyncio.to_thread(_immich_album_assets, source, req.album_id, req.asset_ids)
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Immich request failed: {exc}") from exc
+            try:
+                assets = await asyncio.to_thread(_immich_album_assets, source, req.album_id, req.asset_ids)
+            except _IMMICH_UPSTREAM_ERRORS as exc:
+                raise _immich_502(exc) from exc
+        except HTTPException:
+            _close()
+            raise
         total = len(assets)
         logger.info("immich_caption_start", album_id=req.album_id, total=total, write_back=req.write_back)
 
@@ -818,7 +965,11 @@ def create_app(
             """Fetch, caption, and optionally write back one asset.
 
             Returns ``{"asset_id", "name", "final_caption"}`` on success or
-            ``{"asset_id", "name", "error"}`` on failure — never both.
+            ``{"asset_id", "name", "error"}`` when fetching or captioning
+            fails. A write-back failure keeps ``final_caption`` and adds
+            ``error``: the caption was computed (don't discard GPU work), and
+            Immich may already hold part of the write (the description is set
+            before the tag upsert), so the line must not read as a no-op.
             """
             ref = AssetRef(id=asset["id"])
             try:
@@ -832,28 +983,34 @@ def create_app(
                     checkpoint=req.checkpoint,
                     prose_enrichment=req.prose_enrichment,
                 )
-                if sink is not None:
-                    keywords = [t.strip() for t in result.raw_tags.split(",") if t.strip()]
-                    sink.write(ref, keywords=keywords, description=result.final_caption)
             except Exception as exc:  # noqa: BLE001 - report per-asset, keep going
                 return {"asset_id": asset["id"], "name": asset["name"], "error": str(exc)}
-            return {"asset_id": asset["id"], "name": asset["name"], "final_caption": result.final_caption}
+            outcome = {"asset_id": asset["id"], "name": asset["name"], "final_caption": result.final_caption}
+            if sink is not None:
+                try:
+                    sink.write(ref, keywords=_parse_keywords(result.raw_tags), description=result.final_caption)
+                except Exception as exc:  # noqa: BLE001 - report per-asset, keep going
+                    outcome["error"] = f"write_back failed (caption computed; description may already be set): {exc}"
+            return outcome
 
         async def _ndjson() -> Any:
             """Yield a progress line per asset, then a final completion summary line."""
             captioned = 0
             failed = 0
-            for i, asset in enumerate(assets):
-                # Fetch + caption + write-back is blocking network/GPU work —
-                # run off the event loop so the stream flushes each line promptly.
-                outcome = await asyncio.to_thread(_caption_one, asset)
-                if "error" in outcome:
-                    failed += 1
-                else:
-                    captioned += 1
-                yield json.dumps({"type": "progress", "done": i + 1, "total": total, **outcome}) + "\n"
-            logger.info("immich_caption_done", captioned=captioned, failed=failed)
-            yield json.dumps({"type": "complete", "total": total, "captioned": captioned, "failed": failed}) + "\n"
+            try:
+                for i, asset in enumerate(assets):
+                    # Fetch + caption + write-back is blocking network/GPU work —
+                    # run off the event loop so the stream flushes each line promptly.
+                    outcome = await asyncio.to_thread(_caption_one, asset)
+                    if "error" in outcome:
+                        failed += 1
+                    else:
+                        captioned += 1
+                    yield json.dumps({"type": "progress", "done": i + 1, "total": total, **outcome}) + "\n"
+                logger.info("immich_caption_done", captioned=captioned, failed=failed)
+                yield json.dumps({"type": "complete", "total": total, "captioned": captioned, "failed": failed}) + "\n"
+            finally:
+                _close()
 
         return StreamingResponse(
             _ndjson(),
