@@ -50,6 +50,17 @@ _XMP_TEMPLATE = """<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
 class XmpSink:
     """Writes keywords/description to a ``<image>.xmp`` sidecar."""
 
+    @staticmethod
+    def sidecar_path(ref: AssetRef) -> Path:
+        """Return the ``<image>.xmp`` sidecar path for *ref* (e.g. ``cat.jpg.xmp``).
+
+        Raises:
+            ValueError: if *ref* has no local path.
+        """
+        if ref.path is None:
+            raise ValueError(f"AssetRef {ref.id!r} has no local path for an XMP sidecar")
+        return Path(ref.path).with_suffix(Path(ref.path).suffix + ".xmp")
+
     def write(
         self,
         ref: AssetRef,
@@ -70,9 +81,7 @@ class XmpSink:
             ValueError: if *ref* has no local path.
             FileExistsError: if the sidecar exists and *overwrite* is False.
         """
-        if ref.path is None:
-            raise ValueError(f"AssetRef {ref.id!r} has no local path for an XMP sidecar")
-        sidecar = Path(ref.path).with_suffix(Path(ref.path).suffix + ".xmp")
+        sidecar = self.sidecar_path(ref)
         if sidecar.exists() and not overwrite:
             raise FileExistsError(
                 f"XMP sidecar already exists: {sidecar}. Pass overwrite=True to replace it "

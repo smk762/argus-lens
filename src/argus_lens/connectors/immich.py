@@ -23,13 +23,32 @@ DEFAULT_PAGE_SIZE = 250  # Immich's server-side default for /api/search/metadata
 
 
 class _ImmichClient:
-    """Shared base: holds connection details and auth header."""
+    """Shared base: holds connection details, auth header, and a pooled HTTP client."""
 
     def __init__(self, base_url: str, api_key: str, *, timeout: float = DEFAULT_TIMEOUT) -> None:
         """Store server URL (trailing slash stripped), API key, and request timeout."""
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
+        self._client: httpx.Client | None = None
+
+    @property
+    def _http(self) -> httpx.Client:
+        """Lazily-created pooled client shared by every request this instance makes.
+
+        One-shot ``httpx.get``/``httpx.put`` calls open a fresh TCP+TLS
+        connection each time; the per-asset loops (album pulls, batch
+        write-back) would pay that handshake once per asset.
+        """
+        if self._client is None:
+            self._client = httpx.Client(timeout=self._timeout)
+        return self._client
+
+    def close(self) -> None:
+        """Close the pooled HTTP connection (safe to call repeatedly or when unused)."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
     def _headers(self, *, accept: str = "application/json") -> dict[str, str]:
         """Auth headers. *accept* is overridable since binary endpoints (e.g.
@@ -73,11 +92,10 @@ class ImmichSource(_ImmichClient):
             payload: dict[str, Any] = {"page": page, "size": self._page_size, "type": "IMAGE"}
             if since is not None:
                 payload["updatedAfter"] = since
-            resp = httpx.post(
+            resp = self._http.post(
                 self._url("/api/search/metadata"),
                 headers=self._headers(),
                 json=payload,
-                timeout=self._timeout,
             )
             resp.raise_for_status()
             assets = resp.json()["assets"]
@@ -89,16 +107,54 @@ class ImmichSource(_ImmichClient):
             next_page = assets.get("nextPage")
             page = int(next_page) if next_page else None
 
-    def fetch_image(self, ref: AssetRef) -> Image.Image:
-        """Download the asset's original file from Immich and decode it as RGB."""
-        resp = httpx.get(
+    def list_albums(self) -> list[dict[str, Any]]:
+        """List albums via ``GET /api/albums``.
+
+        Returns one ``{"id", "name", "asset_count"}`` dict per album, mapping
+        Immich's ``albumName``/``assetCount`` fields to snake_case.
+        """
+        resp = self._http.get(self._url("/api/albums"), headers=self._headers())
+        resp.raise_for_status()
+        return [
+            {
+                "id": album["id"],
+                "name": album.get("albumName", ""),
+                "asset_count": int(album.get("assetCount") or 0),
+            }
+            for album in resp.json()
+        ]
+
+    def list_album_assets(self, album_id: str) -> list[dict[str, Any]]:
+        """List an album's image assets via ``GET /api/albums/{id}``.
+
+        Returns one ``{"id", "name"}`` dict per image asset (``name`` is
+        Immich's ``originalFileName``); non-image assets (videos) are skipped.
+        """
+        resp = self._http.get(
+            self._url(f"/api/albums/{quote(album_id, safe='')}"),
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        return [
+            {"id": asset["id"], "name": asset.get("originalFileName") or asset["id"]}
+            for asset in resp.json().get("assets", [])
+            if asset.get("type", "IMAGE") == "IMAGE"
+        ]
+
+    def fetch_original(self, ref: AssetRef) -> bytes:
+        """Download the asset's original file bytes from Immich (no decoding)."""
+        resp = self._http.get(
             self._url(self._asset_path(ref.id, "/original")),
             headers=self._headers(accept="*/*"),
-            timeout=self._timeout,
             follow_redirects=True,
         )
         resp.raise_for_status()
-        with Image.open(io.BytesIO(resp.content)) as img:
+        return resp.content
+
+    def fetch_image(self, ref: AssetRef) -> Image.Image:
+        """Download the asset's original file from Immich and decode it as RGB."""
+        data = self.fetch_original(ref)
+        with Image.open(io.BytesIO(data)) as img:
             return img.convert("RGB")
 
 
@@ -116,28 +172,25 @@ class ImmichSink(_ImmichClient):
         never clobbers one already set in Immich.
         """
         if description:
-            resp = httpx.put(
+            resp = self._http.put(
                 self._url(self._asset_path(ref.id)),
                 headers=self._headers(),
                 json={"description": description},
-                timeout=self._timeout,
             )
             resp.raise_for_status()
 
         if keywords:
-            resp = httpx.put(
+            resp = self._http.put(
                 self._url("/api/tags"),
                 headers=self._headers(),
                 json={"tags": keywords},
-                timeout=self._timeout,
             )
             resp.raise_for_status()
             tag_ids = [tag["id"] for tag in resp.json()]
 
-            resp = httpx.put(
+            resp = self._http.put(
                 self._url("/api/tags/assets"),
                 headers=self._headers(),
                 json={"tagIds": tag_ids, "assetIds": [ref.id]},
-                timeout=self._timeout,
             )
             resp.raise_for_status()

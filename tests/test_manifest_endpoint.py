@@ -218,7 +218,7 @@ def test_manifest_stream_yields_progress_then_complete(client: TestClient, tmp_p
     assert progress[1]["rel_path"] == "gone.jpg"
     assert "error" in progress[1]
 
-    assert events[-1] == {"type": "complete", "total": 2, "captioned": 1, "failed": 1}
+    assert events[-1] == {"type": "complete", "total": 2, "captioned": 1, "failed": 1, "xmp_written": 0}
     assert img.with_suffix(".txt").read_text().strip()
 
 
@@ -237,6 +237,127 @@ def test_manifest_stream_skips_sidecar_when_disabled(client: TestClient, tmp_pat
     events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
     assert events[-1]["captioned"] == 1
     assert not img.with_suffix(".txt").exists()
+
+
+def test_manifest_write_xmp_writes_xmp_sidecars(client: TestClient, tmp_path: Path) -> None:
+    """write_xmp=true writes an <image>.xmp sidecar carrying the caption, independent of write_sidecar."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "write_xmp": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["captioned"] == 1
+    assert body["xmp_written"] == 1
+    xmp = tmp_path / "01.jpg.xmp"
+    assert body["results"][0]["xmp_path"] == str(xmp)
+    doc = xmp.read_text(encoding="utf-8")
+    assert "dc:description" in doc
+    assert body["results"][0]["final_caption"] in doc
+    assert not img.with_suffix(".txt").exists()  # write_sidecar was off
+
+
+def test_manifest_write_xmp_off_by_default(client: TestClient, tmp_path: Path) -> None:
+    """Without write_xmp, no .xmp sidecar is written and xmp_written reports 0."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["xmp_written"] == 0
+    assert "xmp_path" not in body["results"][0]
+    assert not (tmp_path / "01.jpg.xmp").exists()
+
+
+def test_manifest_write_xmp_reports_duplicate_row_collision(client: TestClient, tmp_path: Path) -> None:
+    """The same abs_path listed twice is an xmp collision error, not a silent overwrite."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [
+        {"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}},
+        {"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}},
+    ]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "write_xmp": "true"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["captioned"] == 1
+    assert body["failed"] == 1
+    assert body["xmp_written"] == 1
+    assert "collision" in body["errors"][0]["error"]
+
+
+def test_manifest_write_xmp_collision_detected_across_path_spellings(client: TestClient, tmp_path: Path) -> None:
+    """The same image spelled two ways ('sub/../') is one collision error, not a silent double write."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    (tmp_path / "sub").mkdir()
+    alias = str(tmp_path / "sub" / ".." / "01.jpg")
+    rows = [
+        {"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}},
+        {"rel_path": "01.jpg-alias", "abs_path": alias, "target_profile": {}},
+    ]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "write_xmp": "true"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["captioned"] == 1
+    assert body["failed"] == 1
+    assert body["xmp_written"] == 1
+    assert "collision" in body["errors"][0]["error"]
+
+
+def test_manifest_write_xmp_overwrite_false_protects_existing_sidecar(client: TestClient, tmp_path: Path) -> None:
+    """xmp_overwrite=false turns a pre-existing .xmp into a per-image error instead of replacing it."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    existing = tmp_path / "01.jpg.xmp"
+    existing.write_text("<precious/>", encoding="utf-8")
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "write_xmp": "true", "xmp_overwrite": "false"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["failed"] == 1
+    assert "already exists" in body["errors"][0]["error"]
+    assert existing.read_text(encoding="utf-8") == "<precious/>"
+
+
+def test_manifest_stream_write_xmp(client: TestClient, tmp_path: Path) -> None:
+    """The stream reports xmp_path per progress line and an xmp_written total on complete."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+
+    resp = client.post(
+        "/caption/manifest/stream",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "write_xmp": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+    progress = [e for e in events if e["type"] == "progress"]
+    assert progress[0]["xmp_path"] == str(tmp_path / "01.jpg.xmp")
+    assert events[-1] == {"type": "complete", "total": 1, "captioned": 1, "failed": 0, "xmp_written": 1}
+    assert (tmp_path / "01.jpg.xmp").read_text(encoding="utf-8").startswith("<?xpacket")
 
 
 def test_manifest_stream_rejects_bad_json(client: TestClient) -> None:
