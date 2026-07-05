@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional `export_root` form field (the directory the curator exported into —
   the manifest itself sits at `<export_root>/manifest.jsonl`). Rows carrying
   `exported_path` (the 2.0 normative locator, already de-collided for
-  flattened exports) are then read from `export_root / exported_path`, which
-  stays valid for `mode=move` exports and cross-host handoffs where `abs_path`
-  points at a moved-away or unreachable source. Without `export_root` (or on
+  flattened exports) are then read from `export_root / exported_path` (confined
+  under the root — an absolute or `..`-laden `exported_path` is a per-row error,
+  not an escape), which stays valid for `mode=move` exports and cross-host
+  handoffs where `abs_path` points at a moved-away or unreachable source.
+  Without `export_root` (or on
   pre-2.0 rows without `exported_path`) behaviour is unchanged: images are
   read from `abs_path` (shared volume with the curator). An `export_root`
   that is not an existing directory is a single 400 instead of N per-row read

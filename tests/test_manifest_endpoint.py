@@ -511,3 +511,55 @@ def test_manifest_stream_uses_export_root(client: TestClient, tmp_path: Path) ->
     events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
     assert events[-1]["captioned"] == 1
     assert img.with_suffix(".txt").read_text().strip()
+
+
+def test_manifest_v2_exported_path_escaping_export_root_is_per_row_error(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """An absolute or ``..`` exported_path is confined under export_root: it is a per-row error, never an escape."""
+    export_root = tmp_path / "export"
+    export_root.mkdir()
+    outside = tmp_path / "outside.jpg"  # a real image living OUTSIDE the export root
+    _png(outside)
+
+    # (1) absolute exported_path would discard export_root; (2) ``..`` would escape it.
+    for bad_exported in (str(outside), "../outside.jpg"):
+        rows = [_v2_row(bad_exported, str(tmp_path / "moved" / "01.jpg"))]
+        resp = client.post(
+            "/caption/manifest",
+            files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+            data={"export_root": str(export_root)},
+        )
+        assert resp.status_code == 200, (bad_exported, resp.text)
+        body = resp.json()
+        assert body["failed"] == 1, bad_exported
+        assert body["captioned"] == 0, bad_exported
+        assert "export root" in body["errors"][0]["error"], bad_exported
+        # the confined join never reads or writes next to the outside target
+        assert not outside.with_suffix(".txt").exists(), bad_exported
+
+
+def test_manifest_v2_nonstring_exported_path_falls_back_to_abs_path(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A non-string exported_path degrades to abs_path instead of failing an otherwise-valid row."""
+    export_root = tmp_path / "export"
+    export_root.mkdir()
+    img = tmp_path / "real.jpg"
+    _png(img)
+    rows = [
+        {
+            "manifest_version": "2.0",
+            "rel_path": "real.jpg",
+            "abs_path": str(img),
+            "exported_path": 123,  # non-string: not a usable locator -> fall back to abs_path
+            "target_profile": {},
+        }
+    ]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"export_root": str(export_root), "write_sidecar": "false"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["captioned"] == 1

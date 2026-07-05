@@ -356,20 +356,33 @@ def _caption_manifest_row(
     under the export root (the normative locator; ``mode=move`` exports leave
     ``abs_path`` pointing at the moved-away source). When *export_root* is
     known and the row has ``exported_path``, the image is read from
-    ``export_root / exported_path``; otherwise ``abs_path`` is used, which
-    assumes a volume shared with the curator (fine for copy/symlink exports).
+    ``export_root / exported_path`` (confined under the root — an absolute or
+    ``..``-laden ``exported_path`` is a per-row error, never an escape);
+    otherwise ``abs_path`` is used, which assumes a volume shared with the
+    curator (fine for copy/symlink exports).
     """
     abs_path = row.get("abs_path")
     exported_path = row.get("exported_path")
     rel_path = row.get("rel_path") or exported_path or abs_path or "<unknown>"
-    if export_root is not None and exported_path:
-        if not isinstance(exported_path, str):
-            return {"rel_path": rel_path, "error": "exported_path must be a string"}
-        image_path = str(export_root / exported_path)
+    # Manifest 2.0 locator: when export_root is known and the row carries a
+    # usable exported_path, read from export_root / exported_path — confined
+    # under the root via _resolve_within (the same guard /caption/folder uses)
+    # so an absolute or ``..``-laden exported_path can neither silently discard
+    # the root (``root / "/abs"`` == ``/abs`` in pathlib) nor escape it. A
+    # missing or non-string exported_path falls back to abs_path rather than
+    # failing an otherwise-valid row.
+    if export_root is not None and isinstance(exported_path, str) and exported_path:
+        try:
+            image_path = str(_resolve_within(export_root, exported_path))
+        except HTTPException:
+            return {"rel_path": rel_path, "error": f"exported_path escapes the export root: {exported_path!r}"}
     elif abs_path:
         image_path = abs_path
     elif exported_path:
-        return {"rel_path": rel_path, "error": "row has exported_path but no export_root was supplied (and no abs_path)"}
+        return {
+            "rel_path": rel_path,
+            "error": "row has exported_path but no usable image path (supply export_root, or an abs_path; exported_path must be a string)",
+        }
     else:
         return {"rel_path": rel_path, "error": "row missing abs_path"}
     profile = row.get("target_profile") or {}
@@ -653,10 +666,10 @@ def create_app(
         to the curator's export root — the manifest itself sits at
         ``<export_root>/manifest.jsonl``); pass that root as ``export_root``
         and images are read from ``export_root / exported_path``, which stays
-        valid for ``mode=move`` exports. Without ``export_root`` (or on 1.x
-        rows) images are read from ``abs_path``, which assumes a volume shared
-        with the curator. Rows declaring a ``manifest_version`` outside the
-        1.x/2.x majors are rejected with 400.
+        valid for ``mode=move`` exports. Without ``export_root`` (or on rows
+        that carry no ``exported_path``) images are read from ``abs_path``,
+        which assumes a volume shared with the curator. Rows declaring a
+        ``manifest_version`` outside the 1.x/2.x majors are rejected with 400.
         """
         rows = _parse_manifest(await manifest.read())
         root = _manifest_export_root(export_root)
