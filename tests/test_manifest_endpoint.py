@@ -367,3 +367,147 @@ def test_manifest_stream_rejects_bad_json(client: TestClient) -> None:
         files={"manifest": ("manifest.jsonl", io.BytesIO(b"{not json}\n"), "application/x-ndjson")},
     )
     assert resp.status_code == 400
+
+
+def _v2_row(exported_path: str, abs_path: str, **extra: object) -> dict:
+    """Build a manifest 2.0 row (exported_path + manifest_version)."""
+    return {
+        "manifest_version": "2.0",
+        "rel_path": exported_path,
+        "abs_path": abs_path,
+        "exported_path": exported_path,
+        "target_profile": {},
+        "score": 0.9,
+        "similar_group": 1,
+        **extra,
+    }
+
+
+def test_manifest_v2_prefers_exported_path_over_stale_abs_path(client: TestClient, tmp_path: Path) -> None:
+    """With export_root, a 2.0 row is read from export_root/exported_path even when abs_path is gone (mode=move)."""
+    export_root = tmp_path / "export"
+    img = export_root / "personA" / "01.jpg"
+    _png(img)
+    moved_away = tmp_path / "source" / "personA" / "01.jpg"  # never created: the move-mode source
+
+    rows = [_v2_row("personA/01.jpg", str(moved_away))]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"export_root": str(export_root)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["captioned"] == 1
+    assert body["failed"] == 0
+    assert img.with_suffix(".txt").read_text().strip()  # sidecar lands next to the exported image
+    assert not moved_away.with_suffix(".txt").exists()
+
+
+def test_manifest_v2_without_export_root_falls_back_to_abs_path(client: TestClient, tmp_path: Path) -> None:
+    """A 2.0 row still captions via abs_path when no export_root is supplied (copy/symlink on a shared volume)."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [_v2_row("de-collided-01.jpg", str(img))]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["captioned"] == 1
+
+
+def test_manifest_v1_rows_ignore_export_root(client: TestClient, tmp_path: Path) -> None:
+    """Pre-2.0 rows (no exported_path) keep using abs_path even when export_root is supplied."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "export_root": str(tmp_path / "elsewhere")},
+    )
+    # export_root must exist even if no row ends up using it
+    assert resp.status_code == 400
+    (tmp_path / "elsewhere").mkdir()
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false", "export_root": str(tmp_path / "elsewhere")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["captioned"] == 1
+
+
+def test_manifest_rejects_unsupported_major_version(client: TestClient, tmp_path: Path) -> None:
+    """A manifest_version outside the 1.x/2.x majors is a 400 naming the line, not a misread."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [_v2_row("01.jpg", str(img), manifest_version="3.0")]
+    for endpoint in ("/caption/manifest", "/caption/manifest/stream"):
+        resp = client.post(
+            endpoint,
+            files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        )
+        assert resp.status_code == 400, endpoint
+        assert "unsupported manifest_version" in resp.json()["detail"]
+        assert "line 1" in resp.json()["detail"]
+
+
+def test_manifest_accepts_1x_and_2x_versions(client: TestClient, tmp_path: Path) -> None:
+    """Explicit 1.x and 2.x manifest_version values are both accepted."""
+    img = tmp_path / "01.jpg"
+    _png(img)
+    for version in ("1.0", "2.0", "2.1"):
+        rows = [{"manifest_version": version, "rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+        resp = client.post(
+            "/caption/manifest",
+            files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+            data={"write_sidecar": "false"},
+        )
+        assert resp.status_code == 200, version
+        assert resp.json()["captioned"] == 1
+
+
+def test_manifest_rejects_missing_export_root_dir(client: TestClient, tmp_path: Path) -> None:
+    """An export_root that is not an existing directory is one clear 400, not N per-row read errors."""
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes([])), "application/x-ndjson")},
+        data={"export_root": str(tmp_path / "nope")},
+    )
+    assert resp.status_code == 400
+    assert "export_root is not a directory" in resp.json()["detail"]
+
+
+def test_manifest_row_with_only_exported_path_errors_without_root(client: TestClient) -> None:
+    """A row carrying only exported_path (no abs_path) is a per-row error pointing at export_root."""
+    rows = [{"rel_path": "01.jpg", "exported_path": "01.jpg", "target_profile": {}}]
+    resp = client.post(
+        "/caption/manifest",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"write_sidecar": "false"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["failed"] == 1
+    assert "export_root" in body["errors"][0]["error"]
+
+
+def test_manifest_stream_uses_export_root(client: TestClient, tmp_path: Path) -> None:
+    """The streaming endpoint resolves 2.0 rows against export_root too."""
+    export_root = tmp_path / "export"
+    img = export_root / "01.jpg"
+    _png(img)
+    rows = [_v2_row("01.jpg", str(tmp_path / "moved-away" / "01.jpg"))]
+
+    resp = client.post(
+        "/caption/manifest/stream",
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data={"export_root": str(export_root)},
+    )
+    assert resp.status_code == 200, resp.text
+    events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+    assert events[-1]["captioned"] == 1
+    assert img.with_suffix(".txt").read_text().strip()

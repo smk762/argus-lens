@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Curator manifest 2.0 support on the manifest endpoints** —
+  `POST /caption/manifest` and `POST /caption/manifest/stream` accept an
+  optional `export_root` form field (the directory the curator exported into —
+  the manifest itself sits at `<export_root>/manifest.jsonl`). Rows carrying
+  `exported_path` (the 2.0 normative locator, already de-collided for
+  flattened exports) are then read from `export_root / exported_path`, which
+  stays valid for `mode=move` exports and cross-host handoffs where `abs_path`
+  points at a moved-away or unreachable source. Without `export_root` (or on
+  pre-2.0 rows without `exported_path`) behaviour is unchanged: images are
+  read from `abs_path` (shared volume with the curator). An `export_root`
+  that is not an existing directory is a single 400 instead of N per-row read
+  errors, and rows declaring a `manifest_version` outside the supported
+  1.x/2.x majors are rejected with 400 naming the offending line, so a future
+  incompatible major fails loudly instead of being misread.
 - **`GET /health`** — service liveness/identity probe returning
   `{status, service, version, source_root}`, mirroring argus-curator's shape.
 - **`GET /profiles`** — exposes the caption taxonomy (`assembly_profiles`,

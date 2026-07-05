@@ -190,11 +190,20 @@ def _confine_folder(source_root: str | None, folder: str) -> Path:
     return _resolve_within(root, folder)
 
 
+# Curator manifest majors this server understands: 1.x rows locate images via
+# abs_path; 2.x rows add exported_path (relative to the export root). A future
+# major must fail loudly instead of being misread through 1.x assumptions.
+_SUPPORTED_MANIFEST_MAJORS = ("1", "2")
+
+
 def _parse_manifest(raw: bytes) -> list[dict[str, Any]]:
     """Decode and validate an uploaded JSONL manifest into row dicts.
 
-    Raises HTTP 400 for non-UTF-8 bytes, invalid JSON, or lines that are valid
-    JSON but not objects (e.g. a bare ``null``), naming the offending line.
+    Raises HTTP 400 for non-UTF-8 bytes, invalid JSON, lines that are valid
+    JSON but not objects (e.g. a bare ``null``), or rows declaring a
+    ``manifest_version`` outside the supported 1.x/2.x majors — naming the
+    offending line. Rows without ``manifest_version`` are pre-2.0 manifests
+    and are accepted as 1.x.
     """
     try:
         text = raw.decode("utf-8")
@@ -212,8 +221,29 @@ def _parse_manifest(raw: bytes) -> list[dict[str, Any]]:
             raise HTTPException(status_code=400, detail=f"invalid JSON on line {i + 1}: {exc}") from exc
         if not isinstance(row, dict):
             raise HTTPException(status_code=400, detail=f"line {i + 1} is not a JSON object")
+        version = row.get("manifest_version")
+        if version is not None and str(version).partition(".")[0] not in _SUPPORTED_MANIFEST_MAJORS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported manifest_version {version!r} on line {i + 1} (supported majors: 1, 2)",
+            )
         rows.append(row)
     return rows
+
+
+def _manifest_export_root(export_root: str) -> Path | None:
+    """Validate the optional ``export_root`` form field into a directory path.
+
+    An empty string (the field's default) means "not supplied" and returns
+    ``None``; anything else must be an existing directory, otherwise every row
+    would fail with an unhelpful per-image read error instead of one clear 400.
+    """
+    if not export_root:
+        return None
+    root = Path(export_root)
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"export_root is not a directory: {export_root}")
+    return root
 
 
 def _caption_and_write(
@@ -318,18 +348,36 @@ def _caption_manifest_row(
     xmp_overwrite: bool,
     prose_enrichment: bool,
     written: set[Path],
+    export_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Caption one manifest row via its ``abs_path`` and ``target_profile``."""
+    """Caption one manifest row via its resolved image path and ``target_profile``.
+
+    Manifest 2.0 rows carry ``exported_path`` — the path actually written
+    under the export root (the normative locator; ``mode=move`` exports leave
+    ``abs_path`` pointing at the moved-away source). When *export_root* is
+    known and the row has ``exported_path``, the image is read from
+    ``export_root / exported_path``; otherwise ``abs_path`` is used, which
+    assumes a volume shared with the curator (fine for copy/symlink exports).
+    """
     abs_path = row.get("abs_path")
-    rel_path = row.get("rel_path") or abs_path or "<unknown>"
-    if not abs_path:
+    exported_path = row.get("exported_path")
+    rel_path = row.get("rel_path") or exported_path or abs_path or "<unknown>"
+    if export_root is not None and exported_path:
+        if not isinstance(exported_path, str):
+            return {"rel_path": rel_path, "error": "exported_path must be a string"}
+        image_path = str(export_root / exported_path)
+    elif abs_path:
+        image_path = abs_path
+    elif exported_path:
+        return {"rel_path": rel_path, "error": "row has exported_path but no export_root was supplied (and no abs_path)"}
+    else:
         return {"rel_path": rel_path, "error": "row missing abs_path"}
     profile = row.get("target_profile") or {}
     if not isinstance(profile, dict):
         return {"rel_path": rel_path, "error": "target_profile must be a JSON object"}
     return _caption_and_write(
         engine,
-        abs_path,
+        image_path,
         rel_path,
         trigger_word=trigger_word,
         target_style=profile.get("target_style", "photo"),
@@ -588,20 +636,30 @@ def create_app(
         write_xmp: bool = Form(False),
         xmp_overwrite: bool = Form(True),
         prose_enrichment: bool = Form(True),
+        export_root: str = Form(""),
     ) -> dict[str, Any]:
         """Batch-caption an argus-curator JSONL manifest.
 
-        Each line carries ``abs_path`` and the shared ``target_profile``; images
-        are captioned with that profile (no category remapping) and, by default,
-        a ``.txt`` sidecar is written next to each image. ``write_xmp`` also
-        writes an ``<image>.xmp`` sidecar (dc:subject keywords +
-        dc:description caption) that Lightroom/digiKam/Immich ingest natively;
-        it is independent of ``write_sidecar``, and ``xmp_overwrite: false``
-        turns a pre-existing ``.xmp`` (e.g. one another tool populated) into a
-        per-image error instead of replacing it. Assumes the images are
-        reachable at ``abs_path`` (e.g. a shared volume with the curator).
+        Each line carries the shared ``target_profile``; images are captioned
+        with that profile (no category remapping) and, by default, a ``.txt``
+        sidecar is written next to each image. ``write_xmp`` also writes an
+        ``<image>.xmp`` sidecar (dc:subject keywords + dc:description caption)
+        that Lightroom/digiKam/Immich ingest natively; it is independent of
+        ``write_sidecar``, and ``xmp_overwrite: false`` turns a pre-existing
+        ``.xmp`` (e.g. one another tool populated) into a per-image error
+        instead of replacing it.
+
+        Image locations: manifest 2.0 rows carry ``exported_path`` (relative
+        to the curator's export root — the manifest itself sits at
+        ``<export_root>/manifest.jsonl``); pass that root as ``export_root``
+        and images are read from ``export_root / exported_path``, which stays
+        valid for ``mode=move`` exports. Without ``export_root`` (or on 1.x
+        rows) images are read from ``abs_path``, which assumes a volume shared
+        with the curator. Rows declaring a ``manifest_version`` outside the
+        1.x/2.x majors are rejected with 400.
         """
         rows = _parse_manifest(await manifest.read())
+        root = _manifest_export_root(export_root)
 
         def _run() -> dict[str, Any]:
             """Caption every manifest row sequentially, collecting results and per-row errors."""
@@ -618,6 +676,7 @@ def create_app(
                     xmp_overwrite=xmp_overwrite,
                     prose_enrichment=prose_enrichment,
                     written=written,
+                    export_root=root,
                 )
                 (errors if "error" in outcome else results).append(outcome)
             return {
@@ -639,6 +698,7 @@ def create_app(
         write_xmp: bool = Form(False),
         xmp_overwrite: bool = Form(True),
         prose_enrichment: bool = Form(True),
+        export_root: str = Form(""),
     ) -> StreamingResponse:
         """Streaming variant of /caption/manifest for live progress.
 
@@ -646,10 +706,14 @@ def create_app(
         (``{type:"progress", done, total, rel_path, final_caption|error}``,
         plus ``xmp_path`` when ``write_xmp`` wrote a sidecar), then a final
         ``{type:"complete", total, captioned, failed, xmp_written}`` line. As
-        with /caption/manifest, images are read from ``abs_path`` and a ``.txt``
-        sidecar is written next to each (shared volume with the curator).
+        with /caption/manifest, images are read from ``export_root /
+        exported_path`` when ``export_root`` is supplied and the row carries
+        ``exported_path`` (manifest 2.0), falling back to ``abs_path`` (shared
+        volume with the curator) otherwise; a ``.txt`` sidecar is written next
+        to each by default.
         """
         rows = _parse_manifest(await manifest.read())
+        root = _manifest_export_root(export_root)
         total = len(rows)
         written: set[Path] = set()
 
@@ -671,6 +735,7 @@ def create_app(
                     xmp_overwrite=xmp_overwrite,
                     prose_enrichment=prose_enrichment,
                     written=written,
+                    export_root=root,
                 )
                 if "error" in outcome:
                     failed += 1
