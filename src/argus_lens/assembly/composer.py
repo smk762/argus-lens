@@ -69,7 +69,9 @@ def compose_caption_result(
         tag_buckets[cat].append(fragment)
 
     # --- Process prose-based input (e.g. Florence, BLIP, OpenAI) ---
-    kept_clauses, redundant = filter_redundant_clauses_detailed(prose, tags)
+    kept_clauses, redundant = filter_redundant_clauses_detailed(
+        prose, tags, threshold=target_profile.redundancy_threshold
+    )
     removed_phrases.extend([f.lower() for f in redundant])
     if redundant:
         compaction_notes.append("Removed prose clauses that duplicated tag content.")

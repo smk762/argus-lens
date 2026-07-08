@@ -335,6 +335,54 @@ class TokenBudgetConfig:
 
 
 # ---------------------------------------------------------------------------
+# Hybrid tag <-> prose balance
+# ---------------------------------------------------------------------------
+
+# The hybrid pipeline fuses tags (WD14) with prose (Florence, etc.). How much
+# prose survives is governed by the redundancy threshold in
+# ``filter_redundant_clauses_detailed``: a *lower* threshold drops more prose
+# (tag-dominant captions), a *higher* threshold keeps more prose
+# (prose-dominant captions). These named presets are stops along that axis;
+# "balanced" reproduces the historical hard-coded default of 0.5.
+HYBRID_PRESETS: dict[str, float] = {
+    "tags": 0.20,
+    "keywords": 0.35,
+    "balanced": 0.50,
+    "descriptive": 0.68,
+    "prose": 0.85,
+}
+
+DEFAULT_HYBRID_PRESET = "balanced"
+DEFAULT_REDUNDANCY_THRESHOLD = HYBRID_PRESETS[DEFAULT_HYBRID_PRESET]
+
+# Continuous ``prose_bias`` (0.0 = pure tags, 1.0 = full prose) maps linearly
+# onto this threshold range so a UI slider and the named presets share one axis.
+_PROSE_BIAS_MIN_THRESHOLD = 0.15
+_PROSE_BIAS_MAX_THRESHOLD = 0.90
+
+
+def resolve_redundancy_threshold(
+    hybrid_preset: str | None = None,
+    prose_bias: float | None = None,
+) -> float:
+    """Resolve the prose-vs-tag redundancy threshold.
+
+    Priority: explicit *prose_bias* (0.0–1.0, continuous) > named
+    *hybrid_preset* > ``DEFAULT_HYBRID_PRESET``. Unknown preset names fall
+    back to the default rather than raising, so a stale UI value is harmless.
+    """
+    if prose_bias is not None:
+        bias = min(1.0, max(0.0, prose_bias))
+        span = _PROSE_BIAS_MAX_THRESHOLD - _PROSE_BIAS_MIN_THRESHOLD
+        return _PROSE_BIAS_MIN_THRESHOLD + bias * span
+    if hybrid_preset:
+        key = hybrid_preset.strip().lower().replace("-", "_").replace(" ", "_")
+        if key in HYBRID_PRESETS:
+            return HYBRID_PRESETS[key]
+    return DEFAULT_REDUNDANCY_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
 # Target profile
 # ---------------------------------------------------------------------------
 
@@ -352,6 +400,8 @@ class CaptionTargetProfile:
         checkpoint: Optional checkpoint name — used for style inference
             (e.g. ``"ponyDiffusion"`` implies anime).
         token_budget: Resolved token budget (computed from *target_backend*).
+        redundancy_threshold: Prose-vs-tag balance for the hybrid pipeline
+            (see ``HYBRID_PRESETS`` / ``resolve_redundancy_threshold``).
     """
 
     target_style: str = "photo"
@@ -359,6 +409,7 @@ class CaptionTargetProfile:
     target_backend: str | None = "sdxl"
     checkpoint: str | None = None
     token_budget: TokenBudgetConfig = field(default_factory=lambda: TokenBudgetConfig.for_backend("sdxl"))
+    redundancy_threshold: float = DEFAULT_REDUNDANCY_THRESHOLD
 
 
 def normalise_target_style(
@@ -395,18 +446,22 @@ def resolve_target_profile(
     target_backend: str | None = "sdxl",
     checkpoint: str | None = None,
     token_budget_override: int | None = None,
+    hybrid_preset: str | None = None,
+    prose_bias: float | None = None,
     categories: tuple[CategoryConfig, ...] | None = None,
 ) -> CaptionTargetProfile:
     """Build a fully resolved target profile."""
     style = normalise_target_style(target_style, checkpoint, target_backend)
     category = normalise_target_category(target_category, categories)
     budget = TokenBudgetConfig.for_backend(target_backend, token_budget_override)
+    threshold = resolve_redundancy_threshold(hybrid_preset, prose_bias)
     return CaptionTargetProfile(
         target_style=style,
         target_category=category,
         target_backend=(target_backend or "").strip() or None,
         checkpoint=(checkpoint or "").strip() or None,
         token_budget=budget,
+        redundancy_threshold=threshold,
     )
 
 

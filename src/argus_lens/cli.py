@@ -28,6 +28,12 @@ def caption(
     style: str = Option("photo", "--style", "-s", help="Target style: photo or anime"),
     category: str = Option("identity", "--category", "-c", help="Target category for final_caption"),
     target_backend: str = Option("sdxl", "--target-backend", help="Diffusion backend (sdxl, flux, sd3)"),
+    hybrid_preset: str | None = Option(
+        None, "--hybrid-preset", help="Tag/prose balance: tags, keywords, balanced, descriptive, prose"
+    ),
+    prose_bias: float | None = Option(
+        None, "--prose-bias", help="Continuous tag/prose balance: 0.0 (pure tags) .. 1.0 (full prose)"
+    ),
     output: Path | None = Option(None, "--output", "-o", help="Output file (for json/jsonl/csv)"),
     fmt: str = Option("txt", "--format", "-f", help="Output format: txt, json, jsonl, csv"),
     overwrite: bool = Option(False, "--overwrite", help="Overwrite existing caption files"),
@@ -61,6 +67,8 @@ def caption(
             target_style=style,
             target_category=category,
             target_backend=target_backend,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
         )
         if output:
             from argus_lens.exporters import export_results
@@ -87,6 +95,8 @@ def caption(
             target_style=style,
             target_category=category,
             target_backend=target_backend,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             output_format=fmt,
             overwrite=overwrite,
             progress=_progress if verbose else None,
