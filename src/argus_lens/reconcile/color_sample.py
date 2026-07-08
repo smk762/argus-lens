@@ -52,13 +52,24 @@ def nearest_color_name(rgb: tuple[int, int, int]) -> str:
     )
 
 
-def dominant_color_name(image: Image.Image, box: Box | None = None) -> str:
-    """Name the mean colour of *image* (or its *box* crop ``(x0,y0,x1,y1)``)."""
+def dominant_color_name(image: Image.Image, box: Box | None = None) -> str | None:
+    """Name the mean colour of *image* (or its *box* crop ``(x0,y0,x1,y1)``).
+
+    The box is clamped to the image bounds (an out-of-range crop would sample
+    black padding). Returns ``None`` for a degenerate box (zero area after
+    clamping/rounding) so the caller abstains rather than sampling the whole
+    image as if it were the subject.
+    """
     region = image.convert("RGB")
     if box is not None:
-        x0, y0, x1, y1 = (int(round(v)) for v in box)
-        if x1 > x0 and y1 > y0:
-            region = region.crop((x0, y0, x1, y1))
+        w, h = region.size
+        x0 = max(0, min(int(round(box[0])), w))
+        y0 = max(0, min(int(round(box[1])), h))
+        x1 = max(0, min(int(round(box[2])), w))
+        y1 = max(0, min(int(round(box[3])), h))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        region = region.crop((x0, y0, x1, y1))
     # Averaging to a single pixel gives the mean RGB cheaply, no numpy needed.
     mean = region.resize((1, 1)).getpixel((0, 0))
     return nearest_color_name(mean[:3])

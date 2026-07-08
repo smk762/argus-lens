@@ -9,6 +9,7 @@ guarded; inject *ground_fn* to unit-test the box→colour path without a GPU.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,7 @@ class FlorenceGroundingVerifier:
         self._ground_fn = ground_fn
         self._model = None
         self._processor = None
+        self._load_lock = threading.Lock()
 
     def _ground(self, image: Image.Image, phrase: str) -> list[Box]:
         """Return bounding boxes for *phrase* via Florence phrase-grounding."""
@@ -59,13 +61,23 @@ class FlorenceGroundingVerifier:
         return [tuple(b) for b in parsed.get(_TASK, {}).get("bboxes", [])]
 
     def _ensure_model(self) -> None:
-        """Lazily load the Florence model/processor (needs the ``torch`` extra)."""
+        """Lazily load the Florence model/processor (needs the ``torch`` extra).
+
+        Thread-safe: a shared engine may reconcile from many request threads, so
+        loading is locked and ``self._model`` is published **last** — no thread
+        sees a set model with a still-``None`` processor, and the model loads once.
+        """
         if self._model is not None:
             return
-        from transformers import AutoModelForCausalLM, AutoProcessor  # noqa: PLC0415
+        with self._load_lock:
+            if self._model is not None:
+                return
+            from transformers import AutoModelForCausalLM, AutoProcessor  # noqa: PLC0415
 
-        self._model = AutoModelForCausalLM.from_pretrained(self.model_id, trust_remote_code=True).to(self.device)
-        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+            processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_id, trust_remote_code=True).to(self.device)
+            self._processor = processor
+            self._model = model
 
     def verify(self, image: Image.Image, dispute: AttributeDispute) -> Verdict:
         """Ground the subject and name its dominant colour; abstain on pose."""
@@ -74,5 +86,5 @@ class FlorenceGroundingVerifier:
         boxes = self._ground(image, f"the {dispute.subject}")
         if not boxes:
             return Verdict(subject=dispute.subject, value=None, source=self.name)
-        color = dominant_color_name(image, boxes[0])
+        color = dominant_color_name(image, boxes[0])  # None for a degenerate box → abstain
         return Verdict(subject=dispute.subject, value=color, source=self.name)

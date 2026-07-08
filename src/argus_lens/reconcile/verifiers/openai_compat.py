@@ -67,7 +67,10 @@ class OpenAICompatVQAVerifier:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         resp = httpx.post(f"{self.base_url}/chat/completions", json=payload, headers=headers, timeout=self.timeout)
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        # Tolerate servers that return no/empty/null content or an empty choices
+        # list — parse_answer("") abstains rather than the verifier crashing.
+        choices = resp.json().get("choices") or [{}]
+        return (choices[0].get("message") or {}).get("content") or ""
 
     def verify(self, image: Image.Image, dispute: AttributeDispute) -> Verdict:
         """Ask the model and map its answer onto the palette/pose vocabulary."""

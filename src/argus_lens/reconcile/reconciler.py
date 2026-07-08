@@ -25,6 +25,7 @@ class ReconcileResult:
 
     prose: str
     changes: list[ReconcileChange] = field(default_factory=list)
+    errors: int = 0  # disputes where the verifier raised (so the caller can clean up)
 
 
 class Reconciler:
@@ -43,17 +44,22 @@ class Reconciler:
         """Return the (possibly rewritten) prose plus the list of changes made."""
         disputes = detect_disputes(tags, prose)
         changes: list[ReconcileChange] = []
+        errors = 0
         current = prose
         for dispute in disputes:
             try:
                 verdict = self.verifier.verify(image, dispute)
+                value = verdict.value if verdict is not None else None
             except Exception as exc:  # noqa: BLE001 - a flaky verifier must not break captioning
                 logger.warning("reconcile_verify_failed", subject=dispute.subject, error=str(exc))
+                errors += 1
                 continue
-            value = verdict.value
             if not value or value.lower() in {p.lower() for p in dispute.prose_says}:
                 continue  # abstained, or confirmed what the prose already said
-            current = apply_fix(current, dispute, value)
+            rewritten = apply_fix(current, dispute, value)
+            if rewritten == current:
+                continue  # verdict was a spelling variant / no textual change — no phantom edit
+            current = rewritten
             changes.append(
                 ReconcileChange(
                     kind=dispute.kind,
@@ -63,4 +69,4 @@ class Reconciler:
                     source=verdict.source,
                 )
             )
-        return ReconcileResult(prose=current, changes=changes)
+        return ReconcileResult(prose=current, changes=changes, errors=errors)

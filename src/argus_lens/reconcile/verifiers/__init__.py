@@ -21,13 +21,14 @@ def build_verifier(
     base_url: str | None = None,
     model_id: str | None = None,
     api_key: str | None = None,
-    device: str = "cuda",
+    device: str = "cpu",
 ) -> AttributeVerifier:
     """Construct a verifier by name.
 
     ``tag-prior`` is model-free; ``openai-compat`` needs *base_url*/*model_id*
     (defaults target Ollama); ``florence`` and ``molmo`` load local models on
-    first use. Unknown names raise ``ValueError``.
+    first use. *device* defaults to ``"cpu"`` (Florence-2-base runs there; pass
+    ``"cuda"`` for GPU / Molmo). Unknown names raise ``ValueError``.
     """
     key = name.strip().lower()
     if key == "tag-prior":

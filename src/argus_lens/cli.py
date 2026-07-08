@@ -71,7 +71,7 @@ def caption(
     verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
-    verifier_device: str = Option("cuda", "--verifier-device", help="Device for florence/molmo verifiers"),
+    verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
     verbose: bool = Option(False, "--verbose", "-v", help="Verbose output"),
 ) -> None:
     """Caption images in a file or directory."""
@@ -185,7 +185,7 @@ def eval_command(
     verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
-    verifier_device: str = Option("cuda", "--verifier-device", help="Device for florence/molmo verifiers"),
+    verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
     verbose: bool = Option(False, "--verbose", "-v", help="Per-image progress"),
 ) -> None:
     """Score caption quality over a dataset and print a scorecard.

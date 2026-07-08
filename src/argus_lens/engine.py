@@ -247,6 +247,9 @@ class ArgusLens:
             outcome = self._reconciler.reconcile(pil, tags, prose)
             if outcome.changes:
                 logger.info("reconciled_prose", changes=[c.__dict__ for c in outcome.changes])
+            if outcome.errors:
+                # A GPU verifier may have OOM'd; free the cache before the next image.
+                clear_gpu_cache()
             prose = outcome.prose
 
         return tags, prose

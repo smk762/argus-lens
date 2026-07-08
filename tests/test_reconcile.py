@@ -10,7 +10,7 @@ from argus_lens.reconcile import Reconciler, build_verifier, detect_disputes
 from argus_lens.reconcile.color_sample import dominant_color_name, nearest_color_name
 from argus_lens.reconcile.questions import build_question, parse_answer
 from argus_lens.reconcile.rewrite import apply_fix
-from argus_lens.reconcile.types import AttributeDispute
+from argus_lens.reconcile.types import AttributeDispute, Verdict
 from argus_lens.reconcile.verifiers.florence import FlorenceGroundingVerifier
 from argus_lens.reconcile.verifiers.molmo import MolmoVerifier
 from argus_lens.reconcile.verifiers.openai_compat import OpenAICompatVQAVerifier, encode_data_url
@@ -54,6 +54,27 @@ def test_apply_pose_fix() -> None:
     assert apply_fix("she is sitting on a bench", dispute, "standing") == "she is standing on a bench"
 
 
+def test_apply_color_fix_recolors_nearest_noun_only() -> None:
+    """Only the colour nearest the subject is recoloured; a sibling noun keeps its colour."""
+    dispute = AttributeDispute("color", "dress", ("green",), ("red",))
+    assert apply_fix("blue eyes in a red dress", dispute, "green") == "blue eyes in a green dress"
+
+
+def test_apply_color_fix_preserves_capitalization() -> None:
+    """A capitalised source colour keeps its case."""
+    dispute = AttributeDispute("color", "dress", ("blue",), ("red",))
+    assert apply_fix("Red dress on the chair.", dispute, "blue") == "Blue dress on the chair."
+
+
+def test_apply_pose_fix_only_flagged_terms() -> None:
+    """A pose term the detector did not flag is left untouched."""
+    # Only "sitting" was flagged; a stray "standing" elsewhere must not be rewritten.
+    dispute = AttributeDispute("pose", "posture", ("kneeling",), ("sitting",))
+    assert apply_fix("a sitting figure by a standing lamp", dispute, "kneeling") == (
+        "a kneeling figure by a standing lamp"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Colour sampling
 # --------------------------------------------------------------------------- #
@@ -71,6 +92,19 @@ def test_dominant_color_name_from_box() -> None:
     img.paste((255, 0, 0), (0, 0, 10, 10))  # left half red
     assert dominant_color_name(img, (0, 0, 10, 10)) == "red"
     assert dominant_color_name(img, (10, 0, 20, 10)) == "blue"
+
+
+def test_dominant_color_name_clamps_out_of_bounds_box() -> None:
+    """An out-of-bounds box is clamped, not sampled as black padding."""
+    img = Image.new("RGB", (100, 100), (255, 0, 0))
+    assert dominant_color_name(img, (50, 50, 300, 300)) == "red"
+
+
+def test_dominant_color_name_degenerate_box_abstains() -> None:
+    """A zero-area / rounded-flat box returns None (abstain), not the whole image."""
+    img = Image.new("RGB", (100, 100), (255, 0, 0))
+    assert dominant_color_name(img, (10, 10, 10, 10)) is None
+    assert dominant_color_name(img, (10.4, 10, 10.5, 90)) is None  # x rounds to 10==10
 
 
 # --------------------------------------------------------------------------- #
@@ -164,7 +198,7 @@ def test_reconciler_no_change_when_consistent() -> None:
 
 
 def test_reconciler_survives_verifier_error() -> None:
-    """A raising verifier is caught; the prose is returned unchanged."""
+    """A raising verifier is caught; the prose is returned unchanged, errors counted."""
 
     class _Boom:
         name = "boom"
@@ -175,6 +209,38 @@ def test_reconciler_survives_verifier_error() -> None:
     r = Reconciler(_Boom())
     outcome = r.reconcile(Image.new("RGB", (4, 4)), "red_dress", "a blue dress")
     assert outcome.prose == "a blue dress"
+    assert outcome.changes == []
+    assert outcome.errors == 1
+
+
+def test_reconciler_survives_verifier_returning_none() -> None:
+    """A verifier that returns None (not a Verdict) must not crash captioning."""
+
+    class _NoneVerifier:
+        name = "none"
+
+        def verify(self, image, dispute):
+            return None
+
+    r = Reconciler(_NoneVerifier())
+    outcome = r.reconcile(Image.new("RGB", (4, 4)), "red_dress", "a blue dress")
+    assert outcome.prose == "a blue dress"
+    assert outcome.changes == []
+
+
+def test_reconciler_no_phantom_change_on_synonym_verdict() -> None:
+    """A verdict that is a spelling variant of the prose colour records no change."""
+
+    class _Violet:
+        name = "violet"
+
+        def verify(self, image, dispute):
+            return Verdict(subject=dispute.subject, value="violet", source=self.name)
+
+    # tags say red, prose says violet (→ canonical purple); verifier answers "violet".
+    r = Reconciler(_Violet())
+    outcome = r.reconcile(Image.new("RGB", (4, 4)), "red_dress", "a violet dress")
+    assert outcome.prose == "a violet dress"  # violet canon == purple == verdict → no textual change
     assert outcome.changes == []
 
 

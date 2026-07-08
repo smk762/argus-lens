@@ -8,6 +8,7 @@ to unit-test the parsing path without a GPU.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,7 @@ class MolmoVerifier:
         self._answer_fn = answer_fn
         self._model = None
         self._processor = None
+        self._load_lock = threading.Lock()
 
     def _answer(self, image: Image.Image, question: str) -> str:
         """Return Molmo's free-text answer to *question* about *image*."""
@@ -54,15 +56,22 @@ class MolmoVerifier:
         return self._processor.tokenizer.decode(tokens, skip_special_tokens=True)
 
     def _ensure_model(self) -> None:
-        """Lazily load Molmo (needs the ``torch`` extra + ~8-17GB VRAM)."""
+        """Lazily load Molmo (needs the ``torch`` extra + ~8-17GB VRAM).
+
+        Thread-safe: locked so a shared engine's request threads load the ~16GB
+        model once (not once per thread → OOM), publishing ``self._model`` last.
+        """
         if self._model is not None:
             return
-        from transformers import AutoModelForCausalLM, AutoProcessor  # noqa: PLC0415
+        with self._load_lock:
+            if self._model is not None:
+                return
+            from transformers import AutoModelForCausalLM, AutoProcessor  # noqa: PLC0415
 
-        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, trust_remote_code=True, device_map=self.device
-        )
+            processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_id, trust_remote_code=True, device_map=self.device)
+            self._processor = processor
+            self._model = model
 
     def verify(self, image: Image.Image, dispute: AttributeDispute) -> Verdict:
         """Ask Molmo the dispute's question and map the answer to the vocabulary."""
