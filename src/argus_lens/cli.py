@@ -126,6 +126,98 @@ def backends() -> None:
         typer.echo(line)
 
 
+@app.command("eval")
+def eval_command(
+    path: Path = Argument(..., help="Image directory (reference-free) or .jsonl golden manifest"),
+    backend: str = Option("hybrid", "--backend", "-b", help="Captioning backend"),
+    style: str = Option("photo", "--style", "-s", help="Target style for directory datasets"),
+    category: str = Option("identity", "--category", "-c", help="Target category for directory datasets"),
+    target_backend: str = Option("sdxl", "--target-backend", help="Diffusion backend (token budget)"),
+    trigger: str = Option("", "--trigger", "-t", help="Trigger word to prepend"),
+    hybrid_preset: str | None = Option(None, "--hybrid-preset", help="Tag/prose balance preset"),
+    prose_bias: float | None = Option(None, "--prose-bias", help="Tag/prose balance 0.0..1.0"),
+    clip: bool = Option(False, "--clip", help="Also compute CLIPScore (needs the 'eval' extra)"),
+    clip_device: str = Option("cpu", "--clip-device", help="Device for the CLIP model"),
+    output: Path | None = Option(None, "--output", "-o", help="Write the full scorecard JSON here"),
+    baseline: Path | None = Option(None, "--baseline", help="Baseline scorecard JSON to compare against"),
+    fail_on_regression: bool = Option(
+        False, "--fail-on-regression", help="Exit non-zero if any gate metric regressed vs --baseline"
+    ),
+    api_key: str | None = Option(None, "--api-key", help="API key for cloud backends"),
+    model_id: str | None = Option(None, "--model-id", help="Model ID override"),
+    base_url: str | None = Option(None, "--base-url", help="Endpoint URL for openai-compat backend"),
+    verbose: bool = Option(False, "--verbose", "-v", help="Per-image progress"),
+) -> None:
+    """Score caption quality over a dataset and print a scorecard.
+
+    Works reference-free on any image directory (tag/prose contradiction,
+    token-budget adherence, redundancy). A ``.jsonl`` manifest with
+    ``expected_tags`` / ``target_caption`` additionally unlocks tag-coverage
+    recall and reference CLIPScore.
+    """
+    from dataclasses import replace
+
+    from argus_lens import ArgusLens
+    from argus_lens.eval import compare_to_baseline, format_scorecard, load_dataset, run_eval
+    from argus_lens.eval.metrics import try_build_clip_scorer
+    from argus_lens.eval.report import format_comparison
+
+    dataset = load_dataset(path)
+    if not dataset:
+        typer.echo(f"No images found in {path}", err=True)
+        raise typer.Exit(1)
+    if path.is_dir():
+        dataset = [
+            replace(it, target_style=style, target_category=category, target_backend=target_backend)
+            for it in dataset
+        ]
+
+    kwargs = {}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
+    if model_id:
+        if backend in ("florence2", "blip2"):
+            kwargs["florence_model_id" if backend == "florence2" else "model_id"] = model_id
+        else:
+            kwargs["model_id"] = model_id
+    engine = ArgusLens(backend=backend, **kwargs)
+
+    clip_scorer = None
+    if clip:
+        clip_scorer = try_build_clip_scorer(device=clip_device)
+        if clip_scorer is None:
+            typer.echo("CLIPScore skipped: install argus-lens[eval] (torch + transformers)", err=True)
+
+    def _progress(current: int, total: int, item: object) -> None:
+        """Echo per-image progress when verbose."""
+        typer.echo(f"  [{current}/{total}] {getattr(item, 'image', '')}")
+
+    scorecard = run_eval(
+        engine,
+        dataset,
+        clip_scorer=clip_scorer,
+        trigger_word=trigger,
+        hybrid_preset=hybrid_preset,
+        prose_bias=prose_bias,
+        progress=_progress if verbose else None,
+    )
+
+    typer.echo(format_scorecard(scorecard))
+
+    if output:
+        output.write_text(json.dumps(scorecard.to_dict(), indent=2), encoding="utf-8")
+        typer.echo(f"\nScorecard written to {output}")
+
+    if baseline:
+        base = json.loads(baseline.read_text(encoding="utf-8"))
+        comparison = compare_to_baseline(scorecard.aggregates, base.get("aggregates", base))
+        typer.echo("\n" + format_comparison(comparison))
+        if fail_on_regression and comparison["regressed"]:
+            raise typer.Exit(1)
+
+
 @app.command()
 def serve(
     port: int = Option(8080, "--port", "-p", help="Port to listen on"),

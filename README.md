@@ -166,6 +166,26 @@ argus-lens caption photo.jpg --backend openai-compat \
 argus-lens backends
 ```
 
+### Evaluation
+
+Measure caption quality so model swaps, hybrid presets, and future summariser / VQA passes can be judged by numbers instead of vibes. Requires the `[eval]` extra for CLIPScore only (`pip install argus-lens[cli,eval]`); every other metric is dependency-free.
+
+The harness is **reference-free first** — its flagship metric, whether the prose contradicts the tags (the hallucination problem), is an internal-consistency check that needs no ground truth, so it runs on any folder of images:
+
+```bash
+# Reference-free: score any image directory
+argus-lens eval ./images/ --backend hybrid
+
+# Compare two hybrid presets on the same set
+argus-lens eval ./images/ --hybrid-preset keywords -o keywords.json
+argus-lens eval ./images/ --hybrid-preset descriptive --baseline keywords.json
+
+# Full run with a labelled golden manifest + CLIPScore, gated for CI
+argus-lens eval eval/golden.jsonl --clip --baseline baseline.json --fail-on-regression
+```
+
+Metrics: **tag↔prose contradiction** (colour/pose — reference-free), **token-budget adherence**, **redundancy/filler rate**, **tag-coverage recall** (labelled), and optional **CLIPScore**. A labelled golden set is a JSONL manifest — see [eval/README.md](eval/README.md) for the format.
+
 ### HTTP Server
 
 Run the built-in FastAPI server for frontend consumers (e.g. [argus-studio](https://github.com/smk762/argus-studio)):
