@@ -181,8 +181,8 @@ Endpoints:
 - `POST /caption/url` -- JSON body with image URL
 - `POST /caption/batch` -- multiple file upload
 - `POST /caption/stream` -- NDJSON streaming for batch
-- `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars)
-- `POST /caption/manifest/stream` -- streaming variant of `/caption/manifest`: one NDJSON progress line per image, then a completion summary (supports `write_xmp` too)
+- `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars). Understands manifest 1.x and 2.x (unknown majors are a 400): pass the curator's export root as `export_root` and 2.0 rows are read from `export_root / exported_path` (valid even for `mode=move` exports); without it, rows fall back to `abs_path` (shared volume)
+- `POST /caption/manifest/stream` -- streaming variant of `/caption/manifest`: one NDJSON progress line per image, then a completion summary (supports `write_xmp` and `export_root` too)
 - `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars)
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
