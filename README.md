@@ -181,6 +181,7 @@ argus-lens eval ./images/ --hybrid-preset keywords -o keywords.json
 argus-lens eval ./images/ --hybrid-preset descriptive --baseline keywords.json
 
 # Full run with a labelled golden manifest + CLIPScore, gated for CI
+# (copy eval/golden.example.jsonl to eval/golden.jsonl and point it at your images)
 argus-lens eval eval/golden.jsonl --clip --baseline baseline.json --fail-on-regression
 ```
 

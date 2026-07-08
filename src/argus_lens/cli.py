@@ -213,25 +213,29 @@ def eval_command(
         output.write_text(json.dumps(scorecard.to_dict(), indent=2), encoding="utf-8")
         typer.echo(f"\nScorecard written to {output}")
 
-    # A run where nothing scored (every image errored) can't be gated on quality
-    # metrics — treat it as a hard failure so CI never goes green on a broken run.
+    # A run where every image errored scored nothing: always a hard failure, so a
+    # broken run never exits 0 (regardless of --baseline / --fail-on-regression).
     all_failed = scorecard.n_errors == scorecard.n and scorecard.n > 0
     if all_failed:
         typer.echo(f"\nAll {scorecard.n} images errored — no metrics computed.", err=True)
 
-    if fail_on_regression and not baseline:
-        typer.echo("--fail-on-regression has no effect without --baseline.", err=True)
-
     if baseline:
-        base = json.loads(baseline.read_text(encoding="utf-8"))
+        try:
+            base = json.loads(baseline.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            typer.echo(f"Baseline is not valid JSON: {exc}", err=True)
+            raise typer.Exit(1) from exc
         if not isinstance(base, dict):
             typer.echo(f"Baseline must be a JSON object, got {type(base).__name__}", err=True)
             raise typer.Exit(1)
         comparison = compare_to_baseline(scorecard.aggregates, base.get("aggregates", base))
         typer.echo("\n" + format_comparison(comparison))
-        if fail_on_regression and (comparison["regressed"] or all_failed):
+        if fail_on_regression and comparison["regressed"]:
             raise typer.Exit(1)
-    elif fail_on_regression and all_failed:
+    elif fail_on_regression:
+        typer.echo("--fail-on-regression needs --baseline to compare against; skipping regression gate.", err=True)
+
+    if all_failed:
         raise typer.Exit(1)
 
 

@@ -6,7 +6,8 @@ The `argus-lens eval` harness scores caption quality. It accepts two dataset sha
    tag↔prose contradiction, token-budget adherence, redundancy/filler rate, and (with
    `--clip`) CLIPScore against the generated caption.
 2. **A JSONL manifest** — each line locates an image and may carry ground-truth labels,
-   which additionally unlock **tag-coverage recall** and reference CLIPScore.
+   which additionally unlock **tag-coverage recall**. (CLIPScore, when enabled with
+   `--clip`, always scores the model's own caption — never the reference.)
 
 ## Manifest format
 
@@ -16,7 +17,7 @@ One JSON object per line. Only `image` is required; everything else is optional.
 |-------|------|---------|---------|
 | `image` | string | — | Path to the image, **relative to this manifest** (or absolute). |
 | `expected_tags` | string[] | `[]` | High-confidence tags that *should* appear (drives tag-coverage recall). |
-| `target_caption` | string | `null` | Reference caption; used as the CLIPScore text when present. |
+| `target_caption` | string | `null` | Reference caption; reserved for future reference-based metrics (not used by current metrics). |
 | `target_style` | string | `"photo"` | `photo` or `anime`. |
 | `target_category` | string | `"identity"` | Which variant becomes `final_caption`. |
 | `target_backend` | string | `"sdxl"` | Diffusion backend → token budget (SDXL 60 / Flux 200). |
