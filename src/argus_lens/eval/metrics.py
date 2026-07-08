@@ -45,10 +45,33 @@ _COLOR_CANON: dict[str, str] = {
 }
 _COLORS: frozenset[str] = frozenset(
     {
-        "red", "orange", "yellow", "green", "blue", "purple", "violet", "pink",
-        "brown", "black", "white", "gray", "grey", "blonde", "blond", "silver",
-        "gold", "golden", "tan", "beige", "cyan", "teal", "navy", "maroon",
-        "crimson", "scarlet", "turquoise",
+        "red",
+        "orange",
+        "yellow",
+        "green",
+        "blue",
+        "purple",
+        "violet",
+        "pink",
+        "brown",
+        "black",
+        "white",
+        "gray",
+        "grey",
+        "blonde",
+        "blond",
+        "silver",
+        "gold",
+        "golden",
+        "tan",
+        "beige",
+        "cyan",
+        "teal",
+        "navy",
+        "maroon",
+        "crimson",
+        "scarlet",
+        "turquoise",
     }
 )
 
@@ -131,8 +154,7 @@ def tag_prose_contradiction(result: CaptionResult) -> dict:
         if prose_colors.isdisjoint(tag_colors):
             count += 1
             details.append(
-                {"kind": "color", "subject": noun,
-                 "tags_say": sorted(tag_colors), "prose_says": sorted(prose_colors)}
+                {"kind": "color", "subject": noun, "tags_say": sorted(tag_colors), "prose_says": sorted(prose_colors)}
             )
 
     # Posture contradictions
@@ -145,10 +167,7 @@ def tag_prose_contradiction(result: CaptionResult) -> dict:
             checked += 1
             if t.isdisjoint(p):
                 count += 1
-                details.append(
-                    {"kind": "pose", "subject": "posture",
-                     "tags_say": sorted(t), "prose_says": sorted(p)}
-                )
+                details.append({"kind": "pose", "subject": "posture", "tags_say": sorted(t), "prose_says": sorted(p)})
 
     rate = count / checked if checked else 0.0
     return {"count": count, "checked": checked, "rate": rate, "details": details}
@@ -219,8 +238,7 @@ def tag_coverage(result: CaptionResult, expected_tags: tuple[str, ...]) -> dict 
     haystack = f"{result.final_caption} {result.raw_tags}".lower()
     hits = [t for t in expected_tags if _tag_present(t, haystack)]
     missed = [t for t in expected_tags if t not in hits]
-    return {"recall": len(hits) / len(expected_tags), "hits": len(hits),
-            "total": len(expected_tags), "missed": missed}
+    return {"recall": len(hits) / len(expected_tags), "hits": len(hits), "total": len(expected_tags), "missed": missed}
 
 
 # ---------------------------------------------------------------------------

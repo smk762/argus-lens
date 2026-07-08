@@ -168,8 +168,7 @@ def eval_command(
         raise typer.Exit(1)
     if path.is_dir():
         dataset = [
-            replace(it, target_style=style, target_category=category, target_backend=target_backend)
-            for it in dataset
+            replace(it, target_style=style, target_category=category, target_backend=target_backend) for it in dataset
         ]
 
     kwargs = {}

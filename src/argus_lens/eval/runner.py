@@ -67,9 +67,7 @@ def _aggregate(items: list[ItemResult]) -> dict[str, Any]:
 
     over_budget_pct: dict[str, float] = {}
     for variant in ("training", "zeroshot"):
-        over_budget_pct[variant] = sum(
-            1 for r in scored if r.metrics["budget"]["over_budget"].get(variant)
-        ) / n
+        over_budget_pct[variant] = sum(1 for r in scored if r.metrics["budget"]["over_budget"].get(variant)) / n
 
     redundancy = [r.metrics["redundancy"]["rate"] for r in scored]
     coverage = [r.metrics["coverage"]["recall"] for r in scored if r.metrics["coverage"] is not None]
@@ -117,9 +115,7 @@ def run_eval(
                 prose_bias=prose_bias,
             )
             metrics = compute_metrics(item, result, image=pil, clip_scorer=clip_scorer)
-            per_item.append(
-                ItemResult(image=str(item.image), metrics=metrics, final_caption=result.final_caption)
-            )
+            per_item.append(ItemResult(image=str(item.image), metrics=metrics, final_caption=result.final_caption))
         except Exception as exc:  # noqa: BLE001 - report per-image, keep the run going
             per_item.append(ItemResult(image=str(item.image), error=str(exc)))
         if progress is not None:

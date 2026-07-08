@@ -98,19 +98,24 @@ def test_contradiction_flags_color_and_pose() -> None:
 
 def test_contradiction_none_when_consistent() -> None:
     """Matching colour/pose is not a contradiction."""
-    r = CaptionResult(final_caption="x", raw_tags="red_dress, standing",
-                      raw_prose="A woman in a red dress, standing.")
+    r = CaptionResult(final_caption="x", raw_tags="red_dress, standing", raw_prose="A woman in a red dress, standing.")
     assert tag_prose_contradiction(r)["count"] == 0
 
 
 def test_contradiction_folds_color_synonyms() -> None:
     """grey/gray and blond/blonde must not read as contradictions."""
-    assert tag_prose_contradiction(
-        CaptionResult(final_caption="x", raw_tags="grey_shirt", raw_prose="a gray shirt")
-    )["count"] == 0
-    assert tag_prose_contradiction(
-        CaptionResult(final_caption="x", raw_tags="blonde_hair", raw_prose="her blond hair")
-    )["count"] == 0
+    assert (
+        tag_prose_contradiction(CaptionResult(final_caption="x", raw_tags="grey_shirt", raw_prose="a gray shirt"))[
+            "count"
+        ]
+        == 0
+    )
+    assert (
+        tag_prose_contradiction(CaptionResult(final_caption="x", raw_tags="blonde_hair", raw_prose="her blond hair"))[
+            "count"
+        ]
+        == 0
+    )
 
 
 def test_budget_adherence_flags_overflow() -> None:
@@ -157,8 +162,7 @@ def test_load_dataset_from_manifest(tmp_path: Path) -> None:
     _write_image(tmp_path / "img.png")
     manifest = tmp_path / "golden.jsonl"
     manifest.write_text(
-        json.dumps({"image": "img.png", "expected_tags": ["red_dress"], "target_caption": "a red dress"})
-        + "\n"
+        json.dumps({"image": "img.png", "expected_tags": ["red_dress"], "target_caption": "a red dress"}) + "\n"
     )
     items = load_dataset(manifest)
     assert len(items) == 1
@@ -223,10 +227,16 @@ def test_run_eval_captures_per_image_errors(tmp_path: Path) -> None:
 
 def test_compare_to_baseline_detects_regression_and_improvement() -> None:
     """More contradictions regresses; higher coverage improves."""
-    baseline = {"contradiction_rate_mean": 0.10, "coverage_recall_mean": 0.80,
-                "over_budget_pct": {"training": 0.0, "zeroshot": 0.0}}
-    current = {"contradiction_rate_mean": 0.25, "coverage_recall_mean": 0.90,
-               "over_budget_pct": {"training": 0.0, "zeroshot": 0.0}}
+    baseline = {
+        "contradiction_rate_mean": 0.10,
+        "coverage_recall_mean": 0.80,
+        "over_budget_pct": {"training": 0.0, "zeroshot": 0.0},
+    }
+    current = {
+        "contradiction_rate_mean": 0.25,
+        "coverage_recall_mean": 0.90,
+        "over_budget_pct": {"training": 0.0, "zeroshot": 0.0},
+    }
     cmp = compare_to_baseline(current, baseline)
     assert cmp["regressed"] is True
     assert "contradiction_rate_mean" in cmp["regressions"]
