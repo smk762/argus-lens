@@ -1,0 +1,3 @@
+{"image": "images/woman_red_dress.jpg", "expected_tags": ["red_dress", "standing", "1girl"], "target_caption": "a woman in a red dress standing in a studio", "target_style": "photo", "target_category": "identity", "notes": "colour+pose reference for the contradiction metric"}
+{"image": "images/cat_on_sofa.jpg", "expected_tags": ["cat", "sitting", "indoors"], "target_caption": "a tabby cat sitting on a grey sofa", "target_style": "photo", "target_category": "setting"}
+{"image": "images/anime_blue_hair.png", "expected_tags": ["blue_hair", "school_uniform"], "target_style": "anime", "target_category": "identity", "target_backend": "flux"}

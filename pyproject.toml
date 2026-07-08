@@ -41,6 +41,7 @@ local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46"]
 openai = ["openai>=1.30"]
 replicate = ["replicate>=0.25"]
 cli = ["typer>=0.12", "rich>=13.0"]
+eval = ["torch>=2.1", "transformers>=4.46"]
 server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7"]
 all = [
     "onnxruntime>=1.16",
