@@ -241,6 +241,8 @@ class ArgusLens:
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
+        hybrid_preset: str | None = None,
+        prose_bias: float | None = None,
         prose_enrichment: bool = True,
     ) -> CaptionResult:
         """Caption a single image.
@@ -250,6 +252,10 @@ class ArgusLens:
         When *prose_enrichment* is enabled (default), novel scene tokens
         extracted from prose output (e.g. Florence-2) are appended to the
         training variant at lowest priority.
+
+        *hybrid_preset* (e.g. ``"keywords"``, ``"balanced"``, ``"descriptive"``)
+        or a continuous *prose_bias* (0.0 = pure tags, 1.0 = full prose) tunes
+        how much prose survives the tag/prose fusion.
         """
         name, pil = _load_image(image)
         profile = resolve_target_profile(
@@ -258,6 +264,8 @@ class ArgusLens:
             target_backend=target_backend,
             checkpoint=checkpoint,
             token_budget_override=token_budget_override,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             categories=self._categories,
         )
 
@@ -283,6 +291,8 @@ class ArgusLens:
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
+        hybrid_preset: str | None = None,
+        prose_bias: float | None = None,
         progress: Any | None = None,
     ) -> dict[str, CaptionResult]:
         """Caption multiple images, returning ``{name: CaptionResult}``.
@@ -295,6 +305,8 @@ class ArgusLens:
             target_backend=target_backend,
             checkpoint=checkpoint,
             token_budget_override=token_budget_override,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             categories=self._categories,
         )
 
@@ -337,6 +349,8 @@ class ArgusLens:
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
+        hybrid_preset: str | None = None,
+        prose_bias: float | None = None,
     ) -> Generator[tuple[str, CaptionResult], None, None]:
         """Yield ``(name, CaptionResult)`` as each image is processed."""
         profile = resolve_target_profile(
@@ -345,6 +359,8 @@ class ArgusLens:
             target_backend=target_backend,
             checkpoint=checkpoint,
             token_budget_override=token_budget_override,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             categories=self._categories,
         )
 
@@ -374,6 +390,8 @@ class ArgusLens:
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
+        hybrid_preset: str | None = None,
+        prose_bias: float | None = None,
         output_format: str = "txt",
         overwrite: bool = False,
         progress: Any | None = None,
@@ -409,6 +427,8 @@ class ArgusLens:
             target_backend=target_backend,
             checkpoint=checkpoint,
             token_budget_override=token_budget_override,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             progress=progress,
         )
 

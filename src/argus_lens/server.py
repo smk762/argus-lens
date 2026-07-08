@@ -32,6 +32,8 @@ from argus_lens.openai_compat import create_openai_router
 from argus_lens.types import (
     BACKEND_TOKEN_BUDGETS,
     CAPTION_TARGET_STYLES,
+    DEFAULT_HYBRID_PRESET,
+    HYBRID_PRESETS,
     CaptionResult,
     get_category_names,
 )
@@ -53,6 +55,8 @@ class CaptionURLRequest(BaseModel):
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
+    hybrid_preset: str | None = None
+    prose_bias: float | None = None
     prose_enrichment: bool = True
 
 
@@ -69,6 +73,8 @@ class CaptionFolderRequest(BaseModel):
     target_category: str = "identity"
     target_backend: str = "sdxl"
     checkpoint: str | None = None
+    hybrid_preset: str | None = None
+    prose_bias: float | None = None
     prose_enrichment: bool = True
 
 
@@ -90,6 +96,8 @@ class ImmichCaptionRequest(BaseModel):
     target_category: str = "identity"
     target_backend: str = "sdxl"
     checkpoint: str | None = None
+    hybrid_preset: str | None = None
+    prose_bias: float | None = None
     prose_enrichment: bool = True
     write_back: bool = False
     write_xmp: bool = False
@@ -231,6 +239,8 @@ def _caption_and_write(
     write_xmp: bool,
     xmp_overwrite: bool,
     written: set[Path],
+    hybrid_preset: str | None = None,
+    prose_bias: float | None = None,
 ) -> dict[str, Any]:
     """Caption one image and (optionally) write its ``.txt``/``.xmp`` sidecars.
 
@@ -255,6 +265,8 @@ def _caption_and_write(
             target_category=target_category,
             target_backend=target_backend,
             checkpoint=checkpoint,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             prose_enrichment=prose_enrichment,
         )
     except Exception as exc:  # noqa: BLE001 - report per-image, keep going
@@ -463,6 +475,8 @@ def create_app(
             "target_categories": list(get_category_names()),
             "target_backends": list(BACKEND_TOKEN_BUDGETS),
             "token_budgets": dict(BACKEND_TOKEN_BUDGETS),
+            "hybrid_presets": dict(HYBRID_PRESETS),
+            "default_hybrid_preset": DEFAULT_HYBRID_PRESET,
         }
 
     @app.get("/backends")
@@ -477,6 +491,8 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        hybrid_preset: str | None = Form(None),
+        prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
         """Caption a single uploaded image and return the structured result."""
         data = await file.read()
@@ -492,6 +508,8 @@ def create_app(
             target_style=target_style,
             target_category=target_category,
             target_backend=target_backend,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
         )
         return _result_to_dict(result)
 
@@ -506,6 +524,8 @@ def create_app(
                 target_style=req.target_style,
                 target_category=req.target_category,
                 target_backend=req.target_backend,
+                hybrid_preset=req.hybrid_preset,
+                prose_bias=req.prose_bias,
                 prose_enrichment=req.prose_enrichment,
             )
         except Exception as exc:
@@ -519,6 +539,8 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        hybrid_preset: str | None = Form(None),
+        prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
         """Caption multiple uploaded images in one request; unreadable files are skipped."""
         images: list[tuple[str, Image.Image]] = []
@@ -537,6 +559,8 @@ def create_app(
             target_style=target_style,
             target_category=target_category,
             target_backend=target_backend,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
         )
         return {"results": {k: _result_to_dict(v) for k, v in results.items()}}
 
@@ -547,6 +571,8 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        hybrid_preset: str | None = Form(None),
+        prose_bias: float | None = Form(None),
     ) -> StreamingResponse:
         """Caption uploaded images, streaming one NDJSON result line per image."""
         images: list[Image.Image] = []
@@ -566,6 +592,8 @@ def create_app(
                 target_style=target_style,
                 target_category=target_category,
                 target_backend=target_backend,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
             )
             sentinel = object()
             while True:
@@ -743,6 +771,8 @@ def create_app(
                     target_category=req.target_category,
                     target_backend=req.target_backend,
                     checkpoint=req.checkpoint,
+                    hybrid_preset=req.hybrid_preset,
+                    prose_bias=req.prose_bias,
                     prose_enrichment=req.prose_enrichment,
                     write_sidecar=req.write_sidecar,
                     write_xmp=req.write_xmp,
@@ -981,6 +1011,8 @@ def create_app(
                     target_category=req.target_category,
                     target_backend=req.target_backend,
                     checkpoint=req.checkpoint,
+                    hybrid_preset=req.hybrid_preset,
+                    prose_bias=req.prose_bias,
                     prose_enrichment=req.prose_enrichment,
                 )
             except Exception as exc:  # noqa: BLE001 - report per-asset, keep going
