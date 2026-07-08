@@ -81,16 +81,19 @@ def run_with_oom_retry(
 
 
 def cuda_free_vram_mb() -> int | None:
-    """Return free CUDA VRAM in MB, or None if CUDA is unavailable."""
+    """Return free CUDA VRAM in MB, or None if CUDA is unavailable.
+
+    Uses the driver-level ``mem_get_info`` (free across *all* processes), not
+    ``memory_reserved`` (this process's torch allocator only) — so a co-resident
+    tenant's usage is reflected, which is the whole point on a shared GPU.
+    """
     try:
         import torch
 
         if not torch.cuda.is_available():
             return None
-        props = torch.cuda.get_device_properties(0)
-        total = int(props.total_memory)
-        reserved = int(torch.cuda.memory_reserved(0))
-        return max(0, (total - reserved) // (1024 * 1024))
+        free_bytes, _total = torch.cuda.mem_get_info(0)
+        return max(0, int(free_bytes) // (1024 * 1024))
     except Exception:
         return None
 

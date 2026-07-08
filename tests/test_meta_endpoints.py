@@ -41,16 +41,19 @@ class _StubBackend(CaptionBackend):
         pass
 
 
-def test_health_reports_service_version_and_source_root(tmp_path: Path) -> None:
+def test_health_reports_service_version_and_source_root(tmp_path: Path, monkeypatch) -> None:
     """GET /health mirrors argus-curator's shape, including the resolved source root."""
+    monkeypatch.delenv("ARGUS_GPU_COORDINATOR", raising=False)
     client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
     body = client.get("/health").json()
-    assert body == {
-        "status": "ok",
-        "service": "argus-lens",
-        "version": __version__,
-        "source_root": str(tmp_path.resolve()),
-    }
+    assert body["status"] == "ok"
+    assert body["service"] == "argus-lens"
+    assert body["version"] == __version__
+    assert body["source_root"] == str(tmp_path.resolve())
+    # GPU residency block (#37): backend name + loaded flag + coordinator.
+    assert body["gpu"]["backend"] == "stub"
+    assert body["gpu"]["loaded"] is False
+    assert body["gpu"]["coordinator"] == "none"
 
 
 def test_health_source_root_is_null_when_unset(monkeypatch) -> None:
@@ -60,6 +63,34 @@ def test_health_source_root_is_null_when_unset(monkeypatch) -> None:
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert body["source_root"] is None
+
+
+def test_admin_unload_frees_the_model(monkeypatch) -> None:
+    """POST /admin/unload actually unloads a loaded model (#37)."""
+    import io
+
+    monkeypatch.delenv("LENS_SOURCE_PATH", raising=False)
+    monkeypatch.delenv("ARGUS_ADMIN_TOKEN", raising=False)
+    client = TestClient(create_app(default_backend=_StubBackend()))
+
+    # Caption once to load the model, then confirm it's resident.
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, format="PNG")
+    buf.seek(0)
+    assert client.post("/caption", files={"file": ("x.png", buf, "image/png")}).status_code == 200
+    assert client.get("/health").json()["gpu"]["loaded"] is True
+
+    body = client.post("/admin/unload").json()
+    assert body["unloaded"] is True
+    assert body["gpu"]["loaded"] is False
+
+
+def test_admin_unload_requires_token_when_configured(monkeypatch) -> None:
+    """With ARGUS_ADMIN_TOKEN set, /admin/unload rejects unauthenticated calls (#42)."""
+    monkeypatch.setenv("ARGUS_ADMIN_TOKEN", "secret")
+    client = TestClient(create_app(default_backend=_StubBackend()))
+    assert client.post("/admin/unload").status_code == 401
+    assert client.post("/admin/unload", headers={"Authorization": "Bearer secret"}).status_code == 200
 
 
 def test_profiles_exposes_taxonomy_from_sources_of_truth() -> None:

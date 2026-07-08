@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import threading
+import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -161,6 +163,8 @@ class ArgusLens:
         oom_retry_max_wait_s: float = 180.0,
         oom_retry_interval_s: float = 5.0,
         verifier: Any | None = None,
+        coordinator: Any | None = None,
+        idle_unload_s: float | None = None,
         **kwargs: Any,
     ) -> None:
         """Resolve the backend and store configuration; models load lazily on first caption.
@@ -168,6 +172,12 @@ class ArgusLens:
         When *verifier* (an ``AttributeVerifier``) is supplied, a reconciliation
         pass fixes prose colour/pose claims that contradict the tags (#36) before
         assembly. Without one, inference is unchanged.
+
+        *coordinator* (a ``GpuCoordinator``) gates heavy inference behind a
+        capacity lease (#38); it defaults to the environment
+        (``ARGUS_GPU_COORDINATOR``), i.e. ``none`` unless configured.
+        *idle_unload_s* enables a background reaper that unloads the model after
+        that many idle seconds (#37).
         """
         self._backend = _resolve_backend(backend, **kwargs)
         self._device = device
@@ -177,6 +187,8 @@ class ArgusLens:
         self._loaded = False
         self._load_lock = threading.Lock()
         self._kwargs = kwargs
+        self._last_used: float | None = None
+        self._active = 0  # in-flight inferences; guarded by _load_lock
 
         self._reconciler = None
         if verifier is not None:
@@ -184,10 +196,114 @@ class ArgusLens:
 
             self._reconciler = Reconciler(verifier)
 
+        if coordinator is not None:
+            self._coordinator = coordinator
+        else:
+            from argus_lens.gpu import coordinator_from_env  # noqa: PLC0415
+
+            self._coordinator = coordinator_from_env()
+
+        self._idle_unload_s = idle_unload_s
+        self._reaper_stop: threading.Event | None = None
+        self._reaper_thread: threading.Thread | None = None
+        if idle_unload_s and idle_unload_s > 0:
+            self._start_idle_reaper(idle_unload_s)
+
     @property
     def backend(self) -> CaptionBackend:
         """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
+
+    def unload(self) -> bool:
+        """Release the backend's model/resources and free the CUDA cache (#37).
+
+        Returns ``True`` if it unloaded. Refuses (returns ``False``) while an
+        inference is in flight — freeing the model mid-caption would crash the
+        running request. Idempotent and thread-safe; reloads lazily next caption.
+        """
+        with self._load_lock:
+            if self._active > 0:
+                logger.info("unload_skipped_active", active=self._active)
+                return False
+            if not self._loaded:
+                return False
+            try:
+                self._backend.unload()
+            finally:
+                self._loaded = False
+        clear_gpu_cache()
+        return True
+
+    def unload_if_idle(self, idle_ttl_s: float) -> bool:
+        """Unload the model when it has been idle at least *idle_ttl_s* seconds.
+
+        Returns ``True`` if it unloaded. Skips while a caption is in flight, and
+        measures idleness from the last inference *boundary* (start or end), so a
+        long-running caption is never mistaken for idle.
+        """
+        if not self._loaded or self._last_used is None or self._active > 0:
+            return False
+        if (time.monotonic() - self._last_used) >= idle_ttl_s:
+            return self.unload()
+        return False
+
+    def vram_status(self) -> dict[str, Any]:
+        """Report residency, backend, coordinator, free VRAM, and idle time (#37)."""
+        from argus_lens.gpu import free_vram_mb  # noqa: PLC0415
+
+        return {
+            "backend": self._backend.name,
+            "loaded": self._loaded,
+            "coordinator": getattr(self._coordinator, "name", "none"),
+            "free_vram_mb": free_vram_mb(),
+            "idle_s": (time.monotonic() - self._last_used) if self._last_used is not None else None,
+        }
+
+    def close(self) -> None:
+        """Stop the idle reaper (if running) and unload the model."""
+        if self._reaper_stop is not None:
+            self._reaper_stop.set()
+        self.unload()
+
+    def _start_idle_reaper(self, idle_unload_s: float) -> None:
+        """Start a daemon thread that unloads the model after idle periods (#37).
+
+        The loop holds only a *weakref* to the engine, so a dropped (un-``close``d)
+        engine is still garbage-collected — the reaper then observes ``None`` and
+        exits instead of pinning the engine and its VRAM forever.
+        """
+        import weakref  # noqa: PLC0415
+
+        self._reaper_stop = threading.Event()
+        stop = self._reaper_stop
+        interval = min(idle_unload_s, 30.0)
+        ref = weakref.ref(self)
+
+        def _loop() -> None:
+            """Poll for idleness until stopped or the engine is collected."""
+            while not stop.wait(interval):
+                engine = ref()
+                if engine is None:
+                    return
+                try:
+                    engine.unload_if_idle(idle_unload_s)
+                except Exception as exc:  # noqa: BLE001 - a reaper hiccup must not crash the app
+                    logger.warning("idle_reaper_error", error=str(exc))
+                del engine  # don't hold the ref across the wait
+
+        self._reaper_thread = threading.Thread(target=_loop, name="argus-idle-reaper", daemon=True)
+        self._reaper_thread.start()
+
+    def _warn_if_low_vram(self) -> None:
+        """Log a warning when free VRAM looks too small for the backend to load."""
+        if not getattr(self._backend, "requires_gpu", False):
+            return
+        from argus_lens.gpu import estimate_footprint_mb, free_vram_mb  # noqa: PLC0415
+
+        free = free_vram_mb()
+        needed = estimate_footprint_mb(self._backend.name)
+        if free is not None and needed and free < needed:
+            logger.warning("low_vram_before_load", backend=self._backend.name, free_mb=free, needed_mb=needed)
 
     def _ensure_loaded(self) -> None:
         """Configure the backend device once, lazily, before first inference.
@@ -205,15 +321,40 @@ class ArgusLens:
             return
         with self._load_lock:
             if not self._loaded:
+                self._warn_if_low_vram()
                 self._backend.load(self._device)
                 self._loaded = True
 
     def _infer(self, pil: Image.Image) -> tuple[str, str]:
-        """Run backend inference, returning ``(tags, prose)``.
+        """Run backend inference behind the GPU capacity lease (#38).
 
-        Retries on CUDA OOM with cache cleanup (#9). The OOM wait budget is
-        bounded by ``oom_retry_max_wait_s``; set it to ``0`` to fail fast.
+        Marks the engine busy (so the idle reaper / ``unload`` won't free the
+        model mid-inference) and stamps idleness at both boundaries. The lease
+        serialises heavy GPU work against other tenants; cloud backends (no GPU
+        footprint) bypass it.
         """
+        from argus_lens.gpu import estimate_footprint_mb  # noqa: PLC0415
+
+        footprint = estimate_footprint_mb(self._backend.name)
+        use_lease = getattr(self._backend, "requires_gpu", False) and footprint > 0
+        lease = (
+            self._coordinator.lease(caller=self._backend.name, min_vram_mb=footprint)
+            if use_lease
+            else contextlib.nullcontext()
+        )
+        with self._load_lock:
+            self._active += 1
+            self._last_used = time.monotonic()
+        try:
+            with lease:
+                return self._infer_locked(pil)
+        finally:
+            with self._load_lock:
+                self._active -= 1
+                self._last_used = time.monotonic()
+
+    def _infer_locked(self, pil: Image.Image) -> tuple[str, str]:
+        """Load (if needed) and run inference; retries on CUDA OOM (#9)."""
         self._ensure_loaded()
 
         def _call() -> tuple[str, str]:

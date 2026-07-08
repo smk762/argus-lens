@@ -217,6 +217,36 @@ argus-lens eval ./images/ -o before.json
 argus-lens eval ./images/ --reconcile tag-prior --baseline before.json
 ```
 
+### GPU sharing (lifecycle + coordinator)
+
+When argus-lens shares a GPU with another process (e.g. an image generator), it can behave as a good tenant. Two independent, opt-in mechanisms:
+
+**Lifecycle** — the model loads lazily and can be freed on demand:
+
+```python
+engine = ArgusLens(backend="hybrid", idle_unload_s=120)  # auto-unload after 2 min idle
+engine.caption("photo.jpg")
+engine.unload()          # free VRAM now; reloads lazily on the next caption
+engine.vram_status()     # {backend, loaded, coordinator, free_vram_mb, idle_s}
+```
+
+The server exposes `GET /health` (now includes a `gpu` block) and `POST /admin/unload` — the same `/unload` contract gothmog's idle reaper / `/v1/gpu/evict` expect.
+
+**Coordinator** — gate heavy inference behind a capacity lease so two GPU jobs don't collide. Selected via env (defaults to `none`, i.e. unchanged behaviour):
+
+| `ARGUS_GPU_COORDINATOR` | Behaviour | Needs |
+|---|---|---|
+| `none` (default) | no gating | — |
+| `lease` | one heavy job at a time via a host file lock | POSIX (`ARGUS_GPU_LEASE_PATH` optional) |
+| `gothmog` | acquire/release a slot from [gothmog](https://github.com/smk762/gothmog)'s `/v1/gpu` capacity API | `GOTHMOG_URL` (+ `GOTHMOG_API_KEY`) |
+
+```bash
+# Serialise against your other GPU jobs through gothmog
+ARGUS_GPU_COORDINATOR=gothmog GOTHMOG_URL=http://192.168.1.109:8030 argus-lens serve
+```
+
+Cloud backends (zero VRAM footprint) bypass the lease automatically. The lease sizes its request from a per-backend VRAM estimate, and OOM retry remains the reactive backstop.
+
 ### HTTP Server
 
 Run the built-in FastAPI server for frontend consumers (e.g. [argus-studio](https://github.com/smk762/argus-studio)):
