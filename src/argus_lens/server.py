@@ -453,13 +453,28 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        """Service liveness/identity probe (mirrors argus-curator's /health shape)."""
+        """Service liveness/identity probe (mirrors argus-curator's /health shape).
+
+        Includes GPU residency + free VRAM so a coordinator (e.g. gothmog) can
+        attribute and reclaim this backend's memory (#37).
+        """
         return {
             "status": "ok",
             "service": "argus-lens",
             "version": __version__,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
+            "gpu": engine.vram_status(),
         }
+
+    @app.post("/admin/unload")
+    async def admin_unload() -> dict[str, Any]:
+        """Unload the model to free VRAM for a co-resident GPU tenant (#37).
+
+        Matches the ``/unload`` contract gothmog's idle reaper / ``/v1/gpu/evict``
+        expect. The model reloads lazily on the next caption request.
+        """
+        await asyncio.to_thread(engine.unload)
+        return {"unloaded": True, "gpu": engine.vram_status()}
 
     @app.get("/profiles")
     async def profiles() -> dict[str, Any]:
