@@ -333,9 +333,9 @@ class ArgusLens:
         serialises heavy GPU work against other tenants; cloud backends (no GPU
         footprint) bypass it.
         """
-        from argus_lens.gpu import estimate_footprint_mb  # noqa: PLC0415
+        from argus_lens.gpu import resolve_min_vram_mb  # noqa: PLC0415
 
-        footprint = estimate_footprint_mb(self._backend.name)
+        footprint = resolve_min_vram_mb(self._backend.name)
         use_lease = getattr(self._backend, "requires_gpu", False) and footprint > 0
         lease = (
             self._coordinator.lease(caller=self._backend.name, min_vram_mb=footprint)

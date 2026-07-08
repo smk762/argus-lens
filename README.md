@@ -247,6 +247,8 @@ ARGUS_GPU_COORDINATOR=gothmog GOTHMOG_URL=http://192.168.1.109:8030 argus-lens s
 
 Cloud backends (zero VRAM footprint) bypass the lease automatically. The lease sizes its request from a per-backend VRAM estimate, and OOM retry remains the reactive backstop.
 
+Extra knobs (all optional): `ARGUS_GPU_MIN_VRAM_MB` overrides the per-backend footprint the lease requests (e.g. for Florence-2-large or a non-default hybrid); `ARGUS_GPU_LEASE_TIMEOUT_S` caps how long the lease waits for a slot (raising `GpuLeaseTimeout`, a `TimeoutError`, if it can't); `ARGUS_GPU_LEASE_PATH` sets the `lease` lock file; `ARGUS_ADMIN_TOKEN` protects `POST /admin/unload`.
+
 ### HTTP Server
 
 Run the built-in FastAPI server for frontend consumers (e.g. [argus-studio](https://github.com/smk762/argus-studio)):
