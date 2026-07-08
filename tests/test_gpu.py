@@ -173,14 +173,74 @@ def test_unload_if_idle() -> None:
     assert not eng._loaded
 
 
-def test_vram_status_shape() -> None:
-    """vram_status reports backend, residency, coordinator, and idle time."""
+def test_vram_status_shape(monkeypatch) -> None:
+    """vram_status reports backend, residency, coordinator, free VRAM, idle time."""
+    monkeypatch.delenv("ARGUS_GPU_COORDINATOR", raising=False)
     eng = ArgusLens(backend=_LifecycleBackend())
     s = eng.vram_status()
     assert s["backend"] == "florence2"
     assert s["loaded"] is False
     assert s["coordinator"] == "none"
     assert s["idle_s"] is None
+    assert "free_vram_mb" in s  # key must survive (regression guard)
+
+
+def test_reaper_does_not_unload_during_inference() -> None:
+    """An in-flight caption is not unloaded by unload()/unload_if_idle (#42 F1)."""
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class _Blocking(_LifecycleBackend):
+        def caption_image(self, image: Image.Image) -> str:
+            started.set()
+            release.wait(2.0)
+            return "a caption"
+
+    b = _Blocking()
+    eng = ArgusLens(backend=b)
+    t = threading.Thread(target=lambda: eng.caption(_img()))
+    t.start()
+    assert started.wait(2.0)
+    # Mid-inference: idleness measured from the *start* boundary is 0, and the
+    # engine is busy → neither the reaper nor an explicit unload may free it.
+    assert eng.unload_if_idle(0) is False
+    assert eng.unload() is False
+    assert b.unloads == 0
+    release.set()
+    t.join(2.0)
+    assert eng.unload_if_idle(0) is True  # now idle → unloads
+
+
+def test_cloud_hybrid_bypasses_lease() -> None:
+    """A hybrid with requires_gpu=False takes no lease despite a non-zero name footprint (#42 F6)."""
+
+    class _CloudHybrid(_LifecycleBackend):
+        name = "hybrid"  # footprint 4000, but...
+        requires_gpu = False  # ...no local GPU
+
+    events: list[str] = []
+
+    class _Recording:
+        name = "rec"
+
+        @contextlib.contextmanager
+        def lease(self, *, caller: str, min_vram_mb: int):
+            events.append("leased")
+            yield
+
+    ArgusLens(backend=_CloudHybrid(), coordinator=_Recording()).caption(_img())
+    assert events == []
+
+
+def test_two_local_lease_instances_serialize(tmp_path) -> None:
+    """Two coordinators on the same lock file mutually exclude."""
+    lock = str(tmp_path / "g.lock")
+    held = LocalLeaseCoordinator(lock_path=lock, timeout_s=1.0)
+    other = LocalLeaseCoordinator(lock_path=lock, timeout_s=0.3, poll_s=0.05)
+    with held.lease(caller="a", min_vram_mb=0), pytest.raises(TimeoutError), other.lease(caller="b", min_vram_mb=0):
+        pass
 
 
 def test_coordinator_lease_wraps_inference() -> None:

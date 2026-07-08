@@ -121,15 +121,21 @@ class GothmogCoordinator:
         """POST /v1/gpu/capacity/acquire → token id (or None if the body lacks one)."""
         import httpx  # noqa: PLC0415
 
+        # The broker may long-poll for up to acquire_timeout_s; the HTTP read
+        # timeout must exceed that or the client abandons a request the broker
+        # would still grant (dropping the caption and leaking the granted token).
         resp = httpx.post(
             f"{self.base_url}/v1/gpu/capacity/acquire",
             json={"caller": caller, "min_vram_mb": min_vram_mb, "timeout_s": self.acquire_timeout_s},
             headers=self._headers(),
-            timeout=self.http_timeout_s,
+            timeout=self.acquire_timeout_s + self.http_timeout_s,
         )
         resp.raise_for_status()
         body = resp.json()
-        return body.get("token_id") or body.get("id")
+        token = body.get("token_id") or body.get("id")
+        if token is None:
+            logger.warning("gothmog_acquire_no_token", caller=caller, body_keys=sorted(body))
+        return token
 
     def _release(self, token_id: str) -> None:
         """DELETE /v1/gpu/capacity/tokens/{token_id}."""

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+    from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
     from fastapi.responses import StreamingResponse
     from pydantic import BaseModel
 except ImportError as exc:
@@ -412,6 +412,17 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
     }
 
 
+def _require_admin_token(authorization: str | None) -> None:
+    """Enforce ``Authorization: Bearer <ARGUS_ADMIN_TOKEN>`` when the env var is set.
+
+    When ``ARGUS_ADMIN_TOKEN`` is unset the admin endpoints stay open (dev
+    default); setting it locks them down for a networked deployment.
+    """
+    token = os.environ.get("ARGUS_ADMIN_TOKEN")
+    if token and authorization != f"Bearer {token}":
+        raise HTTPException(status_code=401, detail="admin token required")
+
+
 def create_app(
     default_backend: str = "hybrid",
     cors: bool = False,
@@ -456,25 +467,29 @@ def create_app(
         """Service liveness/identity probe (mirrors argus-curator's /health shape).
 
         Includes GPU residency + free VRAM so a coordinator (e.g. gothmog) can
-        attribute and reclaim this backend's memory (#37).
+        attribute and reclaim this backend's memory (#37). The VRAM probe runs
+        off the event loop (its first CUDA call can trigger context init).
         """
         return {
             "status": "ok",
             "service": "argus-lens",
             "version": __version__,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
-            "gpu": engine.vram_status(),
+            "gpu": await asyncio.to_thread(engine.vram_status),
         }
 
     @app.post("/admin/unload")
-    async def admin_unload() -> dict[str, Any]:
+    async def admin_unload(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """Unload the model to free VRAM for a co-resident GPU tenant (#37).
 
         Matches the ``/unload`` contract gothmog's idle reaper / ``/v1/gpu/evict``
-        expect. The model reloads lazily on the next caption request.
+        expect; the model reloads lazily on the next caption. Set ``ARGUS_ADMIN_TOKEN``
+        to require ``Authorization: Bearer <token>`` (otherwise the endpoint is open —
+        keep it off untrusted networks to avoid unload/reload-thrash abuse).
         """
-        await asyncio.to_thread(engine.unload)
-        return {"unloaded": True, "gpu": engine.vram_status()}
+        _require_admin_token(authorization)
+        unloaded = await asyncio.to_thread(engine.unload)
+        return {"unloaded": unloaded, "gpu": await asyncio.to_thread(engine.vram_status)}
 
     @app.get("/profiles")
     async def profiles() -> dict[str, Any]:

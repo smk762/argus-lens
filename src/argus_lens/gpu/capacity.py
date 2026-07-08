@@ -17,6 +17,9 @@ _FOOTPRINT_MB: dict[str, int] = {
     "blip2": 8000,
     "ram": 2000,
 }
+# Backends that hold no VRAM *in the argus process*. Note: openai-compat may
+# point at a local model server (Ollama) that does use the shared GPU — argus's
+# lease can't gate that; rely on a resident-aware coordinator (gothmog) there.
 _CLOUD_BACKENDS: frozenset[str] = frozenset({"openai", "openai-compat", "hf-inference", "replicate", "nvidia-nim"})
 DEFAULT_FOOTPRINT_MB = 4000  # e.g. the default hybrid = wd14 (1500) + florence2 (2500)
 

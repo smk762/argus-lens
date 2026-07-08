@@ -188,6 +188,7 @@ class ArgusLens:
         self._load_lock = threading.Lock()
         self._kwargs = kwargs
         self._last_used: float | None = None
+        self._active = 0  # in-flight inferences; guarded by _load_lock
 
         self._reconciler = None
         if verifier is not None:
@@ -213,30 +214,37 @@ class ArgusLens:
         """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
 
-    def unload(self) -> None:
+    def unload(self) -> bool:
         """Release the backend's model/resources and free the CUDA cache (#37).
 
-        Idempotent and thread-safe; the model reloads lazily on the next caption.
+        Returns ``True`` if it unloaded. Refuses (returns ``False``) while an
+        inference is in flight — freeing the model mid-caption would crash the
+        running request. Idempotent and thread-safe; reloads lazily next caption.
         """
         with self._load_lock:
-            if self._loaded:
-                try:
-                    self._backend.unload()
-                finally:
-                    self._loaded = False
+            if self._active > 0:
+                logger.info("unload_skipped_active", active=self._active)
+                return False
+            if not self._loaded:
+                return False
+            try:
+                self._backend.unload()
+            finally:
+                self._loaded = False
         clear_gpu_cache()
+        return True
 
     def unload_if_idle(self, idle_ttl_s: float) -> bool:
         """Unload the model when it has been idle at least *idle_ttl_s* seconds.
 
-        Returns ``True`` if it unloaded. Lets an orchestrator (or the built-in
-        reaper) reclaim VRAM for a co-resident GPU tenant.
+        Returns ``True`` if it unloaded. Skips while a caption is in flight, and
+        measures idleness from the last inference *boundary* (start or end), so a
+        long-running caption is never mistaken for idle.
         """
-        if not self._loaded or self._last_used is None:
+        if not self._loaded or self._last_used is None or self._active > 0:
             return False
         if (time.monotonic() - self._last_used) >= idle_ttl_s:
-            self.unload()
-            return True
+            return self.unload()
         return False
 
     def vram_status(self) -> dict[str, Any]:
@@ -258,18 +266,30 @@ class ArgusLens:
         self.unload()
 
     def _start_idle_reaper(self, idle_unload_s: float) -> None:
-        """Start a daemon thread that unloads the model after idle periods (#37)."""
+        """Start a daemon thread that unloads the model after idle periods (#37).
+
+        The loop holds only a *weakref* to the engine, so a dropped (un-``close``d)
+        engine is still garbage-collected — the reaper then observes ``None`` and
+        exits instead of pinning the engine and its VRAM forever.
+        """
+        import weakref  # noqa: PLC0415
+
         self._reaper_stop = threading.Event()
+        stop = self._reaper_stop
         interval = min(idle_unload_s, 30.0)
+        ref = weakref.ref(self)
 
         def _loop() -> None:
-            """Poll for idleness until stopped; unload when the TTL is exceeded."""
-            assert self._reaper_stop is not None
-            while not self._reaper_stop.wait(interval):
+            """Poll for idleness until stopped or the engine is collected."""
+            while not stop.wait(interval):
+                engine = ref()
+                if engine is None:
+                    return
                 try:
-                    self.unload_if_idle(idle_unload_s)
+                    engine.unload_if_idle(idle_unload_s)
                 except Exception as exc:  # noqa: BLE001 - a reaper hiccup must not crash the app
                     logger.warning("idle_reaper_error", error=str(exc))
+                del engine  # don't hold the ref across the wait
 
         self._reaper_thread = threading.Thread(target=_loop, name="argus-idle-reaper", daemon=True)
         self._reaper_thread.start()
@@ -308,20 +328,30 @@ class ArgusLens:
     def _infer(self, pil: Image.Image) -> tuple[str, str]:
         """Run backend inference behind the GPU capacity lease (#38).
 
-        The lease serialises heavy GPU work against other tenants; cloud
-        backends (zero footprint) bypass it. Delegates to
-        :meth:`_infer_locked` for the actual load + inference + reconcile.
+        Marks the engine busy (so the idle reaper / ``unload`` won't free the
+        model mid-inference) and stamps idleness at both boundaries. The lease
+        serialises heavy GPU work against other tenants; cloud backends (no GPU
+        footprint) bypass it.
         """
         from argus_lens.gpu import estimate_footprint_mb  # noqa: PLC0415
 
         footprint = estimate_footprint_mb(self._backend.name)
+        use_lease = getattr(self._backend, "requires_gpu", False) and footprint > 0
         lease = (
             self._coordinator.lease(caller=self._backend.name, min_vram_mb=footprint)
-            if footprint > 0
+            if use_lease
             else contextlib.nullcontext()
         )
-        with lease:
-            return self._infer_locked(pil)
+        with self._load_lock:
+            self._active += 1
+            self._last_used = time.monotonic()
+        try:
+            with lease:
+                return self._infer_locked(pil)
+        finally:
+            with self._load_lock:
+                self._active -= 1
+                self._last_used = time.monotonic()
 
     def _infer_locked(self, pil: Image.Image) -> tuple[str, str]:
         """Load (if needed) and run inference; retries on CUDA OOM (#9)."""
@@ -363,7 +393,6 @@ class ArgusLens:
                 clear_gpu_cache()
             prose = outcome.prose
 
-        self._last_used = time.monotonic()
         return tags, prose
 
     def caption(
