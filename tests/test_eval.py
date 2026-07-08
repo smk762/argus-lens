@@ -142,6 +142,74 @@ def test_tag_coverage_recall_and_none() -> None:
     assert tag_coverage(r, ()) is None
 
 
+def test_contradiction_ignores_multiword_color_tags() -> None:
+    """`black_and_white` describes no object → no spurious contradiction on 'and'."""
+    r = CaptionResult(final_caption="x", raw_tags="black_and_white, 1girl", raw_prose="a red car and a blue house")
+    assert tag_prose_contradiction(r)["count"] == 0
+
+
+def test_contradiction_no_cross_clause_color_leak() -> None:
+    """A colour in a different clause must not attach to the tagged noun."""
+    r = CaptionResult(final_caption="x", raw_tags="red_hair", raw_prose="long hair, blue dress")
+    c = tag_prose_contradiction(r)
+    assert c["count"] == 0, c["details"]
+
+
+def test_contradiction_detects_plural_noun() -> None:
+    """A pluralised noun in prose is still matched (red_dress vs 'blue dresses')."""
+    r = CaptionResult(final_caption="x", raw_tags="red_dress", raw_prose="wearing blue dresses")
+    assert tag_prose_contradiction(r)["count"] == 1
+
+
+def test_tag_coverage_requires_whole_word() -> None:
+    """A tag must not be counted present as a mere prefix of another word."""
+    r = CaptionResult(final_caption="an artist at work", raw_tags="")
+    assert tag_coverage(r, ("art",))["recall"] == 0.0
+
+
+def test_clip_scores_model_output_not_reference(tmp_path: Path) -> None:
+    """CLIPScore must score the model's caption, never a labelled reference caption."""
+    from argus_lens.eval.metrics import compute_metrics
+
+    captured: dict[str, str] = {}
+
+    class _FakeClip:
+        def score(self, image: Image.Image, caption: str) -> float:
+            captured["caption"] = caption
+            return 0.5
+
+    img = _write_image(tmp_path / "x.png")
+    item = EvalItem(image=img, target_caption="REFERENCE", expected_tags=("red_dress",))
+    result = CaptionResult(final_caption="MODEL OUTPUT", raw_tags="red_dress", raw_prose="a red dress")
+    m = compute_metrics(item, result, image=Image.open(img), clip_scorer=_FakeClip())
+    assert m["clip"] == 0.5
+    assert captured["caption"] == "MODEL OUTPUT"
+
+
+def test_scorecard_contradiction_denominator_excludes_errors() -> None:
+    """The 'images with a contradiction' fraction is over scored (non-error) images."""
+    from argus_lens.eval.runner import Scorecard
+
+    sc = Scorecard(
+        n=3,
+        n_labelled=0,
+        n_errors=1,
+        aggregates={
+            "contradiction_rate_mean": 0.5,
+            "contradiction_total": 1,
+            "items_with_contradiction": 1,
+            "items_with_contradiction_pct": 0.5,
+            "over_budget_pct": {"training": 0.0, "zeroshot": 0.0},
+            "redundancy_rate_mean": 0.0,
+            "coverage_recall_mean": None,
+            "clip_mean": None,
+        },
+        per_item=[],
+        config={},
+    )
+    assert "1/2" in format_scorecard(sc)  # denominator = 3 total - 1 errored
+
+
 # --------------------------------------------------------------------------- #
 # Dataset loading
 # --------------------------------------------------------------------------- #

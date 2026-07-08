@@ -55,7 +55,8 @@ def format_scorecard(scorecard: Scorecard) -> str:
         ("tag↔prose contradiction rate", _fmt(a.get("contradiction_rate_mean")) + "   (lower better)"),
         (
             "images with a contradiction",
-            f"{a.get('items_with_contradiction')}/{scorecard.n}  ({_fmt(a.get('items_with_contradiction_pct'))})",
+            f"{a.get('items_with_contradiction')}/{scorecard.n - scorecard.n_errors}"
+            f"  ({_fmt(a.get('items_with_contradiction_pct'))})",
         ),
         ("total contradictions", str(a.get("contradiction_total"))),
         ("over-budget: training", _fmt(a.get("over_budget_pct", {}).get("training"))),
