@@ -20,6 +20,27 @@ app = typer.Typer(
 )
 
 
+def _make_verifier(
+    reconcile: str | None,
+    verifier_url: str | None,
+    verifier_model: str | None,
+    verifier_key: str | None,
+    verifier_device: str,
+) -> object | None:
+    """Build an attribute verifier from CLI flags, or ``None`` when disabled."""
+    if not reconcile:
+        return None
+    from argus_lens.reconcile import build_verifier
+
+    return build_verifier(
+        reconcile,
+        base_url=verifier_url,
+        model_id=verifier_model,
+        api_key=verifier_key,
+        device=verifier_device,
+    )
+
+
 @app.command()
 def caption(
     path: Path = Argument(..., help="Image file or directory to caption"),
@@ -42,6 +63,15 @@ def caption(
     base_url: str | None = Option(
         None, "--base-url", help="Endpoint URL for openai-compat backend (e.g. http://localhost:11434/v1)"
     ),
+    reconcile: str | None = Option(
+        None,
+        "--reconcile",
+        help="Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo",
+    ),
+    verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
+    verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
+    verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
+    verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
     verbose: bool = Option(False, "--verbose", "-v", help="Verbose output"),
 ) -> None:
     """Caption images in a file or directory."""
@@ -58,7 +88,8 @@ def caption(
         else:
             kwargs["model_id"] = model_id
 
-    engine = ArgusLens(backend=backend, **kwargs)
+    verifier = _make_verifier(reconcile, verifier_url, verifier_model, verifier_key, verifier_device)
+    engine = ArgusLens(backend=backend, verifier=verifier, **kwargs)
 
     if path.is_file():
         result = engine.caption(
@@ -146,6 +177,15 @@ def eval_command(
     api_key: str | None = Option(None, "--api-key", help="API key for cloud backends"),
     model_id: str | None = Option(None, "--model-id", help="Model ID override"),
     base_url: str | None = Option(None, "--base-url", help="Endpoint URL for openai-compat backend"),
+    reconcile: str | None = Option(
+        None,
+        "--reconcile",
+        help="Apply an attribute verifier before scoring: tag-prior, openai-compat, florence, molmo",
+    ),
+    verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
+    verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
+    verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
+    verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
     verbose: bool = Option(False, "--verbose", "-v", help="Per-image progress"),
 ) -> None:
     """Score caption quality over a dataset and print a scorecard.
@@ -185,7 +225,8 @@ def eval_command(
             kwargs["florence_model_id" if backend == "florence2" else "model_id"] = model_id
         else:
             kwargs["model_id"] = model_id
-    engine = ArgusLens(backend=backend, **kwargs)
+    verifier = _make_verifier(reconcile, verifier_url, verifier_model, verifier_key, verifier_device)
+    engine = ArgusLens(backend=backend, verifier=verifier, **kwargs)
 
     clip_scorer = None
     if clip:

@@ -160,9 +160,15 @@ class ArgusLens:
         categories: tuple[CategoryConfig, ...] | None = None,
         oom_retry_max_wait_s: float = 180.0,
         oom_retry_interval_s: float = 5.0,
+        verifier: Any | None = None,
         **kwargs: Any,
     ) -> None:
-        """Resolve the backend and store configuration; models load lazily on first caption."""
+        """Resolve the backend and store configuration; models load lazily on first caption.
+
+        When *verifier* (an ``AttributeVerifier``) is supplied, a reconciliation
+        pass fixes prose colour/pose claims that contradict the tags (#36) before
+        assembly. Without one, inference is unchanged.
+        """
         self._backend = _resolve_backend(backend, **kwargs)
         self._device = device
         self._categories = categories
@@ -171,6 +177,12 @@ class ArgusLens:
         self._loaded = False
         self._load_lock = threading.Lock()
         self._kwargs = kwargs
+
+        self._reconciler = None
+        if verifier is not None:
+            from argus_lens.reconcile import Reconciler  # noqa: PLC0415 - optional feature
+
+            self._reconciler = Reconciler(verifier)
 
     @property
     def backend(self) -> CaptionBackend:
@@ -229,6 +241,17 @@ class ArgusLens:
             on_oom=_on_oom,
             on_retry=_on_retry,
         )
+
+        # Reconcile prose colour/pose claims that contradict the tags (#36).
+        if self._reconciler is not None and tags and prose:
+            outcome = self._reconciler.reconcile(pil, tags, prose)
+            if outcome.changes:
+                logger.info("reconciled_prose", changes=[c.__dict__ for c in outcome.changes])
+            if outcome.errors:
+                # A GPU verifier may have OOM'd; free the cache before the next image.
+                clear_gpu_cache()
+            prose = outcome.prose
+
         return tags, prose
 
     def caption(

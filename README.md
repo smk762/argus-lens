@@ -187,6 +187,36 @@ argus-lens eval eval/golden.jsonl --clip --baseline baseline.json --fail-on-regr
 
 Metrics: **tag↔prose contradiction** (colour/pose — reference-free), **token-budget adherence**, **redundancy/filler rate**, **tag-coverage recall** (labelled), and optional **CLIPScore**. A labelled golden set is a JSONL manifest — see [eval/README.md](eval/README.md) for the format.
 
+### Reconciliation (colour/pose fixes)
+
+Florence-2 sometimes hallucinates a colour or hand position. Reconciliation finds the attributes where the prose *contradicts* the tags (the same detector the eval harness uses) and asks a pluggable **verifier** to adjudicate each, then rewrites the prose to match:
+
+```python
+from argus_lens import ArgusLens
+from argus_lens.reconcile import build_verifier
+
+# Model-free: trust the (usually more reliable) WD14 tags over the prose
+engine = ArgusLens(backend="hybrid", verifier=build_verifier("tag-prior"))
+
+# Or verify against the pixels / a VQA model:
+engine = ArgusLens(backend="hybrid", verifier=build_verifier(
+    "openai-compat", base_url="http://localhost:11434/v1", model_id="llama3.2-vision"))
+```
+
+| Verifier | How it adjudicates | Needs |
+|---|---|---|
+| `tag-prior` | trusts the tag value (no image) | nothing — default, fully deterministic |
+| `openai-compat` | asks a served vision model "what colour is the dress?" | a running OpenAI-compatible endpoint (`httpx` only) |
+| `florence` | grounds the subject to a box, samples the pixels | `[torch]` (reuses Florence-2's unused grounding task) |
+| `molmo` | asks Molmo, which can point at pixels | `[torch]` + ~8–17 GB VRAM |
+
+Measure the effect with the eval harness — `--reconcile` runs the verifier before scoring, so the contradiction rate shows the improvement directly:
+
+```bash
+argus-lens eval ./images/ -o before.json
+argus-lens eval ./images/ --reconcile tag-prior --baseline before.json
+```
+
 ### HTTP Server
 
 Run the built-in FastAPI server for frontend consumers (e.g. [argus-studio](https://github.com/smk762/argus-studio)):
