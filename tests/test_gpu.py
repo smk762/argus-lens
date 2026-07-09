@@ -12,12 +12,14 @@ from argus_lens.engine import ArgusLens
 from argus_lens.gpu import (
     DEFAULT_FOOTPRINT_MB,
     GothmogCoordinator,
+    GpuLeaseTimeout,
     LocalLeaseCoordinator,
     NullCoordinator,
     build_coordinator,
     coordinator_from_env,
     estimate_footprint_mb,
     free_vram_mb,
+    resolve_min_vram_mb,
 )
 
 
@@ -63,6 +65,16 @@ def test_free_vram_none_or_int() -> None:
     """Free-VRAM probe is None without CUDA, else a non-negative int."""
     v = free_vram_mb()
     assert v is None or (isinstance(v, int) and v >= 0)
+
+
+def test_resolve_min_vram_mb_env_override(monkeypatch) -> None:
+    """ARGUS_GPU_MIN_VRAM_MB overrides the per-backend estimate; junk is ignored."""
+    monkeypatch.delenv("ARGUS_GPU_MIN_VRAM_MB", raising=False)
+    assert resolve_min_vram_mb("florence2") == 2500  # falls back to the estimate
+    monkeypatch.setenv("ARGUS_GPU_MIN_VRAM_MB", "12000")
+    assert resolve_min_vram_mb("florence2") == 12000
+    monkeypatch.setenv("ARGUS_GPU_MIN_VRAM_MB", "not-a-number")
+    assert resolve_min_vram_mb("florence2") == 2500  # invalid → estimate
 
 
 # --------------------------------------------------------------------------- #
@@ -130,7 +142,7 @@ def test_gothmog_coordinator_acquire_release(monkeypatch) -> None:
 
 
 def test_build_coordinator_and_from_env(monkeypatch) -> None:
-    """Factory builds each kind and validates; env selects the default."""
+    """Factory builds each kind and validates; env selects the default + timeout."""
     assert build_coordinator("none").name == "none"
     assert build_coordinator("lease").name == "lease"
     assert build_coordinator("gothmog", base_url="http://x").name == "gothmog"
@@ -140,9 +152,31 @@ def test_build_coordinator_and_from_env(monkeypatch) -> None:
         build_coordinator("bogus")
 
     monkeypatch.delenv("ARGUS_GPU_COORDINATOR", raising=False)
+    monkeypatch.delenv("ARGUS_GPU_LEASE_TIMEOUT_S", raising=False)
     assert coordinator_from_env().name == "none"
     monkeypatch.setenv("ARGUS_GPU_COORDINATOR", "lease")
-    assert coordinator_from_env().name == "lease"
+    monkeypatch.setenv("ARGUS_GPU_LEASE_TIMEOUT_S", "42")
+    coord = coordinator_from_env()
+    assert coord.name == "lease"
+    assert coord.timeout_s == 42.0  # env timeout threaded through
+
+
+def test_lease_timeout_is_gpu_lease_timeout(tmp_path) -> None:
+    """A held lock raises GpuLeaseTimeout (a TimeoutError subclass callers can catch)."""
+    import fcntl
+    import os
+
+    lock = str(tmp_path / "g.lock")
+    coord = LocalLeaseCoordinator(lock_path=lock, timeout_s=0.2, poll_s=0.05)
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(GpuLeaseTimeout), coord.lease(caller="t", min_vram_mb=1000):
+            pass
+        assert issubclass(GpuLeaseTimeout, TimeoutError)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 # --------------------------------------------------------------------------- #
@@ -262,6 +296,23 @@ def test_coordinator_lease_wraps_inference() -> None:
     eng.caption(_img())
     assert events[0] == ("enter", "florence2", 2500)
     assert events[-1] == ("exit",)
+
+
+def test_engine_honors_min_vram_override(monkeypatch) -> None:
+    """ARGUS_GPU_MIN_VRAM_MB flows into the lease request (#38)."""
+    monkeypatch.setenv("ARGUS_GPU_MIN_VRAM_MB", "9000")
+    requested: list[int] = []
+
+    class _Recording:
+        name = "rec"
+
+        @contextlib.contextmanager
+        def lease(self, *, caller: str, min_vram_mb: int):
+            requested.append(min_vram_mb)
+            yield
+
+    ArgusLens(backend=_LifecycleBackend(), coordinator=_Recording()).caption(_img())
+    assert requested == [9000]
 
 
 def test_cloud_backend_bypasses_lease() -> None:

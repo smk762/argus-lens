@@ -26,6 +26,14 @@ import structlog
 logger = structlog.get_logger()
 
 
+class GpuLeaseTimeout(TimeoutError):
+    """Raised when a GPU lease can't be acquired within its timeout.
+
+    Subclasses ``TimeoutError`` so callers can catch either; lets a caller
+    distinguish "no GPU slot available" from other failures and back off / retry.
+    """
+
+
 @runtime_checkable
 class GpuCoordinator(Protocol):
     """Gates a block of GPU work behind a capacity lease."""
@@ -84,7 +92,7 @@ class LocalLeaseCoordinator:
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
-                        raise TimeoutError(
+                        raise GpuLeaseTimeout(
                             f"GPU lease not acquired within {self.timeout_s:.0f}s ({self.lock_path})"
                         ) from None
                     time.sleep(self.poll_s)
@@ -124,12 +132,15 @@ class GothmogCoordinator:
         # The broker may long-poll for up to acquire_timeout_s; the HTTP read
         # timeout must exceed that or the client abandons a request the broker
         # would still grant (dropping the caption and leaking the granted token).
-        resp = httpx.post(
-            f"{self.base_url}/v1/gpu/capacity/acquire",
-            json={"caller": caller, "min_vram_mb": min_vram_mb, "timeout_s": self.acquire_timeout_s},
-            headers=self._headers(),
-            timeout=self.acquire_timeout_s + self.http_timeout_s,
-        )
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/v1/gpu/capacity/acquire",
+                json={"caller": caller, "min_vram_mb": min_vram_mb, "timeout_s": self.acquire_timeout_s},
+                headers=self._headers(),
+                timeout=self.acquire_timeout_s + self.http_timeout_s,
+            )
+        except httpx.TimeoutException as exc:
+            raise GpuLeaseTimeout(f"gothmog did not grant a slot within {self.acquire_timeout_s:.0f}s") from exc
         resp.raise_for_status()
         body = resp.json()
         token = body.get("token_id") or body.get("id")
@@ -173,30 +184,55 @@ def build_coordinator(
     base_url: str | None = None,
     api_key: str | None = None,
     lock_path: str | None = None,
+    timeout_s: float | None = None,
 ) -> GpuCoordinator:
-    """Construct a coordinator by name. ``gothmog`` requires *base_url*."""
+    """Construct a coordinator by name. ``gothmog`` requires *base_url*.
+
+    *timeout_s* caps how long the lease waits for a slot (default 300s) for the
+    ``lease`` and ``gothmog`` kinds.
+    """
     key = (name or "none").strip().lower()
     if key in ("none", ""):
         return NullCoordinator()
     if key == "lease":
-        return LocalLeaseCoordinator(lock_path=lock_path)
+        kwargs = {"lock_path": lock_path}
+        if timeout_s is not None:
+            kwargs["timeout_s"] = timeout_s
+        return LocalLeaseCoordinator(**kwargs)
     if key == "gothmog":
         url = base_url or os.environ.get("GOTHMOG_URL")
         if not url:
             raise ValueError("the 'gothmog' coordinator needs GOTHMOG_URL (or base_url=)")
-        return GothmogCoordinator(base_url=url, api_key=api_key)
+        kwargs = {"base_url": url, "api_key": api_key}
+        if timeout_s is not None:
+            kwargs["acquire_timeout_s"] = timeout_s
+        return GothmogCoordinator(**kwargs)
     raise ValueError(f"Unknown GPU coordinator {name!r}. Choose from: none, lease, gothmog")
+
+
+def _env_timeout_s() -> float | None:
+    """Parse ``ARGUS_GPU_LEASE_TIMEOUT_S`` (seconds), or None if unset/invalid."""
+    raw = os.environ.get("ARGUS_GPU_LEASE_TIMEOUT_S")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning("invalid_lease_timeout", value=raw)
+        return None
 
 
 def coordinator_from_env() -> GpuCoordinator:
     """Build the coordinator from the environment (defaults to ``none``).
 
     Reads ``ARGUS_GPU_COORDINATOR`` (``none``/``lease``/``gothmog``),
-    ``GOTHMOG_URL``, ``GOTHMOG_API_KEY``, ``ARGUS_GPU_LEASE_PATH``.
+    ``GOTHMOG_URL``, ``GOTHMOG_API_KEY``, ``ARGUS_GPU_LEASE_PATH``, and
+    ``ARGUS_GPU_LEASE_TIMEOUT_S``.
     """
     return build_coordinator(
         os.environ.get("ARGUS_GPU_COORDINATOR", "none"),
         base_url=os.environ.get("GOTHMOG_URL"),
         api_key=os.environ.get("GOTHMOG_API_KEY"),
         lock_path=os.environ.get("ARGUS_GPU_LEASE_PATH"),
+        timeout_s=_env_timeout_s(),
     )
