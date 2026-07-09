@@ -7,7 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-09
+
 ### Added
+- **GPU lifecycle + capacity coordinator** — makes argus-lens a well-behaved
+  tenant on a shared GPU; both mechanisms are opt-in and no-ops by default, so
+  existing behaviour is unchanged. (#37, #38)
+  - Lifecycle: `ArgusLens.unload()` / `unload_if_idle(ttl)` / `close()` with
+    lazy reload on the next caption, an optional idle reaper (`idle_unload_s=`),
+    and `vram_status()` (backend, loaded, coordinator, `free_vram_mb`, idle_s)
+    plus a pre-load low-VRAM warning. Server: `GET /health` gains a `gpu` block
+    and `POST /admin/unload` frees the model.
+  - Coordinator: new `argus_lens.gpu` package — `GpuCoordinator` protocol with
+    `NullCoordinator` (default), `LocalLeaseCoordinator` (POSIX `flock`, one
+    heavy job at a time), and `GothmogCoordinator` (acquire/release against a
+    `/v1/gpu/capacity` API). Selected via env (`ARGUS_GPU_COORDINATOR`,
+    `GOTHMOG_URL`, `GOTHMOG_API_KEY`, `ARGUS_GPU_LEASE_PATH`); the engine wraps
+    inference in the lease, sized by a per-backend VRAM estimate, and cloud
+    backends bypass it.
+  - Env knobs: `ARGUS_GPU_MIN_VRAM_MB` overrides the per-backend footprint the
+    lease requests; `ARGUS_GPU_LEASE_TIMEOUT_S` caps how long the lease waits
+    for a slot, raising `GpuLeaseTimeout` (a `TimeoutError` subclass) so callers
+    can distinguish "no GPU slot" and back off.
+- **VQA reconciliation cross-check** — detects attributes where Florence prose
+  contradicts WD14 tags (colour/pose hallucinations), asks a pluggable
+  `AttributeVerifier` to adjudicate, and rewrites the prose to match. Verifiers,
+  selectable via `--reconcile`: `tag-prior` (model-free, deterministic default),
+  `openai-compat` (VQA over any served vision model), `florence` (grounds the
+  subject and samples the region's pixels), and `molmo`. Verifier errors are
+  caught so a flaky verifier never breaks captioning; no verifier → inference
+  unchanged. Exposed on the `caption` and `eval` CLI commands. (#36)
+- **`argus-lens eval` — caption quality harness** — a reference-free-first
+  evaluation package (`argus_lens.eval`) so quality-affecting changes can be
+  judged by numbers. The flagship metric (tag↔prose contradiction) needs no
+  ground truth and runs on any image folder; a JSONL manifest additionally
+  unlocks tag-coverage recall and reference CLIPScore (behind the new `eval`
+  extra). Emits a plain-text scorecard + JSON, with a baseline regression gate
+  (`--baseline`, `--fail-on-regression`) for CI. (#35)
+- **User-tunable tag↔prose balance presets** — a single axis controlling how
+  much prose survives hybrid tag+prose fusion, exposed as named presets
+  (`tags`/`keywords`/`balanced`/`descriptive`/`prose`) and a continuous
+  `prose_bias` (0.0 = pure tags .. 1.0 = full prose). `balanced` reproduces the
+  prior default, so behaviour is unchanged by default. Threaded through the
+  engine, all `/caption*` server endpoints, and `--hybrid-preset` / `--prose-bias`
+  CLI flags; advertised on `/profiles` for UI pickers.
 - **`GET /health`** — service liveness/identity probe returning
   `{status, service, version, source_root}`, mirroring argus-curator's shape.
 - **`GET /profiles`** — exposes the caption taxonomy (`assembly_profiles`,
@@ -192,7 +235,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/smk762/argus-lens/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/smk762/argus-lens/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/smk762/argus-lens/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/smk762/argus-lens/releases/tag/v0.1.0
