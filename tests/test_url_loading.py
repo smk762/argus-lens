@@ -1,5 +1,6 @@
 """Tests for URL-based image loading in _load_image."""
 
+import hashlib
 import io
 from unittest.mock import patch
 
@@ -48,14 +49,17 @@ class _FakeResponseBadStatus:
 @patch("httpx.get", return_value=_FakeResponse())
 def test_load_image_from_url(mock_get):
     """Downloads an http(s) URL with redirects and a timeout, naming the image after the file."""
-    name, pil = _load_image("https://example.com/photos/sunset.jpg")
+    asset, pil = _load_image("https://example.com/photos/sunset.jpg")
 
     mock_get.assert_called_once_with(
         "https://example.com/photos/sunset.jpg",
         follow_redirects=True,
         timeout=30.0,
     )
-    assert name == "sunset.jpg"
+    assert asset.name == "sunset.jpg"
+    # The original-bytes sha256 and source URL are captured for replay keying.
+    assert asset.uri == "https://example.com/photos/sunset.jpg"
+    assert asset.sha256 == hashlib.sha256(_FakeResponse.content).hexdigest()
     assert isinstance(pil, Image.Image)
     assert pil.mode == "RGB"
     assert pil.size == (64, 64)
@@ -64,15 +68,15 @@ def test_load_image_from_url(mock_get):
 @patch("httpx.get", return_value=_FakeResponse())
 def test_load_image_url_with_query_params(mock_get):
     """Derives the image name from the URL path, ignoring query parameters."""
-    name, pil = _load_image("https://cdn.example.com/image.png?token=abc&size=lg")
-    assert name == "image.png"
+    asset, pil = _load_image("https://cdn.example.com/image.png?token=abc&size=lg")
+    assert asset.name == "image.png"
 
 
 @patch("httpx.get", return_value=_FakeResponse())
 def test_load_image_url_trailing_slash(mock_get):
     """Falls back to the name "image" when the URL path has no filename."""
-    name, _ = _load_image("https://example.com/")
-    assert name == "image"
+    asset, _ = _load_image("https://example.com/")
+    assert asset.name == "image"
 
 
 @patch("httpx.get", return_value=_FakeResponseBadStatus())
@@ -89,16 +93,18 @@ def test_load_image_file_not_found():
 
 
 def test_load_image_from_bytes():
-    """Decodes raw image bytes and names the result "bytes"."""
+    """Decodes raw image bytes, names the result "bytes", and hashes the bytes."""
     data = _make_test_png()
-    name, pil = _load_image(data)
-    assert name == "bytes"
+    asset, pil = _load_image(data)
+    assert asset.name == "bytes"
+    assert asset.sha256 == hashlib.sha256(data).hexdigest()
     assert pil.size == (64, 64)
 
 
 def test_load_image_from_pil():
-    """Accepts a PIL image directly and names the result "image"."""
+    """Accepts a PIL image directly; it carries no original-bytes sha256."""
     img = Image.new("RGB", (32, 32))
-    name, pil = _load_image(img)
-    assert name == "image"
+    asset, pil = _load_image(img)
+    assert asset.name == "image"
+    assert asset.sha256 is None
     assert pil.size == (32, 32)

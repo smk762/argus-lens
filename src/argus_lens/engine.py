@@ -8,6 +8,7 @@ import io
 import threading
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from PIL import Image
 from argus_lens.assembly.composer import compose_caption_result
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.backends.hybrid import HybridPipeline
+from argus_lens.backends.replay import ReplayBackend, ReplayMiss
 from argus_lens.retry import clear_gpu_cache, run_with_oom_retry
 from argus_lens.types import (
     CaptionResult,
@@ -40,6 +42,7 @@ def _register_backends() -> None:
     from argus_lens.backends.nvidia_nim import NVIDIANIMBackend
     from argus_lens.backends.openai import OpenAIBackend
     from argus_lens.backends.openai_compat import OpenAICompatBackend
+    from argus_lens.backends.replay import ReplayBackend
     from argus_lens.backends.replicate import ReplicateBackend
     from argus_lens.backends.wd14 import WD14Backend
 
@@ -53,6 +56,7 @@ def _register_backends() -> None:
             "hf-inference": HFInferenceBackend,
             "replicate": ReplicateBackend,
             "nvidia-nim": NVIDIANIMBackend,
+            "replay": ReplayBackend,
         }
     )
 
@@ -113,26 +117,47 @@ def _image_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:20]
 
 
-def _load_image(source: str | Path | bytes | Image.Image) -> tuple[str, Image.Image]:
+@dataclass(frozen=True)
+class ImageAsset:
+    """Identity of an ingested image, carried alongside the decoded pixels.
+
+    ``sha256`` is the hex digest of the **original file bytes** — the same
+    content key cortex stores on ``source_asset.sha256`` — so a replay backend
+    can look the recorded caption up (#45). It is ``None`` for a pre-decoded PIL
+    input, whose original bytes are already gone. ``uri`` points at where the
+    bytes came from (a path or ``http(s)://`` URL) and serves as a fallback key.
+    """
+
+    name: str
+    sha256: str | None = None
+    uri: str | None = None
+
+
+def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, Image.Image]:
     """Load an image from various source types.
 
     Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs.
-    Returns ``(name, pil_image)``.
+    Returns ``(asset, pil_image)`` — the asset carries the original-bytes sha256
+    when it is recoverable (everything except a pre-decoded PIL input).
     """
     if isinstance(source, Image.Image):
-        return "image", source.convert("RGB")
+        return ImageAsset(name="image"), source.convert("RGB")
     if isinstance(source, bytes):
-        return "bytes", Image.open(io.BytesIO(source)).convert("RGB")
+        asset = ImageAsset(name="bytes", sha256=hashlib.sha256(source).hexdigest())
+        return asset, Image.open(io.BytesIO(source)).convert("RGB")
     if isinstance(source, str) and source.startswith(("http://", "https://")):
         import httpx
 
         resp = httpx.get(source, follow_redirects=True, timeout=30.0)
         resp.raise_for_status()
         name = source.rsplit("/", 1)[-1].split("?")[0] or "image"
-        return name, Image.open(io.BytesIO(resp.content)).convert("RGB")
+        asset = ImageAsset(name=name, sha256=hashlib.sha256(resp.content).hexdigest(), uri=source)
+        return asset, Image.open(io.BytesIO(resp.content)).convert("RGB")
     path = Path(source)
     if path.exists():
-        return path.name, Image.open(path).convert("RGB")
+        data = path.read_bytes()
+        asset = ImageAsset(name=path.name, sha256=hashlib.sha256(data).hexdigest(), uri=str(path))
+        return asset, Image.open(io.BytesIO(data)).convert("RGB")
     raise FileNotFoundError(f"Image not found: {source}")
 
 
@@ -395,6 +420,21 @@ class ArgusLens:
 
         return tags, prose
 
+    def _replay_lookup(self, asset: ImageAsset) -> CaptionResult:
+        """Return the recorded caption for *asset* from the cortex lineage store (#45).
+
+        Replay short-circuits the assembly pipeline: the recorded
+        ``CaptionResult`` is returned verbatim (profile knobs like *target_style*
+        or the token budget must not re-mangle captured output). A missing
+        recording raises :class:`ReplayMiss` — every demo image is on the tape, so
+        a miss is a real error, not a cue to fall back to a live model.
+        """
+        self._ensure_loaded()
+        result = self._backend.lookup(sha256=asset.sha256, uri=asset.uri)  # type: ignore[attr-defined]
+        if result is None:
+            raise ReplayMiss(sha256=asset.sha256, uri=asset.uri, name=asset.name)
+        return result
+
     def caption(
         self,
         image: str | Path | bytes | Image.Image,
@@ -421,7 +461,10 @@ class ArgusLens:
         or a continuous *prose_bias* (0.0 = pure tags, 1.0 = full prose) tunes
         how much prose survives the tag/prose fusion.
         """
-        name, pil = _load_image(image)
+        asset, pil = _load_image(image)
+        if isinstance(self._backend, ReplayBackend):
+            return self._replay_lookup(asset)
+
         profile = resolve_target_profile(
             target_style=target_style,
             target_category=target_category,
@@ -449,6 +492,7 @@ class ArgusLens:
         self,
         images: list[str | Path | bytes | Image.Image],
         *,
+        names: list[str] | None = None,
         trigger_word: str = "",
         target_style: str = "photo",
         target_category: str = "identity",
@@ -461,7 +505,9 @@ class ArgusLens:
     ) -> dict[str, CaptionResult]:
         """Caption multiple images, returning ``{name: CaptionResult}``.
 
-        Identical images are deduplicated by hash.
+        Identical images are deduplicated by hash. *names* overrides the result
+        keys (one per image) — pass it when the source union loses the filename
+        (e.g. raw upload bytes), so results don't collapse under a shared name.
         """
         profile = resolve_target_profile(
             target_style=target_style,
@@ -478,25 +524,31 @@ class ArgusLens:
         total = len(loaded)
         results: dict[str, CaptionResult] = {}
         caption_cache: dict[str, tuple[str, str]] = {}
+        replay = isinstance(self._backend, ReplayBackend)
 
-        for idx, (name, pil) in enumerate(loaded):
-            buf = io.BytesIO()
-            pil.save(buf, format="PNG")
-            h = _image_hash(buf.getvalue())
+        for idx, (asset, pil) in enumerate(loaded):
+            name = names[idx] if names and idx < len(names) else asset.name
 
-            if h not in caption_cache:
-                caption_cache[h] = self._infer(pil)
+            if replay:
+                results[name] = self._replay_lookup(asset)
+            else:
+                buf = io.BytesIO()
+                pil.save(buf, format="PNG")
+                h = _image_hash(buf.getvalue())
 
-            cached_tags, cached_prose = caption_cache[h]
-            results[name] = compose_caption_result(
-                trigger_word=trigger_word,
-                tags=cached_tags,
-                prose=cached_prose,
-                target_profile=profile,
-                image_index=idx,
-                categories=self._categories,
-                backend_name=self._backend.name,
-            )
+                if h not in caption_cache:
+                    caption_cache[h] = self._infer(pil)
+
+                cached_tags, cached_prose = caption_cache[h]
+                results[name] = compose_caption_result(
+                    trigger_word=trigger_word,
+                    tags=cached_tags,
+                    prose=cached_prose,
+                    target_profile=profile,
+                    image_index=idx,
+                    categories=self._categories,
+                    backend_name=self._backend.name,
+                )
 
             if progress is not None:
                 progress(idx + 1, total, name, results[name])
@@ -507,6 +559,7 @@ class ArgusLens:
         self,
         images: list[str | Path | bytes | Image.Image],
         *,
+        names: list[str] | None = None,
         trigger_word: str = "",
         target_style: str = "photo",
         target_category: str = "identity",
@@ -516,7 +569,11 @@ class ArgusLens:
         hybrid_preset: str | None = None,
         prose_bias: float | None = None,
     ) -> Generator[tuple[str, CaptionResult], None, None]:
-        """Yield ``(name, CaptionResult)`` as each image is processed."""
+        """Yield ``(name, CaptionResult)`` as each image is processed.
+
+        *names* overrides the yielded name per image — pass it when the source
+        loses the filename (e.g. raw upload bytes).
+        """
         profile = resolve_target_profile(
             target_style=target_style,
             target_category=target_category,
@@ -527,11 +584,17 @@ class ArgusLens:
             prose_bias=prose_bias,
             categories=self._categories,
         )
+        replay = isinstance(self._backend, ReplayBackend)
 
         for idx, source in enumerate(images):
-            name, pil = _load_image(source)
-            tags, prose = self._infer(pil)
+            asset, pil = _load_image(source)
+            name = names[idx] if names and idx < len(names) else asset.name
 
+            if replay:
+                yield name, self._replay_lookup(asset)
+                continue
+
+            tags, prose = self._infer(pil)
             result = compose_caption_result(
                 trigger_word=trigger_word,
                 tags=tags,
