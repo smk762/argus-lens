@@ -528,7 +528,7 @@ def create_app(
         """Caption a single uploaded image and return the structured result."""
         data = await file.read()
         try:
-            Image.open(io.BytesIO(data)).verify()
+            Image.open(io.BytesIO(data)).convert("RGB")
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid image: {exc}") from exc
 
@@ -586,7 +586,7 @@ def create_app(
         for f in files:
             data = await f.read()
             try:
-                Image.open(io.BytesIO(data)).verify()
+                Image.open(io.BytesIO(data)).convert("RGB")
             except Exception:
                 continue
             payloads.append(data)
@@ -626,7 +626,7 @@ def create_app(
         for f in files:
             data = await f.read()
             try:
-                Image.open(io.BytesIO(data)).verify()
+                Image.open(io.BytesIO(data)).convert("RGB")
             except Exception:
                 continue
             payloads.append(data)

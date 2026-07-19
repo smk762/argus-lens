@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 
 import pytest
 from PIL import Image
@@ -251,3 +252,59 @@ def test_server_caption_rejects_invalid_image() -> None:
     client = _replay_client({})
     resp = client.post("/caption", files={"file": ("x.jpg", b"not an image", "image/jpeg")})
     assert resp.status_code == 400
+
+
+def _truncated_jpeg() -> bytes:
+    """A JPEG with a valid header but truncated scan data.
+
+    It passes ``Image.verify()`` (a header-only check) yet raises on a full
+    decode — the case that regressed the upload endpoints to HTTP 500 when they
+    validated with ``verify()`` instead of a real decode.
+    """
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (30, 60, 90)).save(buf, format="JPEG", quality=95)
+    full = buf.getvalue()
+    return full[: len(full) // 2]
+
+
+def test_server_caption_rejects_truncated_image() -> None:
+    """POST /caption rejects a header-valid-but-undecodable image with 400, not 500."""
+    client = _replay_client({})
+    resp = client.post("/caption", files={"file": ("x.jpg", _truncated_jpeg(), "image/jpeg")})
+    assert resp.status_code == 400
+
+
+def test_server_batch_skips_undecodable_and_keeps_good() -> None:
+    """POST /caption/batch skips an undecodable upload and still returns the good ones."""
+    good = _png_bytes()
+    sha = hashlib.sha256(good).hexdigest()
+    client = _replay_client({("sha256", sha): _RECORDED_ROW})
+
+    resp = client.post(
+        "/caption/batch",
+        files=[
+            ("files", ("good.png", good, "image/png")),
+            ("files", ("bad.jpg", _truncated_jpeg(), "image/jpeg")),
+        ],
+    )
+
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert "good.png" in results
+    assert results["good.png"]["final_caption"] == _RECORDED_ROW[0]
+    assert "bad.jpg" not in results  # undecodable file skipped, not a 500
+
+
+def test_server_stream_miss_reports_uploaded_name() -> None:
+    """POST /caption/stream labels a replay miss with the uploaded filename, not "bytes"."""
+    client = _replay_client({})  # empty tape → every asset misses
+    resp = client.post(
+        "/caption/stream",
+        files=[("files", ("portrait.jpg", _png_bytes(), "image/jpeg"))],
+    )
+
+    assert resp.status_code == 200
+    lines = [json.loads(line) for line in resp.text.strip().splitlines()]
+    assert len(lines) == 1
+    assert lines[0]["name"] == "portrait.jpg"  # the caller's name, not the ingest "bytes"
+    assert "no recorded caption" in lines[0]["error"]

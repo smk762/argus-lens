@@ -76,6 +76,7 @@ def caption(
 ) -> None:
     """Caption images in a file or directory."""
     from argus_lens import ArgusLens
+    from argus_lens.backends.replay import ReplayMiss
 
     kwargs = {}
     if api_key:
@@ -92,15 +93,19 @@ def caption(
     engine = ArgusLens(backend=backend, verifier=verifier, **kwargs)
 
     if path.is_file():
-        result = engine.caption(
-            path,
-            trigger_word=trigger,
-            target_style=style,
-            target_category=category,
-            target_backend=target_backend,
-            hybrid_preset=hybrid_preset,
-            prose_bias=prose_bias,
-        )
+        try:
+            result = engine.caption(
+                path,
+                trigger_word=trigger,
+                target_style=style,
+                target_category=category,
+                target_backend=target_backend,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+            )
+        except ReplayMiss as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
         if output:
             from argus_lens.exporters import export_results
 
@@ -120,18 +125,22 @@ def caption(
             if verbose:
                 typer.echo(f"  [{current}/{total}] {name}")
 
-        results = engine.caption_directory(
-            path,
-            trigger_word=trigger,
-            target_style=style,
-            target_category=category,
-            target_backend=target_backend,
-            hybrid_preset=hybrid_preset,
-            prose_bias=prose_bias,
-            output_format=fmt,
-            overwrite=overwrite,
-            progress=_progress if verbose else None,
-        )
+        try:
+            results = engine.caption_directory(
+                path,
+                trigger_word=trigger,
+                target_style=style,
+                target_category=category,
+                target_backend=target_backend,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+                output_format=fmt,
+                overwrite=overwrite,
+                progress=_progress if verbose else None,
+            )
+        except ReplayMiss as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
         typer.echo(f"Captioned {len(results)} images -> {fmt}")
     else:
         typer.echo(f"Error: {path} is not a file or directory", err=True)

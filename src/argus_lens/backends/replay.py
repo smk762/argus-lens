@@ -166,10 +166,12 @@ class ReplayBackend(CaptionBackend):
                         cur.execute(sql, (value,))
                         return cur.fetchone()
                 except Exception:  # noqa: BLE001 - retry once on a stale pooled connection
-                    if self._owns_conn:
-                        self.unload()
-                    if attempt == 2:
+                    # Only an owned connection can be reopened; an injected one
+                    # can't, so retrying it just re-runs on the dead handle and
+                    # masks the original error — re-raise immediately instead.
+                    if not self._owns_conn or attempt == 2:
                         raise
+                    self.unload()  # drop the stale connection; attempt 2 reconnects
         return None
 
     @staticmethod

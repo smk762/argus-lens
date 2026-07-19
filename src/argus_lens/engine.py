@@ -42,7 +42,6 @@ def _register_backends() -> None:
     from argus_lens.backends.nvidia_nim import NVIDIANIMBackend
     from argus_lens.backends.openai import OpenAIBackend
     from argus_lens.backends.openai_compat import OpenAICompatBackend
-    from argus_lens.backends.replay import ReplayBackend
     from argus_lens.backends.replicate import ReplicateBackend
     from argus_lens.backends.wd14 import WD14Backend
 
@@ -420,7 +419,7 @@ class ArgusLens:
 
         return tags, prose
 
-    def _replay_lookup(self, asset: ImageAsset) -> CaptionResult:
+    def _replay_lookup(self, asset: ImageAsset, name: str | None = None) -> CaptionResult:
         """Return the recorded caption for *asset* from the cortex lineage store (#45).
 
         Replay short-circuits the assembly pipeline: the recorded
@@ -428,11 +427,16 @@ class ArgusLens:
         or the token budget must not re-mangle captured output). A missing
         recording raises :class:`ReplayMiss` — every demo image is on the tape, so
         a miss is a real error, not a cue to fall back to a live model.
+
+        *name* is the caller's display name for the image (e.g. an upload's
+        filename passed via ``names=``); it labels the :class:`ReplayMiss` so a
+        streamed/reported miss ties back to the file the caller sent, rather than
+        the ingest name (``"bytes"``) a raw-bytes source carries.
         """
         self._ensure_loaded()
         result = self._backend.lookup(sha256=asset.sha256, uri=asset.uri)  # type: ignore[attr-defined]
         if result is None:
-            raise ReplayMiss(sha256=asset.sha256, uri=asset.uri, name=asset.name)
+            raise ReplayMiss(sha256=asset.sha256, uri=asset.uri, name=name or asset.name)
         return result
 
     def caption(
@@ -509,28 +513,34 @@ class ArgusLens:
         keys (one per image) — pass it when the source union loses the filename
         (e.g. raw upload bytes), so results don't collapse under a shared name.
         """
-        profile = resolve_target_profile(
-            target_style=target_style,
-            target_category=target_category,
-            target_backend=target_backend,
-            checkpoint=checkpoint,
-            token_budget_override=token_budget_override,
-            hybrid_preset=hybrid_preset,
-            prose_bias=prose_bias,
-            categories=self._categories,
+        # Replay returns recordings verbatim and never touches the profile or
+        # the dedup cache, so skip resolving them on that path (mirrors caption()).
+        replay = isinstance(self._backend, ReplayBackend)
+        profile = (
+            None
+            if replay
+            else resolve_target_profile(
+                target_style=target_style,
+                target_category=target_category,
+                target_backend=target_backend,
+                checkpoint=checkpoint,
+                token_budget_override=token_budget_override,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+                categories=self._categories,
+            )
         )
 
         loaded = [_load_image(img) for img in images]
         total = len(loaded)
         results: dict[str, CaptionResult] = {}
         caption_cache: dict[str, tuple[str, str]] = {}
-        replay = isinstance(self._backend, ReplayBackend)
 
         for idx, (asset, pil) in enumerate(loaded):
             name = names[idx] if names and idx < len(names) else asset.name
 
             if replay:
-                results[name] = self._replay_lookup(asset)
+                results[name] = self._replay_lookup(asset, name)
             else:
                 buf = io.BytesIO()
                 pil.save(buf, format="PNG")
@@ -574,24 +584,28 @@ class ArgusLens:
         *names* overrides the yielded name per image — pass it when the source
         loses the filename (e.g. raw upload bytes).
         """
-        profile = resolve_target_profile(
-            target_style=target_style,
-            target_category=target_category,
-            target_backend=target_backend,
-            checkpoint=checkpoint,
-            token_budget_override=token_budget_override,
-            hybrid_preset=hybrid_preset,
-            prose_bias=prose_bias,
-            categories=self._categories,
-        )
         replay = isinstance(self._backend, ReplayBackend)
+        profile = (
+            None
+            if replay
+            else resolve_target_profile(
+                target_style=target_style,
+                target_category=target_category,
+                target_backend=target_backend,
+                checkpoint=checkpoint,
+                token_budget_override=token_budget_override,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+                categories=self._categories,
+            )
+        )
 
         for idx, source in enumerate(images):
             asset, pil = _load_image(source)
             name = names[idx] if names and idx < len(names) else asset.name
 
             if replay:
-                yield name, self._replay_lookup(asset)
+                yield name, self._replay_lookup(asset, name)
                 continue
 
             tags, prose = self._infer(pil)
