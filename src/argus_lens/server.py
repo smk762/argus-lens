@@ -23,6 +23,7 @@ from PIL import Image
 
 from argus_lens._version import __version__
 from argus_lens.assembly.profiles import available_profiles
+from argus_lens.backends.replay import ReplayMiss
 from argus_lens.connectors.base import AssetRef
 from argus_lens.connectors.filesystem import IMAGE_SUFFIXES
 from argus_lens.connectors.immich import ImmichSink, ImmichSource
@@ -527,20 +528,25 @@ def create_app(
         """Caption a single uploaded image and return the structured result."""
         data = await file.read()
         try:
-            pil = Image.open(io.BytesIO(data)).convert("RGB")
+            Image.open(io.BytesIO(data)).convert("RGB")
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid image: {exc}") from exc
 
-        result = await asyncio.to_thread(
-            engine.caption,
-            pil,
-            trigger_word=trigger_word,
-            target_style=target_style,
-            target_category=target_category,
-            target_backend=target_backend,
-            hybrid_preset=hybrid_preset,
-            prose_bias=prose_bias,
-        )
+        # Pass the original bytes (not a decoded PIL) so the engine can key a
+        # replay lookup on the file's sha256 — the content id cortex records.
+        try:
+            result = await asyncio.to_thread(
+                engine.caption,
+                data,
+                trigger_word=trigger_word,
+                target_style=target_style,
+                target_category=target_category,
+                target_backend=target_backend,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+            )
+        except ReplayMiss as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _result_to_dict(result)
 
     @app.post("/caption/url")
@@ -558,6 +564,8 @@ def create_app(
                 prose_bias=req.prose_bias,
                 prose_enrichment=req.prose_enrichment,
             )
+        except ReplayMiss as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _result_to_dict(result)
@@ -573,25 +581,33 @@ def create_app(
         prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
         """Caption multiple uploaded images in one request; unreadable files are skipped."""
-        images: list[tuple[str, Image.Image]] = []
+        payloads: list[bytes] = []
+        names: list[str] = []
         for f in files:
             data = await f.read()
             try:
-                pil = Image.open(io.BytesIO(data)).convert("RGB")
-                images.append((f.filename or "image", pil))
+                Image.open(io.BytesIO(data)).convert("RGB")
             except Exception:
                 continue
+            payloads.append(data)
+            names.append(f.filename or "image")
 
-        results = await asyncio.to_thread(
-            engine.caption_batch,
-            [img for _, img in images],
-            trigger_word=trigger_word,
-            target_style=target_style,
-            target_category=target_category,
-            target_backend=target_backend,
-            hybrid_preset=hybrid_preset,
-            prose_bias=prose_bias,
-        )
+        # Original bytes (not decoded PILs) so replay can key on each file's
+        # sha256; explicit names keep results from collapsing under one key.
+        try:
+            results = await asyncio.to_thread(
+                engine.caption_batch,
+                payloads,
+                names=names,
+                trigger_word=trigger_word,
+                target_style=target_style,
+                target_category=target_category,
+                target_backend=target_backend,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+            )
+        except ReplayMiss as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"results": {k: _result_to_dict(v) for k, v in results.items()}}
 
     @app.post("/caption/stream")
@@ -605,19 +621,23 @@ def create_app(
         prose_bias: float | None = Form(None),
     ) -> StreamingResponse:
         """Caption uploaded images, streaming one NDJSON result line per image."""
-        images: list[Image.Image] = []
+        payloads: list[bytes] = []
+        names: list[str] = []
         for f in files:
             data = await f.read()
             try:
-                pil = Image.open(io.BytesIO(data)).convert("RGB")
-                images.append(pil)
+                Image.open(io.BytesIO(data)).convert("RGB")
             except Exception:
                 continue
+            payloads.append(data)
+            names.append(f.filename or "image")
 
         async def _ndjson():
             """Yield one JSON line per captioned image, running inference off the event loop."""
+            # Original bytes so replay can key on each file's sha256.
             stream = engine.caption_stream(
-                images,
+                payloads,
+                names=names,
                 trigger_word=trigger_word,
                 target_style=target_style,
                 target_category=target_category,
@@ -630,7 +650,14 @@ def create_app(
                 # caption_stream is a sync generator doing blocking CPU/GPU work
                 # (including OOM-retry sleeps) — pull each item in a worker
                 # thread so the event loop stays responsive.
-                item = await asyncio.to_thread(next, stream, sentinel)
+                try:
+                    item = await asyncio.to_thread(next, stream, sentinel)
+                except ReplayMiss as exc:
+                    # The generator can't resume past a raise, so report the miss
+                    # as a final line and end the stream (demo assets are all on
+                    # the tape, so a miss is exceptional).
+                    yield json.dumps({"name": exc.name or "image", "error": str(exc)}) + "\n"
+                    break
                 if item is sentinel:
                     break
                 name, result = item
@@ -1033,9 +1060,14 @@ def create_app(
             """
             ref = AssetRef(id=asset["id"])
             try:
-                pil = source.fetch_image(ref)
+                # Pass the original bytes (not a decoded PIL) so the engine can
+                # key a replay lookup on the file's sha256 — the content id
+                # cortex records on source_asset. fetch_image() is just
+                # fetch_original() + a decode, so this is identical for every
+                # other backend but keeps the replay backend reachable here (#47).
+                data = source.fetch_original(ref)
                 result = engine.caption(
-                    pil,
+                    data,
                     trigger_word=req.trigger_word,
                     target_style=req.target_style,
                     target_category=req.target_category,

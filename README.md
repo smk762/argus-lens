@@ -84,6 +84,7 @@ pip install argus-lens[torch]      # Florence-2 / BLIP-2 only
 # Cloud backends (no GPU needed)
 pip install argus-lens[openai]     # GPT-4o vision
 pip install argus-lens[replicate]  # Replicate API
+pip install argus-lens[replay]     # replay recorded captions from cortex (psycopg)
 # openai-compat, hf-inference, nvidia-nim need no extra — only the core httpx dep
 
 # CLI (the `argus-lens` command; combine with your backend extras)
@@ -248,6 +249,18 @@ ARGUS_GPU_COORDINATOR=gothmog GOTHMOG_URL=http://192.168.1.109:8030 argus-lens s
 Cloud backends (zero VRAM footprint) bypass the lease automatically. The lease sizes its request from a per-backend VRAM estimate, and OOM retry remains the reactive backstop.
 
 Extra knobs (all optional): `ARGUS_GPU_MIN_VRAM_MB` overrides the per-backend footprint the lease requests (e.g. for Florence-2-large or a non-default hybrid); `ARGUS_GPU_LEASE_TIMEOUT_S` caps how long the lease waits for a slot (raising `GpuLeaseTimeout`, a `TimeoutError`, if it can't); `ARGUS_GPU_LEASE_PATH` sets the `lease` lock file; `ARGUS_ADMIN_TOKEN` protects `POST /admin/unload`.
+
+### Replay backend (recorded captions, no GPU)
+
+The `replay` backend serves captions straight out of the [cortex](https://github.com/smk762/argus-cortex) Postgres lineage store — the `source_asset → caption` DAG a real pipeline run recorded once. It loads **no model and makes no external API call**, so a GPU-free box (or the public [argus-halo](https://github.com/smk762/argus-halo) demo) can re-enact genuine captured output.
+
+```bash
+pip install argus-lens[replay,cli,server]
+export CORTEX_PG_URL=postgresql://user:pass@host/db
+argus-lens serve --backend replay      # or ARGUS_BACKEND=replay
+```
+
+Each request is keyed by the source image's **sha256** — the same content id cortex stores on `source_asset` — so the engine hashes the bytes it ingests and returns the recorded `CaptionResult` **verbatim** (variants included), bypassing the assembly pipeline; profile knobs like `target_style` don't re-mangle captured output. An image with no recorded caption is a `404` (`ReplayMiss`) rather than a silent fall back to a live model. The caption text lives in Postgres, so the blob store (`CORTEX_S3_*`) isn't needed for replay.
 
 ### HTTP Server
 

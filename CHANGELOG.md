@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`replay` backend** — serves recorded captions straight out of the cortex
+  Postgres lineage store (`CORTEX_PG_URL`) instead of running a model, so a
+  GPU-free box (or the public argus-halo demo) can re-enact genuine captured
+  output with **no GPU and no external API** (#45). Each request is keyed by the
+  source image's sha256 — the content id cortex records on `source_asset` — so
+  the engine hashes the bytes it ingests and returns the recorded
+  `CaptionResult` **verbatim** (variants included), bypassing the assembly
+  pipeline so profile knobs can't re-mangle captured output. An asset with no
+  recorded caption is a `ReplayMiss` (HTTP 404), not a silent fall back to a
+  live model. Reads the documented lineage schema directly (no `argus-cortex`
+  dependency); `psycopg` lives behind the new `argus-lens[replay]` extra. Select
+  it with `--backend replay` / `ARGUS_BACKEND=replay`.
+
+### Changed
+- **Engine `_load_image` now returns an `ImageAsset`** (name + original-bytes
+  sha256 + source uri) alongside the decoded image, so the ingested content
+  identity survives to the backend (this is what the replay lookup keys on).
+  `caption_batch` / `caption_stream` gained an optional `names=` argument to set
+  result keys when the source loses its filename (e.g. raw upload bytes); the
+  server's `/caption/batch` and `/caption/stream` now pass original bytes plus
+  filenames, which also fixes uploaded-image results collapsing under a shared
+  name.
+
 ## [0.4.0] - 2026-07-09
 
 ### Added

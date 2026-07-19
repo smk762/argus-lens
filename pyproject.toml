@@ -40,6 +40,7 @@ torch = ["torch>=2.1", "transformers>=4.46"]
 local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46"]
 openai = ["openai>=1.30"]
 replicate = ["replicate>=0.25"]
+replay = ["psycopg[binary]>=3.1"]
 cli = ["typer>=0.12", "rich>=13.0"]
 eval = ["torch>=2.1", "transformers>=4.46"]
 server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7"]
@@ -50,6 +51,7 @@ all = [
     "transformers>=4.46",
     "openai>=1.30",
     "replicate>=0.25",
+    "psycopg[binary]>=3.1",
     "typer>=0.12",
     "rich>=13.0",
     "fastapi>=0.110",
