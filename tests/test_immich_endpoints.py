@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -15,8 +16,10 @@ import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from argus_lens.backends.base import CaptionBackend  # noqa: E402
+from argus_lens.backends.replay import ReplayBackend  # noqa: E402
 from argus_lens.connectors.immich import ImmichSink, ImmichSource  # noqa: E402
 from argus_lens.server import create_app  # noqa: E402
+from argus_lens.types import CaptionResult  # noqa: E402
 
 NOT_CONFIGURED = "Immich is not configured: set IMMICH_URL and IMMICH_API_KEY"
 
@@ -288,7 +291,7 @@ def test_immich_pull_warns_on_uncaptionable_extension(immich_env, monkeypatch, t
 
 def test_immich_caption_stream_progress_then_complete(immich_env, album_assets, monkeypatch) -> None:
     """Streams a captioned progress line per asset, then a completion summary."""
-    monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
     resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "trigger_word": "sks_person"})
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("application/x-ndjson")
@@ -305,7 +308,7 @@ def test_immich_caption_stream_progress_then_complete(immich_env, album_assets, 
 
 def test_immich_caption_stream_writes_back_when_asked(immich_env, album_assets, monkeypatch) -> None:
     """write_back=true pushes each final caption to Immich via ImmichSink.write."""
-    monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
     written: list[tuple[str, list[str], str]] = []
 
     def _record(self, ref, *, keywords, description=""):
@@ -326,7 +329,7 @@ def test_immich_caption_stream_writes_back_when_asked(immich_env, album_assets, 
 
 def test_immich_caption_stream_no_write_back_by_default(immich_env, album_assets, monkeypatch) -> None:
     """Without write_back, ImmichSink.write is never called."""
-    monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
 
     def _fail(self, ref, *, keywords, description=""):
         """Fail loudly if write-back happens when not requested."""
@@ -344,9 +347,9 @@ def test_immich_caption_stream_reports_per_asset_errors(immich_env, album_assets
         """Fail for the first asset only."""
         if ref.id == "a1":
             raise httpx.ConnectError("boom")
-        return Image.new("RGB", (8, 8), (120, 120, 120))
+        return _png_bytes()
 
-    monkeypatch.setattr(ImmichSource, "fetch_image", _fetch)
+    monkeypatch.setattr(ImmichSource, "fetch_original", _fetch)
     resp = _client().post("/immich/caption/stream", json={"album_id": "al1"})
     events = _events(resp)
     progress = [e for e in events if e["type"] == "progress"]
@@ -357,7 +360,7 @@ def test_immich_caption_stream_reports_per_asset_errors(immich_env, album_assets
 
 def test_immich_caption_stream_rejects_write_xmp(immich_env, album_assets, monkeypatch) -> None:
     """write_xmp is a 400: Immich assets are in-memory and have no local path for a sidecar."""
-    monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
     resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "write_xmp": True})
     assert resp.status_code == 400
     detail = resp.json()["detail"]
@@ -367,7 +370,7 @@ def test_immich_caption_stream_rejects_write_xmp(immich_env, album_assets, monke
 
 def test_immich_caption_stream_filters_to_requested_asset_ids(immich_env, album_assets, monkeypatch) -> None:
     """When asset_ids is given, only those album assets are captioned."""
-    monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
     resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "asset_ids": ["a2"]})
     events = _events(resp)
     assert [e["asset_id"] for e in events if e["type"] == "progress"] == ["a2"]
@@ -381,7 +384,7 @@ def test_immich_caption_stream_empty_asset_ids_captions_nothing(immich_env, albu
         """Nothing may be fetched for an empty selection."""
         raise AssertionError("nothing should be fetched for an empty selection")
 
-    monkeypatch.setattr(ImmichSource, "fetch_image", _fail)
+    monkeypatch.setattr(ImmichSource, "fetch_original", _fail)
     resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "asset_ids": [], "write_back": True})
     assert _events(resp) == [{"type": "complete", "total": 0, "captioned": 0, "failed": 0}]
 
@@ -395,7 +398,7 @@ def test_immich_caption_stream_unknown_asset_ids_is_404(immich_env, album_assets
 
 def test_immich_caption_stream_write_back_failure_keeps_caption(immich_env, album_assets, monkeypatch) -> None:
     """A failed write-back still reports the computed caption on the progress line (and counts as failed)."""
-    monkeypatch.setattr(ImmichSource, "fetch_image", lambda self, ref: Image.new("RGB", (8, 8), (120, 120, 120)))
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
 
     def _boom(self, ref, *, keywords, description=""):
         """Simulate Immich rejecting the write-back."""
@@ -408,3 +411,54 @@ def test_immich_caption_stream_write_back_failure_keeps_caption(immich_env, albu
     assert all("write_back failed" in e["error"] for e in progress)
     assert all(e["final_caption"] for e in progress)
     assert events[-1] == {"type": "complete", "total": 2, "captioned": 0, "failed": 2}
+
+
+# --- POST /immich/caption/stream under the replay backend (#47) ---
+
+
+class _RecordingReplayBackend(ReplayBackend):
+    """Replay backend that records the sha256/uri each lookup was keyed on.
+
+    Lets a test assert that the immich stream delivers the *original bytes'*
+    sha256 to the lookup (not a lost PIL identity), without a real Postgres.
+    """
+
+    def __init__(self, recorded: dict[str, CaptionResult]) -> None:
+        """Store the ``{sha256: CaptionResult}`` tape; use no real connection."""
+        super().__init__(connection=object())
+        self._recorded = recorded
+        self.looked_up: list[tuple[str | None, str | None]] = []
+
+    def load(self, device: str = "auto") -> None:
+        """No-op: there is no real connection to open."""
+
+    def lookup(self, *, sha256: str | None = None, uri: str | None = None) -> CaptionResult | None:
+        """Record the key and return the recorded caption for *sha256*, or None."""
+        self.looked_up.append((sha256, uri))
+        return self._recorded.get(sha256)
+
+
+def test_immich_caption_stream_replays_by_original_bytes_sha256(immich_env, album_assets, monkeypatch) -> None:
+    """The immich stream keys the replay lookup on the original bytes' sha256 (#47).
+
+    Regression: the endpoint handed the engine a pre-decoded PIL, dropping the
+    sha256, so every recorded asset came back a ReplayMiss and replay was
+    unreachable for Immich albums.
+    """
+    original = _png_bytes(color=(5, 90, 210))
+    sha = hashlib.sha256(original).hexdigest()
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: original)
+
+    recorded = CaptionResult(final_caption="a recorded caption", backend_name="hybrid")
+    backend = _RecordingReplayBackend({sha: recorded})
+    resp = TestClient(create_app(default_backend=backend)).post(
+        "/immich/caption/stream", json={"album_id": "al1", "asset_ids": ["a1"]}
+    )
+
+    assert resp.status_code == 200, resp.text
+    progress = [e for e in _events(resp) if e["type"] == "progress"]
+    assert len(progress) == 1
+    assert "error" not in progress[0]
+    assert progress[0]["final_caption"] == "a recorded caption"
+    # Keyed by the original-bytes sha256, not a dropped PIL identity (None, None).
+    assert backend.looked_up == [(sha, None)]

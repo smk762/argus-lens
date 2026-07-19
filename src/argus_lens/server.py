@@ -1060,9 +1060,14 @@ def create_app(
             """
             ref = AssetRef(id=asset["id"])
             try:
-                pil = source.fetch_image(ref)
+                # Pass the original bytes (not a decoded PIL) so the engine can
+                # key a replay lookup on the file's sha256 — the content id
+                # cortex records on source_asset. fetch_image() is just
+                # fetch_original() + a decode, so this is identical for every
+                # other backend but keeps the replay backend reachable here (#47).
+                data = source.fetch_original(ref)
                 result = engine.caption(
-                    pil,
+                    data,
                     trigger_word=req.trigger_word,
                     target_style=req.target_style,
                     target_category=req.target_category,
