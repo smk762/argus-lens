@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the engine hashes the bytes it ingests and returns the recorded
   `CaptionResult` **verbatim** (variants included), bypassing the assembly
   pipeline so profile knobs can't re-mangle captured output. An asset with no
-  recorded caption is a `ReplayMiss` (HTTP 404), not a silent fall back to a
-  live model. Reads the documented lineage schema directly (no `argus-cortex`
+  recorded caption is a `ReplayMiss` — HTTP 404 on the single `/caption`, and a
+  per-item error on the multi-image paths (see below) — not a silent fall back
+  to a live model. Reads the documented lineage schema directly (no `argus-cortex`
   dependency); `psycopg` lives behind the new `argus-lens[replay]` extra. Select
   it with `--backend replay` / `ARGUS_BACKEND=replay`.
 
@@ -30,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server's `/caption/batch` and `/caption/stream` now pass original bytes plus
   filenames, which also fixes uploaded-image results collapsing under a shared
   name.
+- **Replay misses are handled per image** on the multi-image paths (#48): one
+  un-recorded asset no longer aborts the whole request. `/caption/batch` returns
+  `200` with the captions that resolved plus an `errors` `{name: reason}` map;
+  `/caption/stream` emits one error line for the miss and keeps streaming the
+  rest; `argus-lens caption <dir> --backend replay` skips missing images (no
+  sidecar), reports them, and captions the rest. The engine's `caption_batch` /
+  `caption_directory` gained an `on_miss` callback (fail-fast when omitted), and
+  `caption_stream` now yields `(name, ReplayMiss)` for a miss instead of raising.
 
 ## [0.4.0] - 2026-07-09
 
