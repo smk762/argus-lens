@@ -308,3 +308,82 @@ def test_server_stream_miss_reports_uploaded_name() -> None:
     assert len(lines) == 1
     assert lines[0]["name"] == "portrait.jpg"  # the caller's name, not the ingest "bytes"
     assert "no recorded caption" in lines[0]["error"]
+
+
+# -- per-item miss handling for batch/stream (#48) ----------------------------
+
+
+def test_engine_batch_on_miss_skips_and_keeps_good() -> None:
+    """With an on_miss handler, caption_batch skips the missing image and captions the rest."""
+    red = _png_bytes((200, 0, 0))
+    blue = _png_bytes((0, 0, 200))  # deliberately not on the tape
+    rows = {("sha256", hashlib.sha256(red).hexdigest()): _RECORDED_ROW}
+    engine = ArgusLens(backend=_backend_with(rows))
+
+    misses: list[str] = []
+    results = engine.caption_batch(
+        [red, blue],
+        names=["red.png", "blue.png"],
+        on_miss=lambda name, exc: misses.append(name),
+    )
+
+    assert set(results) == {"red.png"}  # the good image survived
+    assert results["red.png"].final_caption == _RECORDED_ROW[0]
+    assert misses == ["blue.png"]  # the miss was reported, not raised
+
+
+def test_engine_batch_raises_miss_without_on_miss() -> None:
+    """Without a handler, a batch miss still raises (fail-fast default)."""
+    red = _png_bytes((200, 0, 0))
+    blue = _png_bytes((0, 0, 200))
+    rows = {("sha256", hashlib.sha256(red).hexdigest()): _RECORDED_ROW}
+    engine = ArgusLens(backend=_backend_with(rows))
+
+    with pytest.raises(ReplayMiss):
+        engine.caption_batch([red, blue], names=["red.png", "blue.png"])
+
+
+def test_server_batch_reports_miss_and_keeps_good() -> None:
+    """POST /caption/batch returns the recorded caption and reports the miss under errors."""
+    known = _png_bytes((1, 2, 3))
+    unknown = _png_bytes((9, 9, 9))  # not on the tape
+    sha = hashlib.sha256(known).hexdigest()
+    client = _replay_client({("sha256", sha): _RECORDED_ROW})
+
+    resp = client.post(
+        "/caption/batch",
+        files=[
+            ("files", ("known.png", known, "image/png")),
+            ("files", ("unknown.png", unknown, "image/png")),
+        ],
+    )
+
+    assert resp.status_code == 200  # not 404 — one miss no longer fails the batch
+    body = resp.json()
+    assert body["results"]["known.png"]["final_caption"] == _RECORDED_ROW[0]
+    assert "unknown.png" not in body["results"]
+    assert "no recorded caption" in body["errors"]["unknown.png"]
+
+
+def test_server_stream_reports_miss_and_continues() -> None:
+    """POST /caption/stream reports a miss as one line and keeps captioning the rest."""
+    known = _png_bytes((1, 2, 3))
+    unknown = _png_bytes((9, 9, 9))  # not on the tape
+    sha = hashlib.sha256(known).hexdigest()
+    client = _replay_client({("sha256", sha): _RECORDED_ROW})
+
+    resp = client.post(
+        "/caption/stream",
+        files=[
+            ("files", ("known1.png", known, "image/png")),
+            ("files", ("miss.png", unknown, "image/png")),
+            ("files", ("known2.png", known, "image/png")),
+        ],
+    )
+
+    assert resp.status_code == 200
+    lines = [json.loads(line) for line in resp.text.strip().splitlines()]
+    assert [line["name"] for line in lines] == ["known1.png", "miss.png", "known2.png"]
+    assert lines[0]["final_caption"] == _RECORDED_ROW[0]
+    assert "no recorded caption" in lines[1]["error"]
+    assert lines[2]["final_caption"] == _RECORDED_ROW[0]  # stream did not stop at the miss

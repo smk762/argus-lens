@@ -7,7 +7,7 @@ import hashlib
 import io
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -506,12 +506,19 @@ class ArgusLens:
         hybrid_preset: str | None = None,
         prose_bias: float | None = None,
         progress: Any | None = None,
+        on_miss: Callable[[str, ReplayMiss], None] | None = None,
     ) -> dict[str, CaptionResult]:
         """Caption multiple images, returning ``{name: CaptionResult}``.
 
         Identical images are deduplicated by hash. *names* overrides the result
         keys (one per image) — pass it when the source union loses the filename
         (e.g. raw upload bytes), so results don't collapse under a shared name.
+
+        *on_miss* controls a replay :class:`ReplayMiss` (an image with no recorded
+        caption): with no handler a miss raises and aborts the batch (fail-fast);
+        pass a ``on_miss(name, exc)`` callback to instead skip that image (it is
+        left out of the returned dict) and keep captioning the rest, so one
+        un-recorded image can't discard the whole batch (#48).
         """
         # Replay returns recordings verbatim and never touches the profile or
         # the dedup cache, so skip resolving them on that path (mirrors caption()).
@@ -540,7 +547,13 @@ class ArgusLens:
             name = names[idx] if names and idx < len(names) else asset.name
 
             if replay:
-                results[name] = self._replay_lookup(asset, name)
+                try:
+                    results[name] = self._replay_lookup(asset, name)
+                except ReplayMiss as miss:
+                    if on_miss is None:
+                        raise
+                    on_miss(name, miss)
+                    continue  # skip this image (and its progress tick); keep going
             else:
                 buf = io.BytesIO()
                 pil.save(buf, format="PNG")
@@ -578,11 +591,16 @@ class ArgusLens:
         token_budget_override: int | None = None,
         hybrid_preset: str | None = None,
         prose_bias: float | None = None,
-    ) -> Generator[tuple[str, CaptionResult], None, None]:
+    ) -> Generator[tuple[str, CaptionResult | ReplayMiss], None, None]:
         """Yield ``(name, CaptionResult)`` as each image is processed.
 
         *names* overrides the yielded name per image — pass it when the source
         loses the filename (e.g. raw upload bytes).
+
+        A replay image with no recorded caption is yielded as ``(name,
+        ReplayMiss)`` rather than raising: a generator can't resume past a raise,
+        so surfacing the miss as a per-item value keeps the stream going for the
+        images after it (#48). Callers should branch on the item type.
         """
         replay = isinstance(self._backend, ReplayBackend)
         profile = (
@@ -605,7 +623,10 @@ class ArgusLens:
             name = names[idx] if names and idx < len(names) else asset.name
 
             if replay:
-                yield name, self._replay_lookup(asset, name)
+                try:
+                    yield name, self._replay_lookup(asset, name)
+                except ReplayMiss as miss:
+                    yield name, miss
                 continue
 
             tags, prose = self._infer(pil)
@@ -636,11 +657,16 @@ class ArgusLens:
         output_format: str = "txt",
         overwrite: bool = False,
         progress: Any | None = None,
+        on_miss: Callable[[str, ReplayMiss], None] | None = None,
     ) -> dict[str, CaptionResult]:
         """Caption all images in a directory and export results.
 
         Supported output formats: ``"txt"`` (sidecar files), ``"json"``,
         ``"jsonl"``, ``"csv"``.
+
+        *on_miss* is forwarded to :meth:`caption_batch`: with a handler a replay
+        miss skips that image (no sidecar) and captioning continues, instead of
+        one un-recorded image aborting the whole directory (#48).
         """
         directory = Path(path)
         if not directory.is_dir():
@@ -671,6 +697,7 @@ class ArgusLens:
             hybrid_preset=hybrid_preset,
             prose_bias=prose_bias,
             progress=progress,
+            on_miss=on_miss,
         )
 
         from argus_lens.exporters import export_results

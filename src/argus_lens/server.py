@@ -580,7 +580,12 @@ def create_app(
         hybrid_preset: str | None = Form(None),
         prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
-        """Caption multiple uploaded images in one request; unreadable files are skipped."""
+        """Caption multiple uploaded images in one request; unreadable files are skipped.
+
+        A replay image with no recorded caption is reported under ``errors``
+        (``{name: reason}``) rather than failing the whole request, so one
+        un-recorded image doesn't discard the captions that did resolve (#48).
+        """
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
@@ -592,23 +597,30 @@ def create_app(
             payloads.append(data)
             names.append(f.filename or "image")
 
+        errors: dict[str, str] = {}
+
+        def _record_miss(name: str, exc: ReplayMiss) -> None:
+            """Collect a replay miss as a per-image error instead of aborting the batch."""
+            errors[name] = str(exc)
+
         # Original bytes (not decoded PILs) so replay can key on each file's
         # sha256; explicit names keep results from collapsing under one key.
-        try:
-            results = await asyncio.to_thread(
-                engine.caption_batch,
-                payloads,
-                names=names,
-                trigger_word=trigger_word,
-                target_style=target_style,
-                target_category=target_category,
-                target_backend=target_backend,
-                hybrid_preset=hybrid_preset,
-                prose_bias=prose_bias,
-            )
-        except ReplayMiss as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"results": {k: _result_to_dict(v) for k, v in results.items()}}
+        results = await asyncio.to_thread(
+            engine.caption_batch,
+            payloads,
+            names=names,
+            on_miss=_record_miss,
+            trigger_word=trigger_word,
+            target_style=target_style,
+            target_category=target_category,
+            target_backend=target_backend,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
+        )
+        return {
+            "results": {k: _result_to_dict(v) for k, v in results.items()},
+            "errors": errors,
+        }
 
     @app.post("/caption/stream")
     async def caption_stream(
@@ -650,18 +662,15 @@ def create_app(
                 # caption_stream is a sync generator doing blocking CPU/GPU work
                 # (including OOM-retry sleeps) — pull each item in a worker
                 # thread so the event loop stays responsive.
-                try:
-                    item = await asyncio.to_thread(next, stream, sentinel)
-                except ReplayMiss as exc:
-                    # The generator can't resume past a raise, so report the miss
-                    # as a final line and end the stream (demo assets are all on
-                    # the tape, so a miss is exceptional).
-                    yield json.dumps({"name": exc.name or "image", "error": str(exc)}) + "\n"
-                    break
+                item = await asyncio.to_thread(next, stream, sentinel)
                 if item is sentinel:
                     break
                 name, result = item
-                yield json.dumps({"name": name, **_result_to_dict(result)}) + "\n"
+                if isinstance(result, ReplayMiss):
+                    # A replay miss is a per-line error; keep streaming the rest.
+                    yield json.dumps({"name": name, "error": str(result)}) + "\n"
+                else:
+                    yield json.dumps({"name": name, **_result_to_dict(result)}) + "\n"
 
         return StreamingResponse(_ndjson(), media_type="application/x-ndjson")
 

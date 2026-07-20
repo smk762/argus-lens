@@ -117,6 +117,7 @@ def caption(
                 typer.echo(f"\nVariants: {json.dumps(result.caption_variants, indent=2)}")
     elif path.is_dir():
         count = 0
+        misses: list[str] = []
 
         def _progress(current: int, total: int, name: str, _result: object) -> None:
             """Track completion count and echo per-image progress when verbose."""
@@ -125,23 +126,27 @@ def caption(
             if verbose:
                 typer.echo(f"  [{current}/{total}] {name}")
 
-        try:
-            results = engine.caption_directory(
-                path,
-                trigger_word=trigger,
-                target_style=style,
-                target_category=category,
-                target_backend=target_backend,
-                hybrid_preset=hybrid_preset,
-                prose_bias=prose_bias,
-                output_format=fmt,
-                overwrite=overwrite,
-                progress=_progress if verbose else None,
-            )
-        except ReplayMiss as exc:
-            typer.echo(f"Error: {exc}", err=True)
-            raise typer.Exit(1) from exc
+        def _on_miss(name: str, exc: ReplayMiss) -> None:
+            """Report a replay miss and keep captioning the rest of the directory (#48)."""
+            misses.append(name)
+            typer.echo(f"  [miss] {name}: {exc}", err=True)
+
+        results = engine.caption_directory(
+            path,
+            trigger_word=trigger,
+            target_style=style,
+            target_category=category,
+            target_backend=target_backend,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
+            output_format=fmt,
+            overwrite=overwrite,
+            progress=_progress if verbose else None,
+            on_miss=_on_miss,
+        )
         typer.echo(f"Captioned {len(results)} images -> {fmt}")
+        if misses:
+            typer.echo(f"{len(misses)} image(s) had no recorded caption (replay miss)", err=True)
     else:
         typer.echo(f"Error: {path} is not a file or directory", err=True)
         raise typer.Exit(1)
