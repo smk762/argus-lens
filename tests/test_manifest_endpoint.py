@@ -513,9 +513,7 @@ def test_manifest_stream_uses_export_root(client: TestClient, tmp_path: Path) ->
     assert img.with_suffix(".txt").read_text().strip()
 
 
-def test_manifest_v2_exported_path_escaping_export_root_is_per_row_error(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_manifest_v2_exported_path_escaping_export_root_is_per_row_error(client: TestClient, tmp_path: Path) -> None:
     """An absolute or ``..`` exported_path is confined under export_root: it is a per-row error, never an escape."""
     export_root = tmp_path / "export"
     export_root.mkdir()
@@ -539,9 +537,7 @@ def test_manifest_v2_exported_path_escaping_export_root_is_per_row_error(
         assert not outside.with_suffix(".txt").exists(), bad_exported
 
 
-def test_manifest_v2_nonstring_exported_path_falls_back_to_abs_path(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_manifest_v2_nonstring_exported_path_falls_back_to_abs_path(client: TestClient, tmp_path: Path) -> None:
     """A non-string exported_path degrades to abs_path instead of failing an otherwise-valid row."""
     export_root = tmp_path / "export"
     export_root.mkdir()
