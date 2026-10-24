@@ -17,11 +17,11 @@ dev:  ## Create .venv + editable install with dev + cli extras
 	$(UV) pip install -e ".[dev,cli]"
 
 lint:  ## Run ruff linter
-	$(UV) run --no-sync ruff check src/ tests/
+	$(UV) run --no-sync ruff check src/ tests/ workflows/
 
 fmt:  ## Auto-format with ruff
-	$(UV) run --no-sync ruff format src/ tests/
-	$(UV) run --no-sync ruff check --fix src/ tests/
+	$(UV) run --no-sync ruff format src/ tests/ workflows/
+	$(UV) run --no-sync ruff check --fix src/ tests/ workflows/
 
 test:  ## Run pytest
 	$(UV) run --no-sync pytest --tb=short -q

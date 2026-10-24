@@ -1,0 +1,39 @@
+{
+  "synonyms": {
+    "brunette": "brown hair",
+    "blond hair": "blonde hair",
+    "auburn hair": "red hair",
+    "ginger hair": "red hair",
+    "t-shirt": "shirt",
+    "tee": "shirt",
+    "sundress": "dress",
+    "gown": "dress",
+    "sneakers": "shoes",
+    "trainers": "shoes",
+    "sofa": "couch",
+    "lounge": "living room",
+    "seaside": "beach",
+    "photograph": "photo"
+  },
+  "parents": {
+    "red dress": ["dress"],
+    "white dress": ["dress"],
+    "black dress": ["dress"],
+    "denim jacket": ["jacket"],
+    "leather jacket": ["jacket"],
+    "kitchen": ["indoors", "home"],
+    "living room": ["indoors", "home"],
+    "bedroom": ["indoors", "home"],
+    "bathroom": ["indoors", "home"],
+    "office": ["indoors", "workplace"],
+    "beach": ["outdoors", "coast", "nature"],
+    "park": ["outdoors", "nature"],
+    "forest": ["outdoors", "nature"],
+    "street": ["outdoors", "urban"],
+    "city": ["outdoors", "urban"],
+    "cooking": ["domestic activity"],
+    "cleaning": ["domestic activity"],
+    "reading": ["leisure"],
+    "dancing": ["leisure"]
+  }
+}

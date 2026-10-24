@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import inspect
 import io
 import threading
 import time
@@ -60,6 +61,21 @@ def _register_backends() -> None:
     )
 
 
+# Engine kwargs that are forwarded to backend constructors (when accepted).
+_BACKEND_CTOR_KWARGS: tuple[str, ...] = (
+    "api_key",
+    "model_id",
+    "system_prompt",
+    "prompt",
+    "temperature",
+    "model_dir",
+    "model_repo",
+    "florence_model_id",
+    "threshold",
+    "base_url",
+)
+
+
 def _resolve_backend(
     backend: str | CaptionBackend,
     **kwargs: Any,
@@ -87,8 +103,9 @@ def _resolve_backend(
 
         wd14_kwargs = {}
         florence_kwargs = {}
-        if "model_dir" in kwargs:
-            wd14_kwargs["model_dir"] = kwargs["model_dir"]
+        for key in ("model_dir", "model_repo", "threshold"):
+            if key in kwargs:
+                wd14_kwargs[key] = kwargs[key]
         if "florence_model_id" in kwargs:
             florence_kwargs["model_id"] = kwargs["florence_model_id"]
         return HybridPipeline(
@@ -101,13 +118,17 @@ def _resolve_backend(
         raise ValueError(f"Unknown backend {backend!r}. Choose from: {available}")
 
     cls = _BACKEND_REGISTRY[backend]
+    # Only forward what this constructor accepts: the hybrid shorthand shares
+    # one kwargs dict between both stages, so ``hybrid:wd14+openai-compat``
+    # must not hand ``base_url``/``model_id`` to WD14.
+    params = inspect.signature(cls.__init__).parameters
+    accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
     ctor_kwargs: dict[str, Any] = {}
-    for key in ("api_key", "model_id", "system_prompt", "model_dir", "florence_model_id", "threshold", "base_url"):
+    for key in _BACKEND_CTOR_KWARGS:
         if key in kwargs:
-            mapped = key
-            if key == "florence_model_id":
-                mapped = "model_id"
-            ctor_kwargs[mapped] = kwargs[key]
+            mapped = "model_id" if key == "florence_model_id" else key
+            if accepts_any or mapped in params:
+                ctor_kwargs[mapped] = kwargs[key]
     return cls(**ctor_kwargs)
 
 
@@ -187,6 +208,7 @@ class ArgusLens:
         oom_retry_max_wait_s: float = 180.0,
         oom_retry_interval_s: float = 5.0,
         verifier: Any | None = None,
+        refiner: Any | None = None,
         coordinator: Any | None = None,
         idle_unload_s: float | None = None,
         **kwargs: Any,
@@ -196,6 +218,11 @@ class ArgusLens:
         When *verifier* (an ``AttributeVerifier``) is supplied, a reconciliation
         pass fixes prose colour/pose claims that contradict the tags (#36) before
         assembly. Without one, inference is unchanged.
+
+        When *refiner* (an :class:`argus_lens.refine.Refiner`) is supplied, an
+        LLM rewrites selected caption variants after assembly; each rewrite is
+        validated by the coherence post-check and the deterministic caption is
+        kept if it fails (see :mod:`argus_lens.refine`).
 
         *coordinator* (a ``GpuCoordinator``) gates heavy inference behind a
         capacity lease (#38); it defaults to the environment
@@ -219,6 +246,7 @@ class ArgusLens:
             from argus_lens.reconcile import Reconciler  # noqa: PLC0415 - optional feature
 
             self._reconciler = Reconciler(verifier)
+        self._refiner = refiner
 
         if coordinator is not None:
             self._coordinator = coordinator
@@ -482,7 +510,7 @@ class ArgusLens:
 
         tags, prose = self._infer(pil)
 
-        return compose_caption_result(
+        result = compose_caption_result(
             trigger_word=trigger_word,
             tags=tags,
             prose=prose,
@@ -491,6 +519,13 @@ class ArgusLens:
             categories=self._categories,
             backend_name=self._backend.name,
         )
+        return self._refine(result, profile, trigger_word, pil)
+
+    def _refine(self, result: CaptionResult, profile: Any, trigger_word: str, pil: Image.Image) -> CaptionResult:
+        """Apply the optional LLM refiner (validated, falls back to *result*)."""
+        if self._refiner is None:
+            return result
+        return self._refiner.refine(result, profile, trigger_word=trigger_word, image=pil)
 
     def caption_batch(
         self,
@@ -563,7 +598,7 @@ class ArgusLens:
                     caption_cache[h] = self._infer(pil)
 
                 cached_tags, cached_prose = caption_cache[h]
-                results[name] = compose_caption_result(
+                composed = compose_caption_result(
                     trigger_word=trigger_word,
                     tags=cached_tags,
                     prose=cached_prose,
@@ -572,6 +607,7 @@ class ArgusLens:
                     categories=self._categories,
                     backend_name=self._backend.name,
                 )
+                results[name] = self._refine(composed, profile, trigger_word, pil)
 
             if progress is not None:
                 progress(idx + 1, total, name, results[name])
@@ -639,13 +675,14 @@ class ArgusLens:
                 categories=self._categories,
                 backend_name=self._backend.name,
             )
-            yield name, result
+            yield name, self._refine(result, profile, trigger_word, pil)
 
     def caption_directory(
         self,
         path: str | Path,
         *,
         glob: str = "*.{png,jpg,jpeg,webp}",
+        recursive: bool = False,
         trigger_word: str = "",
         target_style: str = "photo",
         target_category: str = "identity",
@@ -664,6 +701,11 @@ class ArgusLens:
         Supported output formats: ``"txt"`` (sidecar files), ``"json"``,
         ``"jsonl"``, ``"csv"``.
 
+        With *recursive*, sub-directories are walked too. Results are keyed by
+        the image's POSIX path relative to *path* (just the filename for a
+        flat walk), so ``a/IMG_1.jpg`` and ``b/IMG_1.jpg`` stay distinct and
+        ``.txt`` sidecars land next to their images.
+
         *on_miss* is forwarded to :meth:`caption_batch`: with a handler a replay
         miss skips that image (no sidecar) and captioning continues, instead of
         one un-recorded image aborting the whole directory (#48).
@@ -676,9 +718,10 @@ class ArgusLens:
         for pattern in glob.replace("{", "").replace("}", "").split(","):
             pattern = pattern.strip()
             if pattern:
-                image_paths.extend(directory.glob(f"*.{pattern}" if not pattern.startswith("*") else pattern))
+                pattern = f"*.{pattern}" if not pattern.startswith("*") else pattern
+                image_paths.extend(directory.rglob(pattern) if recursive else directory.glob(pattern))
 
-        image_paths = sorted(set(image_paths))
+        image_paths = sorted({p for p in image_paths if p.is_file()})
 
         if not overwrite and output_format == "txt":
             image_paths = [p for p in image_paths if not p.with_suffix(".txt").exists()]
@@ -688,6 +731,7 @@ class ArgusLens:
 
         results = self.caption_batch(
             images=image_paths,
+            names=[p.relative_to(directory).as_posix() for p in image_paths],
             trigger_word=trigger_word,
             target_style=target_style,
             target_category=target_category,

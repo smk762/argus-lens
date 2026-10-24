@@ -106,3 +106,23 @@ def test_profiles_exposes_taxonomy_from_sources_of_truth() -> None:
     assert body["token_budgets"] == BACKEND_TOKEN_BUDGETS
     assert "identity" in body["target_categories"]
     assert body["token_budgets"]["sdxl"] == 60
+
+
+def test_server_env_enables_refiner_and_idle_unload(monkeypatch) -> None:
+    """ARGUS_REFINE_MODEL and ARGUS_IDLE_UNLOAD_S configure the served engine."""
+    monkeypatch.setenv("ARGUS_REFINE_MODEL", "qwen3:8b")
+    monkeypatch.setenv("ARGUS_IDLE_UNLOAD_S", "120")
+    captured = {}
+    import argus_lens.server as server_mod
+
+    real = server_mod.ArgusLens
+
+    def _spy(**kwargs):
+        """Record the engine kwargs, without starting a reaper thread."""
+        captured.update(kwargs)
+        return real(backend=kwargs["backend"], refiner=kwargs["refiner"])
+
+    monkeypatch.setattr(server_mod, "ArgusLens", _spy)
+    create_app(default_backend=_StubBackend())
+    assert captured["refiner"].rewriter.model_id == "qwen3:8b"
+    assert captured["idle_unload_s"] == 120.0

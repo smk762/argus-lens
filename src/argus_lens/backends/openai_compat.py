@@ -3,8 +3,8 @@
 Works with any service that speaks the OpenAI ``/chat/completions`` wire format
 and accepts ``image_url`` data URIs, including:
 
-* **Ollama** (``http://localhost:11434/v1``) with a vision model (``llava``,
-  ``llama3.2-vision``, ``qwen2-vl``, ...)
+* **Ollama** (``http://localhost:11434/v1``) with a vision model
+  (``qwen3-vl:8b``, ``gemma3``, ``llama3.2-vision``, ``llava``, ...)
 * **vLLM**, **LM Studio**, **LocalAI**, **llama.cpp** server
 * Hosted OpenAI-compatible proxies / gateways
 
@@ -26,6 +26,28 @@ from argus_lens.backends.base import CloudBackend
 
 _DEFAULT_BASE_URL = "http://localhost:11434/v1"  # Ollama default
 _DEFAULT_MODEL = "llava"
+
+# Named user prompts. ``prompt`` may be one of these names or literal text.
+# "straightforward", "descriptive" and "booru" follow JoyCaption Beta One's
+# trained prompt modes but work with any instruction-tuned VLM.
+PROMPT_PRESETS: dict[str, str] = {
+    "detailed": "Describe this image in detail.",
+    "straightforward": (
+        "Write a straightforward caption for this image. Begin with the main subject and medium. "
+        "Mention pivotal elements (people, objects, scenery) using confident, definite language. "
+        "Focus on concrete details like color, shape, texture, and spatial relationships. "
+        "Show how elements interact. Omit mood and speculative wording. "
+        "Never mention what's absent, resolution, or unobservable details. "
+        'Keep the description concise, without starting with "This image is" or similar phrasing.'
+    ),
+    "descriptive": "Write a long descriptive caption for this image in a formal tone.",
+    "booru": "Write a list of Booru-like tags for this image.",
+    "count": (
+        "How many people are visible in this image, including partially visible people and "
+        "reflections? Answer with a single integer and nothing else."
+    ),
+}
+_DEFAULT_PROMPT = "detailed"
 
 
 def _extract_content(data: Any) -> str:
@@ -57,6 +79,8 @@ class OpenAICompatBackend(CloudBackend):
     * ``base_url`` / ``ARGUS_OPENAI_COMPAT_BASE_URL`` (default Ollama localhost)
     * ``model_id`` / ``ARGUS_OPENAI_COMPAT_MODEL`` (default ``llava``)
     * ``api_key`` / ``ARGUS_OPENAI_COMPAT_API_KEY`` (optional)
+    * ``prompt`` / ``ARGUS_OPENAI_COMPAT_PROMPT`` — a ``PROMPT_PRESETS`` name
+      or literal user-prompt text (default ``detailed``)
     """
 
     name = "openai-compat"
@@ -72,11 +96,15 @@ class OpenAICompatBackend(CloudBackend):
         base_url: str | None = None,
         max_tokens: int = 300,
         timeout: float = 300.0,
+        prompt: str | None = None,
+        temperature: float | None = None,
         **kwargs: Any,
     ) -> None:
         """Resolve the endpoint from argument, env var, or the Ollama localhost default."""
         super().__init__(api_key=api_key, model_id=model_id, system_prompt=system_prompt, **kwargs)
         self._base_url = base_url or os.environ.get("ARGUS_OPENAI_COMPAT_BASE_URL") or _DEFAULT_BASE_URL
+        self._prompt = prompt or os.environ.get("ARGUS_OPENAI_COMPAT_PROMPT") or _DEFAULT_PROMPT
+        self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
         self._client: Any = None
@@ -85,6 +113,11 @@ class OpenAICompatBackend(CloudBackend):
     def model_id(self) -> str:
         """Model to query: constructor, ``ARGUS_OPENAI_COMPAT_MODEL``, or ``llava``."""
         return self._model_id or os.environ.get("ARGUS_OPENAI_COMPAT_MODEL") or _DEFAULT_MODEL
+
+    @property
+    def user_prompt(self) -> str:
+        """The user-turn text sent with each image (preset name resolved)."""
+        return PROMPT_PRESETS.get(self._prompt, self._prompt)
 
     def _optional_api_key(self) -> str | None:
         """Like ``resolve_api_key`` but returns ``None`` instead of raising.
@@ -122,7 +155,7 @@ class OpenAICompatBackend(CloudBackend):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Describe this image in detail."},
+                        {"type": "text", "text": self.user_prompt},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
@@ -132,6 +165,8 @@ class OpenAICompatBackend(CloudBackend):
             ],
             "max_tokens": self._max_tokens,
         }
+        if self._temperature is not None:
+            payload["temperature"] = self._temperature
 
         response = self._client.post("/chat/completions", json=payload)
         response.raise_for_status()
