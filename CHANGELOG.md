@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-24
+
 ### Added
 - **Curate-index workflow** (`workflows/curate_index.py`, documented in
   `workflows/README.md`) — inventory → caption once → assemble per target →
@@ -44,36 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   idle VRAM release from `ARGUS_IDLE_UNLOAD_S` (for hosts shared with e.g. ComfyUI).
 - **Selectable WD14 v3 tagger** — `model_repo=` / `WD14_MODEL_REPO` / CLI
   `--wd14-repo` (e.g. `SmilingWolf/wd-eva02-large-tagger-v3`), cached per repo.
-- **`replay` backend** — serves recorded captions straight out of the cortex
-  Postgres lineage store (`CORTEX_PG_URL`) instead of running a model, so a
-  GPU-free box (or the public argus-halo demo) can re-enact genuine captured
-  output with **no GPU and no external API** (#45). Each request is keyed by the
-  source image's sha256 — the content id cortex records on `source_asset` — so
-  the engine hashes the bytes it ingests and returns the recorded
-  `CaptionResult` **verbatim** (variants included), bypassing the assembly
-  pipeline so profile knobs can't re-mangle captured output. An asset with no
-  recorded caption is a `ReplayMiss` — HTTP 404 on the single `/caption`, and a
-  per-item error on the multi-image paths (see below) — not a silent fall back
-  to a live model. Reads the documented lineage schema directly (no `argus-cortex`
-  dependency); `psycopg` lives behind the new `argus-lens[replay]` extra. Select
-  it with `--backend replay` / `ARGUS_BACKEND=replay`.
-
-- **Curator manifest 2.0 support on the manifest endpoints** —
-  `POST /caption/manifest` and `POST /caption/manifest/stream` accept an
-  optional `export_root` form field (the directory the curator exported into —
-  the manifest itself sits at `<export_root>/manifest.jsonl`). Rows carrying
-  `exported_path` (the 2.0 normative locator, already de-collided for
-  flattened exports) are then read from `export_root / exported_path` (confined
-  under the root — an absolute or `..`-laden `exported_path` is a per-row error,
-  not an escape), which stays valid for `mode=move` exports and cross-host
-  handoffs where `abs_path` points at a moved-away or unreachable source.
-  Without `export_root` (or on
-  pre-2.0 rows without `exported_path`) behaviour is unchanged: images are
-  read from `abs_path` (shared volume with the curator). An `export_root`
-  that is not an existing directory is a single 400 instead of N per-row read
-  errors, and rows declaring a `manifest_version` outside the supported
-  1.x/2.x majors are rejected with 400 naming the offending line, so a future
-  incompatible major fails loudly instead of being misread.
 
 ### Changed
 - **Category hints match whole words.** Hints previously matched as
@@ -91,22 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of being dropped with the identity bucket.
 - Headcount tags (`2girls`, `multiple_*`) no longer land in the identity
   bucket; they still appear in the zero-shot variant.
-- **Engine `_load_image` now returns an `ImageAsset`** (name + original-bytes
-  sha256 + source uri) alongside the decoded image, so the ingested content
-  identity survives to the backend (this is what the replay lookup keys on).
-  `caption_batch` / `caption_stream` gained an optional `names=` argument to set
-  result keys when the source loses its filename (e.g. raw upload bytes); the
-  server's `/caption/batch` and `/caption/stream` now pass original bytes plus
-  filenames, which also fixes uploaded-image results collapsing under a shared
-  name.
-- **Replay misses are handled per image** on the multi-image paths (#48): one
-  un-recorded asset no longer aborts the whole request. `/caption/batch` returns
-  `200` with the captions that resolved plus an `errors` `{name: reason}` map;
-  `/caption/stream` emits one error line for the miss and keeps streaming the
-  rest; `argus-lens caption <dir> --backend replay` skips missing images (no
-  sidecar), reports them, and captions the rest. The engine's `caption_batch` /
-  `caption_directory` gained an `on_miss` callback (fail-fast when omitted), and
-  `caption_stream` now yields `(name, ReplayMiss)` for a miss instead of raising.
 
 ### Security
 - **eMudhra/emSign CA incident.** Outbound TLS now requires `certifi>=2026.10.19`,
@@ -126,6 +82,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ARGUS_OPENAI_COMPAT_MODEL` into the container, so a containerised server
   could not reach a remote OpenAI-compatible endpoint. The WD14 cache mount is
   now writable so a non-default `WD14_MODEL_REPO` can download.
+
+## [0.5.0] - 2026-07-22
+
+### Added
+- **`replay` backend** — serves recorded captions straight out of the cortex
+  Postgres lineage store (`CORTEX_PG_URL`) instead of running a model, so a
+  GPU-free box (or the public argus-halo demo) can re-enact genuine captured
+  output with **no GPU and no external API** (#45). Each request is keyed by the
+  source image's sha256 — the content id cortex records on `source_asset` — so
+  the engine hashes the bytes it ingests and returns the recorded
+  `CaptionResult` **verbatim** (variants included), bypassing the assembly
+  pipeline so profile knobs can't re-mangle captured output. An asset with no
+  recorded caption is a `ReplayMiss` — HTTP 404 on the single `/caption`, and a
+  per-item error on the multi-image paths (see below) — not a silent fall back
+  to a live model. Reads the documented lineage schema directly (no `argus-cortex`
+  dependency); `psycopg` lives behind the new `argus-lens[replay]` extra. Select
+  it with `--backend replay` / `ARGUS_BACKEND=replay`.
+- **Curator manifest 2.0 support on the manifest endpoints** —
+  `POST /caption/manifest` and `POST /caption/manifest/stream` accept an
+  optional `export_root` form field (the directory the curator exported into —
+  the manifest itself sits at `<export_root>/manifest.jsonl`). Rows carrying
+  `exported_path` (the 2.0 normative locator, already de-collided for
+  flattened exports) are then read from `export_root / exported_path` (confined
+  under the root — an absolute or `..`-laden `exported_path` is a per-row error,
+  not an escape), which stays valid for `mode=move` exports and cross-host
+  handoffs where `abs_path` points at a moved-away or unreachable source.
+  Without `export_root` (or on
+  pre-2.0 rows without `exported_path`) behaviour is unchanged: images are
+  read from `abs_path` (shared volume with the curator). An `export_root`
+  that is not an existing directory is a single 400 instead of N per-row read
+  errors, and rows declaring a `manifest_version` outside the supported
+  1.x/2.x majors are rejected with 400 naming the offending line, so a future
+  incompatible major fails loudly instead of being misread.
+
+### Changed
+- **Engine `_load_image` now returns an `ImageAsset`** (name + original-bytes
+  sha256 + source uri) alongside the decoded image, so the ingested content
+  identity survives to the backend (this is what the replay lookup keys on).
+  `caption_batch` / `caption_stream` gained an optional `names=` argument to set
+  result keys when the source loses its filename (e.g. raw upload bytes); the
+  server's `/caption/batch` and `/caption/stream` now pass original bytes plus
+  filenames, which also fixes uploaded-image results collapsing under a shared
+  name.
+- **Replay misses are handled per image** on the multi-image paths (#48): one
+  un-recorded asset no longer aborts the whole request. `/caption/batch` returns
+  `200` with the captions that resolved plus an `errors` `{name: reason}` map;
+  `/caption/stream` emits one error line for the miss and keeps streaming the
+  rest; `argus-lens caption <dir> --backend replay` skips missing images (no
+  sidecar), reports them, and captions the rest. The engine's `caption_batch` /
+  `caption_directory` gained an `on_miss` callback (fail-fast when omitted), and
+  `caption_stream` now yields `(name, ReplayMiss)` for a miss instead of raising.
 
 ## [0.4.0] - 2026-07-09
 
@@ -355,7 +362,9 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/smk762/argus-lens/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/smk762/argus-lens/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/smk762/argus-lens/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/smk762/argus-lens/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/smk762/argus-lens/compare/v0.1.0...v0.2.0
