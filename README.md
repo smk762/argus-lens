@@ -220,6 +220,33 @@ argus-lens eval ./images/ -o before.json
 argus-lens eval ./images/ --reconcile tag-prior --baseline before.json
 ```
 
+### Refinement (LLM rewrite, validated)
+
+Deterministic assembly always runs first, and every variant passes a coherence post-check that repairs dangling words, orphan sentences, openers, hedging and duplicate tags. For more fluent captions, a `Refiner` can rewrite selected variants with any OpenAI-compatible chat model. A rewrite is **accepted only if it passes the same post-check** plus rules for identity suppression, token budget and grounding in the tagger/prose output. Otherwise the deterministic caption is kept.
+
+```python
+from argus_lens.refine import OpenAICompatRewriter, Refiner
+
+refiner = Refiner(OpenAICompatRewriter(model_id="qwen3:8b"), variants=("training", "training_prose"))
+engine = ArgusLens(backend="hybrid", refiner=refiner)
+```
+
+```bash
+argus-lens caption ./images/ --recursive --refine-model qwen3:8b
+```
+
+`result.metadata["refine"]` records what was accepted or rejected, and why.
+
+### Dataset curation workflow
+
+[`workflows/`](workflows/README.md) contains a complete, resumable pipeline for a large people-photo library (`<name>/pics/<shoot_id>/*.jpg`). It captions each image once, groups images by shared identity, wardrobe, setting and action tags, flags multi-person images for face ID, and exports SDXL and Flux training datasets. It builds on these result fields:
+
+- `metadata["buckets"]`: un-truncated per-category tags and prose, with no-match tags kept apart in `unclassified`
+- `metadata["subjects"]`: a headcount estimate (`count`, `multiple`, `agree`, `evidence`)
+- `caption_variants["training_prose"]`: sentence-form training captions for T5 models (Flux, SD3), next to the tag-form `training` caption for CLIP models (SDXL)
+
+Newer models plug in directly: `--wd14-repo SmilingWolf/wd-eva02-large-tagger-v3` for tags, and `hybrid:wd14+openai-compat --model-id qwen3-vl:8b-instruct --prompt straightforward` for prose from Qwen3-VL, JoyCaption or any served VLM.
+
 ### GPU sharing (lifecycle + coordinator)
 
 When argus-lens shares a GPU with another process (e.g. an image generator), it can behave as a good tenant. Two independent, opt-in mechanisms:
@@ -356,6 +383,7 @@ Copy or create a `.env` file for the Docker deployment:
 | `WD14_MODEL_DIR` | `~/.cache/wd14_tagger/` | WD14 ONNX model directory (auto-downloads on first use) |
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
 | `HF_TRUST_REMOTE_CODE` | `false` | Only needed for legacy `microsoft/Florence-2-*` weights. See [Security](#security) |
+| `LENS_SOURCE_PATH` | `/data/images` | Host image folder mounted read-write at `/data/images` for the folder picker and `POST /caption/folder`; `.txt` sidecars are written next to the images |
 
 #### GPU prerequisites
 

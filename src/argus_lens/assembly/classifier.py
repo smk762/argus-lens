@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+import re
+
 from argus_lens.types import CategoryConfig, get_category_config_map
 
 
@@ -78,24 +81,53 @@ def classify_fragment(
     Scores each category by counting how many of its hint words appear in
     *fragment*.  Falls back to ``"identity"`` when no hints match.
     """
+    return classify_fragment_detailed(fragment, categories)[0]
+
+
+def category_scores(
+    fragment: str,
+    categories: tuple[CategoryConfig, ...] | None = None,
+) -> dict[str, int]:
+    """Return ``{category: hint_match_count}`` for *fragment*, in definition order.
+
+    Hints match whole words (plural ``-s``/``-es`` allowed) and underscores
+    count as spaces, so ``brown_hair`` hits ``hair`` but ``chair`` does not,
+    and ``hat`` no longer fires inside ``that``.
+    """
     config_map = get_category_config_map(categories)
-    lowered = fragment.lower()
+    text = fragment.lower().replace("_", " ")
+    return {name: sum(1 for p in _hint_patterns(cfg.hint_words) if p.search(text)) for name, cfg in config_map.items()}
 
-    scores: dict[str, int] = {
-        name: sum(1 for hint in cfg.hint_words if hint in lowered) for name, cfg in config_map.items()
-    }
 
+@functools.lru_cache(maxsize=128)
+def _hint_patterns(hints: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    """Compile whole-word matchers for a category's hint words (cached per hint set)."""
+    return tuple(re.compile(rf"(?<![a-z]){re.escape(h.replace('_', ' '))}(?:e?s)?(?![a-z])") for h in hints)
+
+
+def classify_fragment_detailed(
+    fragment: str,
+    categories: tuple[CategoryConfig, ...] | None = None,
+) -> tuple[str, bool]:
+    """Classify *fragment* and report whether a hint actually matched.
+
+    Returns ``(category, matched)``. ``matched`` is False when no hint word
+    hit and the fragment landed in the ``"identity"`` fallback — callers
+    building a search index use this to keep unknown tags (``cup``,
+    ``phone``) out of the identity bucket.
+    """
+    scores = category_scores(fragment, categories)
     best = max(scores, key=lambda k: scores[k])
     if scores[best] > 0:
-        return best
+        return best, True
 
     words = _content_words(fragment)
     if {"indoors", "outdoors", "room", "street", "park"} & words:
-        return "setting"
+        return "setting", True
     if {"standing", "sitting", "portrait"} & words:
-        return "pose_composition"
+        return "pose_composition", True
 
-    return "identity"
+    return "identity", False
 
 
 def content_words(text: str) -> frozenset[str]:

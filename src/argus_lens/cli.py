@@ -58,10 +58,19 @@ def caption(
     output: Path | None = Option(None, "--output", "-o", help="Output file (for json/jsonl/csv)"),
     fmt: str = Option("txt", "--format", "-f", help="Output format: txt, json, jsonl, csv"),
     overwrite: bool = Option(False, "--overwrite", help="Overwrite existing caption files"),
+    recursive: bool = Option(False, "--recursive", "-r", help="Walk sub-directories (results keyed by relative path)"),
     api_key: str | None = Option(None, "--api-key", help="API key for cloud backends"),
     model_id: str | None = Option(None, "--model-id", help="Model ID override"),
     base_url: str | None = Option(
         None, "--base-url", help="Endpoint URL for openai-compat backend (e.g. http://localhost:11434/v1)"
+    ),
+    prompt: str | None = Option(
+        None,
+        "--prompt",
+        help="openai-compat user prompt: preset (detailed, straightforward, descriptive, booru) or literal text",
+    ),
+    wd14_repo: str | None = Option(
+        None, "--wd14-repo", help="WD14 v3 tagger repo, e.g. SmilingWolf/wd-eva02-large-tagger-v3"
     ),
     reconcile: str | None = Option(
         None,
@@ -72,6 +81,15 @@ def caption(
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
     verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
+    refine_model: str | None = Option(
+        None, "--refine-model", help="Rewrite training captions with this OpenAI-compatible chat model (validated)"
+    ),
+    refine_url: str | None = Option(None, "--refine-url", help="Base URL for the refine model (default: Ollama)"),
+    refine_key: str | None = Option(None, "--refine-key", help="API key for the refine model"),
+    refine_variants: str = Option(
+        "training,training_prose", "--refine-variants", help="Comma-separated variants to rewrite"
+    ),
+    refine_image: bool = Option(False, "--refine-image", help="Send the image to the refine model (vision models)"),
     verbose: bool = Option(False, "--verbose", "-v", help="Verbose output"),
 ) -> None:
     """Caption images in a file or directory."""
@@ -83,6 +101,10 @@ def caption(
         kwargs["api_key"] = api_key
     if base_url:
         kwargs["base_url"] = base_url
+    if prompt:
+        kwargs["prompt"] = prompt
+    if wd14_repo:
+        kwargs["model_repo"] = wd14_repo
     if model_id:
         if backend in ("florence2", "blip2"):
             kwargs["florence_model_id" if backend == "florence2" else "model_id"] = model_id
@@ -90,7 +112,16 @@ def caption(
             kwargs["model_id"] = model_id
 
     verifier = _make_verifier(reconcile, verifier_url, verifier_model, verifier_key, verifier_device)
-    engine = ArgusLens(backend=backend, verifier=verifier, **kwargs)
+    refiner = None
+    if refine_model:
+        from argus_lens.refine import OpenAICompatRewriter, Refiner
+
+        refiner = Refiner(
+            OpenAICompatRewriter(base_url=refine_url, model_id=refine_model, api_key=refine_key),
+            variants=tuple(v.strip() for v in refine_variants.split(",") if v.strip()),
+            send_image=refine_image,
+        )
+    engine = ArgusLens(backend=backend, verifier=verifier, refiner=refiner, **kwargs)
 
     if path.is_file():
         try:
@@ -141,6 +172,7 @@ def caption(
             prose_bias=prose_bias,
             output_format=fmt,
             overwrite=overwrite,
+            recursive=recursive,
             progress=_progress if verbose else None,
             on_miss=_on_miss,
         )

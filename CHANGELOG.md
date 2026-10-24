@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Curate-index workflow** (`workflows/curate_index.py`, documented in
+  `workflows/README.md`) — inventory → caption once → assemble per target →
+  tag index + groups + identity QA → query → kohya-style export, for libraries
+  laid out as `<name>/pics/<shoot_id>/*.jpg`. Resumable, content-hash keyed,
+  and settings-locked via `run.json`; every stage after `caption` recomputes
+  from the stored raw model output.
+- **Index metadata on every `CaptionResult`** — `metadata["buckets"]` holds the
+  un-truncated per-category fragments split by source (`tags` / `prose`), with
+  hint-less fragments in a separate `unclassified` list instead of the identity
+  fallback; `metadata["subjects"]` holds a headcount estimate from tagger
+  headcount tags (`2girls`, `multiple_boys`, `solo_focus`, `no_humans`) cross-checked
+  against the prose (`count`, `multiple`, `agree`, `evidence`).
+- **`training_prose` variant** — sentence-form training caption for T5 targets
+  (Flux, SD3): identity clauses and "with … hair/eyes" phrases excised,
+  sentences kept whole under the target's token budget.
+- **Coherence post-check** (`argus_lens.assembly.coherence`) — every variant is
+  repaired at the end of assembly (openers, markdown, hedging, dangling words,
+  orphan and subjectless sentences, duplicate/absorbed tags); `check_caption()`
+  exposes the same rules as a QA gate.
+- **LLM refinement** (`argus_lens.refine`) — `Refiner` + `OpenAICompatRewriter`
+  rewrite selected variants with any OpenAI-compatible chat model; a rewrite is
+  accepted only if it passes the post-check plus identity, budget and grounding
+  rules, with one feedback retry and a deterministic fallback. `ArgusLens(refiner=...)`,
+  CLI `--refine-model/--refine-url/--refine-variants/--refine-image`.
+- **Recursive directory captioning** — `caption_directory(recursive=True)` /
+  CLI `--recursive`; results keyed by relative path so equal filenames in
+  different folders stay distinct, and `.txt` sidecars land beside their images.
+- **openai-compat prompt presets** — `prompt=` / `ARGUS_OPENAI_COMPAT_PROMPT` /
+  CLI `--prompt` accepts `detailed`, `straightforward`, `descriptive`, `booru`,
+  `count` or literal text; optional `temperature`.
+- **Server env configuration** — `argus-lens serve` (and the Docker image)
+  enables refinement from `ARGUS_REFINE_MODEL` / `ARGUS_REFINE_BASE_URL` /
+  `ARGUS_REFINE_API_KEY` / `ARGUS_REFINE_VARIANTS` / `ARGUS_REFINE_IMAGE`, and
+  idle VRAM release from `ARGUS_IDLE_UNLOAD_S` (for hosts shared with e.g. ComfyUI).
+- **Selectable WD14 v3 tagger** — `model_repo=` / `WD14_MODEL_REPO` / CLI
+  `--wd14-repo` (e.g. `SmilingWolf/wd-eva02-large-tagger-v3`), cached per repo.
 - **`replay` backend** — serves recorded captions straight out of the cortex
   Postgres lineage store (`CORTEX_PG_URL`) instead of running a model, so a
   GPU-free box (or the public argus-halo demo) can re-enact genuine captured
@@ -40,6 +76,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   incompatible major fails loudly instead of being misread.
 
 ### Changed
+- **Category hints match whole words.** Hints previously matched as
+  substrings, so `hair` fired inside `chair`, `hat` inside `that`, `age` inside
+  `image`, `tee` inside `street`. Plurals and underscored tags still match.
+  Category vocabularies were expanded (jewellery, swimwear, furniture, weather,
+  venues, poses, activities), so fewer tags fall back to identity.
+- **Each category variant leads with its own category** (the `setting` caption
+  opens with the setting, not with hair colour).
+- **Prose enrichment lifts only modifier+noun compounds** (`knit_sweater`,
+  `wooden_bench`) from non-identity, filler-stripped clauses. Loose words
+  (`wearing`, `next`, `shows`) and identity compounds (`red_hair`) no longer
+  leak into the training caption.
+- **Unclassified tags (objects) reach training captions** as low-priority fill
+  instead of being dropped with the identity bucket.
+- Headcount tags (`2girls`, `multiple_*`) no longer land in the identity
+  bucket; they still appear in the zero-shot variant.
 - **Engine `_load_image` now returns an `ImageAsset`** (name + original-bytes
   sha256 + source uri) alongside the decoded image, so the ingested content
   identity survives to the backend (this is what the replay lookup keys on).
@@ -66,6 +117,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any other package. PyPI publishing uses
   `pypa/gh-action-pypi-publish` v1.14.3, which vendors a fixed sigstore.
   See https://discuss.python.org/t/109576.
+
+### Fixed
+- `hybrid:<tag>+<prose>` passed every engine kwarg to both stages, so
+  `hybrid:wd14+openai-compat --base-url/--model-id` crashed WD14 with a
+  `TypeError`. Backends now receive only the arguments their constructor accepts.
+- `docker-compose.yaml` did not pass `ARGUS_OPENAI_COMPAT_BASE_URL` /
+  `ARGUS_OPENAI_COMPAT_MODEL` into the container, so a containerised server
+  could not reach a remote OpenAI-compatible endpoint. The WD14 cache mount is
+  now writable so a non-default `WD14_MODEL_REPO` can download.
 
 ## [0.4.0] - 2026-07-09
 

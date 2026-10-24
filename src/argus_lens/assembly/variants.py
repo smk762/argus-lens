@@ -41,8 +41,9 @@ def _variant_bucket_plan(
 ) -> list[tuple[str, int | None]]:
     """Return the ordered bucket fill plan for a category variant.
 
-    The selected category gets unlimited fragments; others get capped
-    slots scaled by their ``zeroshot_priority``.
+    The selected category leads and gets unlimited fragments; the others
+    follow with capped slots scaled by their ``zeroshot_priority`` — so the
+    "setting" caption opens with the setting, not with hair colour.
     """
     config_map = get_category_config_map(categories)
     cat = normalise_target_category(category, categories)
@@ -54,6 +55,7 @@ def _variant_bucket_plan(
         else:
             cap = max(0, 4 - cfg.zeroshot_priority) if cfg.zeroshot_priority <= 4 else 1
             plan.append((name, cap))
+    plan.sort(key=lambda entry: entry[0] != cat)  # stable: selected first, rest keep order
     return plan
 
 

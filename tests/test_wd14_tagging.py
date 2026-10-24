@@ -110,7 +110,7 @@ def test_ensure_model_refreshes_stale_tags_csv(tmp_path: Any, monkeypatch: pytes
     """When the model file is missing, a leftover CSV from a prior model is re-downloaded with it."""
     from argus_lens.backends import wd14 as wd14_mod
 
-    def _fake_download(dest_dir: Any) -> None:
+    def _fake_download(dest_dir: Any, repo: str = "") -> None:
         """Mimic _download_model's skip-if-exists behavior without the network."""
         dest_dir.mkdir(parents=True, exist_ok=True)
         for name in (wd14_mod._MODEL_FILENAME, wd14_mod._TAGS_FILENAME):

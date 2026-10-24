@@ -515,6 +515,14 @@ def create_app(
             allow_headers=["*"],
         )
 
+    if "refiner" not in kwargs:
+        from argus_lens.refine import refiner_from_env
+
+        kwargs["refiner"] = refiner_from_env()  # ARGUS_REFINE_MODEL=... enables LLM rewrites
+    idle = os.environ.get("ARGUS_IDLE_UNLOAD_S", "").strip()
+    if idle and "idle_unload_s" not in kwargs:
+        # Free VRAM after this many idle seconds (e.g. when sharing a GPU with ComfyUI).
+        kwargs["idle_unload_s"] = float(idle)
     engine = ArgusLens(backend=default_backend, **kwargs)
     # Root for GET /folders browsing + relative folder captioning (UI folder picker).
     default_source = source_root or os.environ.get("LENS_SOURCE_PATH")
