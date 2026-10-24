@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from argus_lens.backends.openai_compat import _extract_content
+from argus_lens.backends.openai_compat import _DEFAULT_MAX_SIDE, _extract_content, prepare_image
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -126,6 +126,7 @@ class OpenAICompatRewriter:
         if image is not None:
             from argus_lens.reconcile.verifiers.openai_compat import encode_data_url
 
+            image = prepare_image(image, _DEFAULT_MAX_SIDE)
             user = [{"type": "text", "text": user}, {"type": "image_url", "image_url": {"url": encode_data_url(image)}}]
         payload: dict[str, Any] = {
             "model": self.model_id,

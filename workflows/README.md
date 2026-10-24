@@ -54,16 +54,16 @@ A run combines a **tagger** (structured booru tags, the source of the index voca
 | Role | Default | Recommended upgrade | Notes |
 |---|---|---|---|
 | Tagger | `SmilingWolf/wd-vit-tagger-v3` | `--wd14-repo SmilingWolf/wd-eva02-large-tagger-v3` | EVA02-Large is the most accurate of the WD v3 family and slower. All WD taggers are trained on anime-style art, so on photos they are good at clothing, framing and objects but miss some scene detail. The prose model covers that. |
-| Prose | Florence-2-base | **Qwen3-VL 8B** via Ollama (`qwen3-vl:8b`, about 12 GB at Q4), or **JoyCaption Beta One** via vLLM (`fancyfeast/llama-joycaption-beta-one-hf-llava`, about 17 GB in bf16) | JoyCaption is built specifically for diffusion-training captions, and the `--prompt straightforward` preset is modelled on its "Straightforward" mode. Qwen3-VL is a general-purpose VLM, useful where Florence-2's shorter descriptions miss actions or a second person. Florence-2 is small and fast, but it is the model whose colour hallucinations the `--reconcile` step exists to fix. |
+| Prose | Florence-2-base | **Qwen3-VL 8B** via Ollama (`qwen3-vl:8b-instruct`, a 6.2 GB download; the `-instruct` tag skips the slow "thinking" pass), or **JoyCaption Beta One** via vLLM (`fancyfeast/llama-joycaption-beta-one-hf-llava`, about 17 GB in bf16) | JoyCaption is built specifically for diffusion-training captions, and the `--prompt straightforward` preset is modelled on its "Straightforward" mode. Qwen3-VL is a general-purpose VLM, useful where Florence-2's shorter descriptions miss actions or a second person. Florence-2 is small and fast, but it is the model whose colour hallucinations the `--reconcile` step exists to fix. |
 | Refine | none | any instruct model behind an OpenAI-compatible API, e.g. `qwen3:8b` | Text-only is enough. See [LLM refinement](#llm-refinement-and-the-post-check). |
-| Count | none (tags + prose) | `--count-model qwen3-vl:8b` | Asks "how many people?" as a third opinion for the face-ID queue. |
+| Count | none (tags + prose) | `--count-model qwen3-vl:8b-instruct` | Asks "how many people?" as a third opinion for the face-ID queue. |
 
 I found no independent head-to-head benchmark of these captioners for LoRA datasets. **Compare them on your own pilot** with `argus-lens eval` (the reference-free contradiction rate is a good first signal) before committing a full run.
 
 Serving a prose model (pick one):
 
 ```bash
-ollama pull qwen3-vl:8b                     # Ollama: http://localhost:11434/v1
+ollama pull qwen3-vl:8b-instruct                     # Ollama: http://localhost:11434/v1
 vllm serve fancyfeast/llama-joycaption-beta-one-hf-llava --max-model-len 4096   # vLLM: http://localhost:8000/v1
 ```
 
@@ -88,7 +88,7 @@ python workflows/curate_index.py caption runs/r1
 # recommended: EVA02 tags + Qwen3-VL prose + VLM headcount
 python workflows/curate_index.py caption runs/r1 \
     --backend hybrid:wd14+openai-compat --wd14-repo SmilingWolf/wd-eva02-large-tagger-v3 \
-    --model-id qwen3-vl:8b --prompt straightforward --count-model qwen3-vl:8b
+    --model-id qwen3-vl:8b-instruct --prompt straightforward --count-model qwen3-vl:8b-instruct
 ```
 
 - Appends one line per image to `raw.jsonl` and flushes after each one. **Interrupt and re-run at any time**: finished images are skipped.
@@ -195,7 +195,7 @@ Deterministic assembly works on clause boundaries, and on its own it can produce
 ## Reproducibility
 
 - **Pin the environment**: install from the repo's `uv.lock` (`uv sync`). `run.json` records the `argus-lens` version and the caption settings.
-- **Pin the models**: WD14 and Florence-2 download fixed files into a cache. For served models, pin the exact tag (`qwen3-vl:8b`, a specific vLLM revision) and record it. `run.json` stores what you passed.
+- **Pin the models**: WD14 and Florence-2 download fixed files into a cache. For served models, pin the exact tag (`qwen3-vl:8b-instruct`, a specific vLLM revision) and record it. `run.json` stores what you passed.
 - **Deterministic downstream**: `assemble`, `index`, `query` and `export` are pure functions of `raw.jsonl` plus their flags. Omission cycles use the image's position in path-sorted order, so the same inputs always give the same captions.
 - **Script it**: a whole run is a handful of commands. Put them in a shell script or Makefile next to the run directory, so the run itself is the record.
 

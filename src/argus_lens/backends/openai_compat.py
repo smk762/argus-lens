@@ -4,7 +4,7 @@ Works with any service that speaks the OpenAI ``/chat/completions`` wire format
 and accepts ``image_url`` data URIs, including:
 
 * **Ollama** (``http://localhost:11434/v1``) with a vision model
-  (``qwen3-vl:8b``, ``gemma3``, ``llama3.2-vision``, ``llava``, ...)
+  (``qwen3-vl:8b-instruct``, ``gemma3``, ``llama3.2-vision``, ``llava``, ...)
 * **vLLM**, **LM Studio**, **LocalAI**, **llama.cpp** server
 * Hosted OpenAI-compatible proxies / gateways
 
@@ -48,6 +48,19 @@ PROMPT_PRESETS: dict[str, str] = {
     ),
 }
 _DEFAULT_PROMPT = "detailed"
+# Long edge sent to the server. A 3600x2400 photo costs ~4k vision tokens and
+# overflows Ollama's default 4096 context; 1024 px is ~1.1k and loses nothing a
+# caption needs.
+_DEFAULT_MAX_SIDE = 1024
+
+
+def prepare_image(image: Image.Image, max_side: int | None) -> Image.Image:
+    """RGB copy of *image*, downscaled so its long edge is at most *max_side* (0/None = as is)."""
+    image = image.convert("RGB")
+    if max_side and max(image.size) > max_side:
+        image = image.copy()
+        image.thumbnail((max_side, max_side), Image.LANCZOS)
+    return image
 
 
 def _extract_content(data: Any) -> str:
@@ -59,13 +72,20 @@ def _extract_content(data: Any) -> str:
     AttributeError/IndexError/KeyError when no caption text is present.
     """
     try:
-        content = data["choices"][0]["message"].get("content")
+        choice = data["choices"][0]
+        message = choice["message"]
+        content = message.get("content")
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"unexpected chat-completions response shape: {exc!r}") from exc
     if isinstance(content, list):
         # Some vision servers return content as a list of typed parts.
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str) or not content.strip():
+        if message.get("reasoning") and choice.get("finish_reason") == "length":
+            raise RuntimeError(
+                "model spent its whole token budget reasoning and returned no caption: use a "
+                "non-thinking variant (e.g. qwen3-vl:8b-instruct) or raise max_tokens"
+            )
         raise RuntimeError("chat-completions response contained no caption text (empty or null content)")
     return content.strip()
 
@@ -81,6 +101,12 @@ class OpenAICompatBackend(CloudBackend):
     * ``api_key`` / ``ARGUS_OPENAI_COMPAT_API_KEY`` (optional)
     * ``prompt`` / ``ARGUS_OPENAI_COMPAT_PROMPT`` — a ``PROMPT_PRESETS`` name
       or literal user-prompt text (default ``detailed``)
+    * ``max_image_side`` / ``ARGUS_OPENAI_COMPAT_MAX_SIDE`` — long edge the
+      image is downscaled to before sending (default 1024; 0 = full size)
+
+    Prefer non-thinking model variants (``qwen3-vl:8b-instruct`` rather than
+    ``qwen3-vl:8b``): thinking variants reason before answering, which is
+    slower and can exhaust *max_tokens* before any caption is written.
     """
 
     name = "openai-compat"
@@ -98,6 +124,7 @@ class OpenAICompatBackend(CloudBackend):
         timeout: float = 300.0,
         prompt: str | None = None,
         temperature: float | None = None,
+        max_image_side: int | None = None,
         **kwargs: Any,
     ) -> None:
         """Resolve the endpoint from argument, env var, or the Ollama localhost default."""
@@ -105,6 +132,9 @@ class OpenAICompatBackend(CloudBackend):
         self._base_url = base_url or os.environ.get("ARGUS_OPENAI_COMPAT_BASE_URL") or _DEFAULT_BASE_URL
         self._prompt = prompt or os.environ.get("ARGUS_OPENAI_COMPAT_PROMPT") or _DEFAULT_PROMPT
         self._temperature = temperature
+        if max_image_side is None:
+            max_image_side = int(os.environ.get("ARGUS_OPENAI_COMPAT_MAX_SIDE") or _DEFAULT_MAX_SIDE)
+        self._max_image_side = max_image_side
         self._max_tokens = max_tokens
         self._timeout = timeout
         self._client: Any = None
@@ -145,7 +175,7 @@ class OpenAICompatBackend(CloudBackend):
             self.load()
 
         buf = io.BytesIO()
-        image.convert("RGB").save(buf, format="JPEG", quality=90)
+        prepare_image(image, self._max_image_side).save(buf, format="JPEG", quality=90)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         payload = {

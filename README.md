@@ -245,7 +245,7 @@ argus-lens caption ./images/ --recursive --refine-model qwen3:8b
 - `metadata["subjects"]`: a headcount estimate (`count`, `multiple`, `agree`, `evidence`)
 - `caption_variants["training_prose"]`: sentence-form training captions for T5 models (Flux, SD3), next to the tag-form `training` caption for CLIP models (SDXL)
 
-Newer models plug in directly: `--wd14-repo SmilingWolf/wd-eva02-large-tagger-v3` for tags, and `hybrid:wd14+openai-compat --model-id qwen3-vl:8b --prompt straightforward` for prose from Qwen3-VL, JoyCaption or any served VLM.
+Newer models plug in directly: `--wd14-repo SmilingWolf/wd-eva02-large-tagger-v3` for tags, and `hybrid:wd14+openai-compat --model-id qwen3-vl:8b-instruct --prompt straightforward` for prose from Qwen3-VL, JoyCaption or any served VLM.
 
 ### GPU sharing (lifecycle + coordinator)
 

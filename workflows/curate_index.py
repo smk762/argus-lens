@@ -614,7 +614,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend", default="hybrid", help="hybrid (WD14+Florence-2), hybrid:wd14+openai-compat, ...")
     p.add_argument("--wd14-repo", default=None, help="e.g. SmilingWolf/wd-eva02-large-tagger-v3")
     p.add_argument("--wd14-threshold", type=float, default=0.35)
-    p.add_argument("--model-id", default=None, help="prose model for openai-compat (e.g. qwen3-vl:8b)")
+    p.add_argument("--model-id", default=None, help="prose model for openai-compat (e.g. qwen3-vl:8b-instruct)")
     p.add_argument("--base-url", default=None, help="openai-compat endpoint (default Ollama localhost)")
     p.add_argument("--prompt", default=None, help="openai-compat prompt preset or text (e.g. straightforward)")
     p.add_argument("--count-model", default=None, help="vision model asked 'how many people?' as a third opinion")
