@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `caption_directory` gained an `on_miss` callback (fail-fast when omitted), and
   `caption_stream` now yields `(name, ReplayMiss)` for a miss instead of raising.
 
+### Security
+- **eMudhra/emSign CA incident.** Outbound TLS now requires `certifi>=2026.10.19`,
+  which no longer trusts the compromised emSign intermediates. `uv` is required
+  at `>=0.13.5` (fixed trust store, and managed CPython builds that bundle pip
+  26.2.2). Docker images distrust emSign ECC Root CA - G3 and the Comodo AAA
+  cross-sign in the system store, then install hash-pinned pip 26.2.2 before
+  any other package. PyPI publishing uses
+  `pypa/gh-action-pypi-publish` v1.14.3, which vendors a fixed sigstore.
+  See https://discuss.python.org/t/109576.
+
 ## [0.4.0] - 2026-07-09
 
 ### Added

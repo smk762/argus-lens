@@ -3,10 +3,40 @@ FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
+# eMudhra/emSign (discuss.python.org/t/109576). Ubuntu's ca-certificates package
+# lags the Debian removal of emSign ECC Root CA - G3, so distrust that root and
+# the Comodo AAA cross-sign explicitly. Unaffected emSign roots stay enabled.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     python3.11 python3.11-dev python3.11-venv python3-pip git curl g++ build-essential \
-    libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 && \
-    rm -rf /var/lib/apt/lists/*
+    libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 \
+    && sed -i \
+        -e 's|^mozilla/emSign_ECC_Root_CA_-_G3|!mozilla/emSign_ECC_Root_CA_-_G3|' \
+        -e 's|^mozilla/Comodo_AAA|!mozilla/Comodo_AAA|' \
+        /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh >/dev/null \
+    && python3.11 - <<'PY' && rm -rf /var/lib/apt/lists/*
+import base64, pathlib, re, sys
+conf = pathlib.Path("/etc/ca-certificates.conf").read_text().splitlines()
+root = pathlib.Path("/usr/share/ca-certificates")
+for name in (
+    "mozilla/emSign_ECC_Root_CA_-_G3.crt",
+    "mozilla/Comodo_AAA_Services_root.crt",
+):
+    if (root / name).is_file() and f"!{name}" not in conf:
+        sys.exit(f"failed to distrust {name}")
+bundle = pathlib.Path("/etc/ssl/certs/ca-certificates.crt").read_bytes()
+bad = (b"emSign ECC Root CA - G3", b"AAA Certificate Services")
+for pem in re.findall(b"-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----", bundle, re.S):
+    der = base64.b64decode(pem)
+    for name in bad:
+        if name in der:
+            sys.exit(f"compromised root still trusted: {name.decode()}")
+PY
 
 RUN python3.11 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+# ensurepip seeds a pip that trusts the compromised intermediates even after the
+# OS bundle above is fixed. The hash pins the wheel the old pip downloads.
+RUN python -m pip install --no-cache-dir \
+    "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"

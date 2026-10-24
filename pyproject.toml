@@ -28,6 +28,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    # httpx verifies against certifi. 2026.10.19 drops emSign ECC Root CA - G3
+    # (discuss.python.org/t/109576) and keeps the unaffected emSign roots.
+    "certifi>=2026.10.19",
     "Pillow>=10.0",
     "structlog>=24.0",
     "httpx>=0.27",
@@ -68,6 +71,11 @@ Homepage = "https://github.com/smk762/argus-lens"
 Repository = "https://github.com/smk762/argus-lens"
 Issues = "https://github.com/smk762/argus-lens/issues"
 Changelog = "https://github.com/smk762/argus-lens/blob/main/CHANGELOG.md"
+
+[tool.uv]
+# 0.13.4 removed the compromised emSign root from uv's own trust store.
+# 0.13.5 also ships CPython builds whose bundled pip is 26.2.2.
+required-version = ">=0.13.5"
 
 [tool.hatch.version]
 source = "vcs"
