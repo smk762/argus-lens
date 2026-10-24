@@ -53,7 +53,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # v1.14.3 vendors sigstore >= 4.5.1 (eMudhra/emSign, GHSA-5xjx-3w67-w9x9).
+      - uses: pypa/gh-action-pypi-publish@v1.14.3
         with:
           repository-url: https://test.pypi.org/legacy/
 
@@ -74,7 +75,7 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@v1.14.3
 
   publish-image:
     runs-on: ubuntu-latest

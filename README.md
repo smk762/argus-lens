@@ -99,6 +99,8 @@ pip install argus-lens[all]
 
 If you're adding argus-lens to an existing project, just add e.g. `argus-lens[openai]` to your `requirements.txt` -- pip resolves all transitive deps automatically.
 
+Cloud calls and model downloads verify TLS with `certifi`. The package depends on `certifi>=2026.10.19` so those calls do not trust the compromised eMudhra emSign intermediates ([PSRT notice](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576)). That pin does not update `pip` itself: pip older than 26.2.2 carries its own CA bundle and keeps trusting those intermediates, so upgrade pip to 26.2.2 or newer before installing. Lockfile installs need `uv>=0.13.5`.
+
 ### System dependencies for local GPU backends
 
 Cloud-only users (`[openai]`, `[replicate]`) need no system packages -- skip this section.
@@ -329,7 +331,7 @@ For fresh hosts or isolated deployment with GPU passthrough. No pip install need
 docker compose up
 ```
 
-This builds a CUDA 12.4 base image, installs all extras into it, and runs `argus-lens serve` on port 8080.
+This builds a CUDA 12.4 base image, installs all extras into it, and runs `argus-lens serve` on port 8080. The image distrusts emSign ECC Root CA - G3 and the Comodo AAA cross-sign in the system trust store, and installs hash-pinned pip 26.2.2 before project dependencies. Rebuild without layer cache after pulling these Dockerfiles (`docker build --no-cache`, or `docker compose build --no-cache`).
 
 #### Standalone image (GHCR)
 
