@@ -26,7 +26,13 @@ services:
       - WD14_MODEL_DIR=/root/.cache/wd14_tagger
       - HF_HOME=/root/.cache/huggingface
       - HF_TRUST_REMOTE_CODE=${HF_TRUST_REMOTE_CODE:-false}
+      # Folder browsing / folder captioning root inside the container (fixed);
+      # the host side is LENS_SOURCE_PATH, mounted below.
+      - LENS_SOURCE_PATH=/data/images
     volumes:
+      # Image library for GET /folders and POST /caption/folder. Read-write:
+      # .txt (and optional .xmp) sidecars are written next to the images.
+      - ${LENS_SOURCE_PATH:-/data/images}:/data/images
       # Writable so a new WD14_MODEL_REPO can download into its own subdir.
       - ~/.cache/wd14_tagger:/root/.cache/wd14_tagger
       - ~/.cache/huggingface:/root/.cache/huggingface

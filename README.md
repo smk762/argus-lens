@@ -383,6 +383,7 @@ Copy or create a `.env` file for the Docker deployment:
 | `WD14_MODEL_DIR` | `~/.cache/wd14_tagger/` | WD14 ONNX model directory (auto-downloads on first use) |
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
 | `HF_TRUST_REMOTE_CODE` | `false` | Only needed for legacy `microsoft/Florence-2-*` weights. See [Security](#security) |
+| `LENS_SOURCE_PATH` | `/data/images` | Host image folder mounted read-write at `/data/images` for the folder picker and `POST /caption/folder`; `.txt` sidecars are written next to the images |
 
 #### GPU prerequisites
 
