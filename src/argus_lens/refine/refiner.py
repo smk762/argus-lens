@@ -112,12 +112,22 @@ class VariantSpec:
         rules: Instructions for the rewriter; ``{budget}`` and ``{category}``
             are filled in.
         suppress_identity: Reject rewrites containing ``IDENTITY_FORBIDDEN``.
+        forbidden: Further terms a rewrite must not contain.
+        allow_empty: An empty rewrite is a valid answer ("nothing of this
+            category is visible") rather than a failure.
     """
 
     kind: str
     rules: str
     suppress_identity: bool = False
+    forbidden: frozenset[str] = frozenset()
+    allow_empty: bool = False
 
+
+# Headcount tags: noise in a training caption (the deterministic path strips them too).
+HEADCOUNT_FORBIDDEN: frozenset[str] = frozenset(
+    {"1girl", "1boy", "1other", "solo", "2girls", "2boys", "3girls", "multiple girls", "multiple boys"}
+)
 
 _LIST_STYLE = (
     "Comma-separated booru-style tags and short noun phrases (underscores or spaces are both fine), "
@@ -130,8 +140,9 @@ VARIANT_SPECS: dict[str, VariantSpec] = {
         + _LIST_STYLE
         + " Cover framing, pose, clothing, action, setting, lighting and notable objects. "
         "Never mention hair, eyes, face, skin, body type or age: the LoRA learns identity from the pixels. "
-        "At most {budget} CLIP tokens.",
+        "No headcount tags (1girl, solo). At most {budget} CLIP tokens.",
         suppress_identity=True,
+        forbidden=HEADCOUNT_FORBIDDEN,
     ),
     "training_prose": VariantSpec(
         "prose",
@@ -152,14 +163,18 @@ _CATEGORY_RULES = (
     "Tags and short noun phrases describing ONLY the {category} of the image, for search and grouping. "
     + _LIST_STYLE
     + ' Use plain, reusable vocabulary ("red dress", "kitchen", "cooking") so images group well.'
+    "{identity_rule} If the image shows nothing of this category, return an empty string."
 )
+_NOT_IDENTITY = " Never include hair, eyes, face, skin, body or age: those belong to identity."
 
 
 def variant_spec(name: str) -> VariantSpec:
     """Return the :class:`VariantSpec` for *name* (category variants included)."""
     if name in VARIANT_SPECS:
         return VARIANT_SPECS[name]
-    return VariantSpec("list", _CATEGORY_RULES.replace("{category}", name.replace("_", " and ")))
+    rules = _CATEGORY_RULES.replace("{category}", name.replace("_", " and "))
+    rules = rules.replace("{identity_rule}", "" if name == "identity" else _NOT_IDENTITY)
+    return VariantSpec("list", rules, suppress_identity=name != "identity", allow_empty=True)
 
 
 @dataclass(frozen=True)
@@ -238,7 +253,7 @@ class Refiner:
             text,
             spec.kind,
             trigger_word=request.trigger_word,
-            forbidden_words=IDENTITY_FORBIDDEN if spec.suppress_identity else frozenset(),
+            forbidden_words=(IDENTITY_FORBIDDEN if spec.suppress_identity else frozenset()) | spec.forbidden,
             token_budget=request.token_budget,
             target_backend=request.target_backend if spec.kind == "prose" else None,
             allowed_vocabulary=vocab,
@@ -289,9 +304,13 @@ class Refiner:
                 break
             feedback: dict[str, list[str]] = {}
             for name in pending:
+                spec = variant_spec(name)
                 text = (out.get(name) or "").strip()
                 if text:
-                    text, _ = repair_caption(text, variant_spec(name).kind, trigger_word=trigger_word)
+                    text, _ = repair_caption(text, spec.kind, trigger_word=trigger_word)
+                if spec.allow_empty and name in out and text.strip() in ("", trigger_word.strip()):
+                    accepted[name] = trigger_word.strip()  # "nothing of this category" is an answer
+                    continue
                 problems = self._problems(name, text, request, vocab) if text else ["missing from response"]
                 if problems:
                     feedback[name] = problems

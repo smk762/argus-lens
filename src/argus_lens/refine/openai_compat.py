@@ -77,6 +77,12 @@ class OpenAICompatRewriter:
     Endpoint, model and key resolve from arguments, then
     ``ARGUS_REFINE_BASE_URL`` / ``ARGUS_REFINE_MODEL`` / ``ARGUS_REFINE_API_KEY``,
     then defaults (Ollama on localhost, ``qwen3:8b``).
+
+    *reasoning_effort* (``ARGUS_REFINE_REASONING_EFFORT``, default ``"none"``)
+    turns off "thinking" on hybrid reasoning models such as Qwen3: left on,
+    they spend the token budget reasoning and return empty content. A server
+    that rejects the parameter (HTTP 400) is retried once without it, and it
+    is not sent again. Pass ``""`` to never send it.
     """
 
     name = "openai-compat"
@@ -89,8 +95,9 @@ class OpenAICompatRewriter:
         *,
         temperature: float = 0.0,
         seed: int | None = 0,
-        max_tokens: int = 800,
+        max_tokens: int = 1200,
         timeout: float = 120.0,
+        reasoning_effort: str | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         """Resolve endpoint settings; the HTTP client is created lazily."""
@@ -101,6 +108,9 @@ class OpenAICompatRewriter:
         self.seed = seed
         self.max_tokens = max_tokens
         self.timeout = timeout
+        if reasoning_effort is None:
+            reasoning_effort = os.environ.get("ARGUS_REFINE_REASONING_EFFORT", "none")
+        self.reasoning_effort = reasoning_effort or None
         self._client = client
 
     def _http(self) -> httpx.Client:
@@ -125,7 +135,14 @@ class OpenAICompatRewriter:
         }
         if self.seed is not None:
             payload["seed"] = self.seed
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
         response = self._http().post("/chat/completions", json=payload)
+        if response.status_code == 400 and "reasoning_effort" in payload:
+            # Server doesn't know the parameter: drop it for this and later calls.
+            self.reasoning_effort = None
+            del payload["reasoning_effort"]
+            response = self._http().post("/chat/completions", json=payload)
         response.raise_for_status()
         return parse_rewrite(_extract_content(response.json()))
 

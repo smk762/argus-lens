@@ -209,3 +209,51 @@ def test_refiner_from_env(monkeypatch) -> None:
     assert refiner.variants == ("training", "wardrobe")
     assert refiner.rewriter.model_id == "qwen3:8b"
     assert refiner.rewriter.base_url == "http://ollama.lan:11434/v1"
+
+
+def test_rewriter_disables_reasoning_and_falls_back_on_400() -> None:
+    """``reasoning_effort: none`` is sent by default; a 400 drops it for good."""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Reject requests carrying reasoning_effort, accept the rest."""
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "reasoning_effort" in body:
+            return httpx.Response(400, json={"error": "unknown parameter"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(GOOD)}}]})
+
+    client = httpx.Client(base_url="http://llm/v1", transport=httpx.MockTransport(handler))
+    rewriter = OpenAICompatRewriter(base_url="http://llm/v1", client=client)
+    result, profile = _result("flux")
+    Refiner(rewriter).refine(result, profile, trigger_word="sks")
+    Refiner(rewriter).refine(result, profile, trigger_word="sks")
+    assert bodies[0]["reasoning_effort"] == "none"
+    assert ["reasoning_effort" in b for b in bodies] == [True, False, False]
+
+
+def test_rewriter_reasoning_effort_can_be_disabled(monkeypatch) -> None:
+    """An empty value never sends the parameter."""
+    monkeypatch.setenv("ARGUS_REFINE_REASONING_EFFORT", "")
+    assert OpenAICompatRewriter().reasoning_effort is None
+    assert OpenAICompatRewriter(reasoning_effort="low").reasoning_effort == "low"
+
+
+def test_category_rewrites_reject_identity_and_accept_empty() -> None:
+    """A wardrobe rewrite naming hair is rejected; an empty answer means 'none visible'."""
+    result, profile = _result()
+    rewriter = _ScriptedRewriter({"wardrobe": "sks, red_hair", "setting": "sks, kitchen"}, {"wardrobe": ""})
+    refined = Refiner(rewriter, variants=("wardrobe", "setting")).refine(result, profile, trigger_word="sks")
+    assert any("suppressed terms: hair" in p for p in rewriter.requests[1][0].feedback["wardrobe"])
+    assert refined.caption_variants["wardrobe"] == "sks"
+    assert refined.caption_variants["setting"] == "sks, kitchen"
+
+
+def test_training_rewrite_rejects_headcount_tags() -> None:
+    """``1girl``/``solo`` are noise in a training caption."""
+    result, profile = _result()
+    reply = {"training": "sks, 1girl, standing, red_dress, kitchen"}
+    refined = Refiner(_ScriptedRewriter(reply, reply), variants=("training",)).refine(
+        result, profile, trigger_word="sks"
+    )
+    assert "1girl" in " ".join(refined.metadata["refine"]["rejected"]["training"])
