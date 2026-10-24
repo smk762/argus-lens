@@ -198,13 +198,16 @@ def cmd_caption(args: argparse.Namespace) -> None:
     run = Path(args.run_dir)
     inventory = json.loads((run / "inventory.json").read_text())
     root = Path(inventory["source_root"])
+    # Record the *effective* settings (flag, else the env var the backend would
+    # read), so a run configured through .env is as reproducible as one via flags.
+    env = os.environ.get
     wanted = {
         "backend": args.backend,
-        "wd14_repo": args.wd14_repo,
+        "wd14_repo": args.wd14_repo or env("WD14_MODEL_REPO") or None,
         "wd14_threshold": args.wd14_threshold,
-        "model_id": args.model_id,
-        "base_url": args.base_url,
-        "prompt": args.prompt,
+        "model_id": args.model_id or env("ARGUS_OPENAI_COMPAT_MODEL") or None,
+        "base_url": args.base_url or env("ARGUS_OPENAI_COMPAT_BASE_URL") or None,
+        "prompt": args.prompt or env("ARGUS_OPENAI_COMPAT_PROMPT") or None,
         "count_model": args.count_model,
     }
     _load_run_config(run, wanted, args.force)

@@ -134,3 +134,18 @@ def test_parse_count() -> None:
     assert curate._parse_count("Two people.") == 2
     assert curate._parse_count("none") == 0
     assert curate._parse_count("unclear") is None
+
+
+def test_run_json_records_env_configured_settings(library, monkeypatch) -> None:
+    """Settings supplied via env vars land in run.json, not as nulls."""
+    src, run = library
+    monkeypatch.setenv("ARGUS_OPENAI_COMPAT_MODEL", "qwen3-vl:8b")
+    monkeypatch.setenv("ARGUS_OPENAI_COMPAT_BASE_URL", "http://ollama.lan:11434/v1")
+    curate.main(["inventory", str(src), str(run)])
+    curate.main(["caption", str(run), "--limit", "1"])
+    caption = json.loads((run / "run.json").read_text())["caption"]
+    assert caption["model_id"] == "qwen3-vl:8b"
+    assert caption["base_url"] == "http://ollama.lan:11434/v1"
+    monkeypatch.setenv("ARGUS_OPENAI_COMPAT_MODEL", "llava")
+    with pytest.raises(SystemExit, match="different caption settings"):
+        curate.main(["caption", str(run)])
