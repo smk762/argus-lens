@@ -119,6 +119,10 @@ def test_ensure_model_refreshes_stale_tags_csv(tmp_path: Any, monkeypatch: pytes
                 dest.write_text("v3-fresh")
 
     monkeypatch.setattr(wd14_mod, "_download_model", _fake_download)
+    # Keep the search inside tmp_path: a model already in WD14_MODEL_DIR or the
+    # real ~/.cache/wd14_tagger would short-circuit _ensure_model before the stale-CSV path.
+    monkeypatch.delenv("WD14_MODEL_DIR", raising=False)
+    monkeypatch.setattr(wd14_mod, "_DEFAULT_CACHE_DIR", tmp_path / "cache")
     stale_csv = tmp_path / wd14_mod._TAGS_FILENAME
     stale_csv.write_text("v2-stale")
 
