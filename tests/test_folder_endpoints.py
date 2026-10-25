@@ -9,10 +9,18 @@ from PIL import Image
 
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
+from argus_cortex.xmp import read_xmp  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from argus_lens.backends.base import CaptionBackend  # noqa: E402
 from argus_lens.server import create_app  # noqa: E402
+
+_LR_SIDECAR = (
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+    '<rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="4">'
+    '<dc:subject xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Bag><rdf:li>old</rdf:li></rdf:Bag></dc:subject>'
+    "</rdf:Description></rdf:RDF></x:xmpmeta>"
+)
 
 
 class _StubBackend(CaptionBackend):
@@ -166,8 +174,26 @@ def test_caption_folder_write_xmp_off_by_default(tmp_path: Path) -> None:
     assert (tmp_path / "01.txt").exists()
 
 
-def test_caption_folder_write_xmp_overwrites_existing_sidecar(tmp_path: Path) -> None:
-    """A pre-existing .xmp is replaced, matching the .txt sidecar overwrite semantics."""
+def test_caption_folder_write_xmp_merges_existing_sidecar(tmp_path: Path) -> None:
+    """By default a pre-existing .xmp is merged: lens's properties replaced, foreign ones (rating) kept."""
+    _png(tmp_path / "01.jpg")
+    existing = tmp_path / "01.jpg.xmp"
+    existing.write_text(_LR_SIDECAR, encoding="utf-8")
+
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.post("/caption/folder", json={"folder": str(tmp_path), "write_sidecar": False, "write_xmp": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["failed"] == 0
+    assert body["xmp_written"] == 1
+    data = read_xmp(tmp_path / "01.jpg")
+    assert data.rating == 4  # the third-party property survived
+    assert data.description == body["results"][0]["final_caption"]
+    assert data.keywords == ["old"]  # the stub emits no tags, so lens leaves keywords alone
+
+
+def test_caption_folder_xmp_overwrite_replaces_existing_sidecar(tmp_path: Path) -> None:
+    """xmp_overwrite=true discards a pre-existing .xmp, matching the .txt sidecar overwrite semantics."""
     _png(tmp_path / "01.jpg")
     stale_xmp = tmp_path / "01.jpg.xmp"
     stale_xmp.write_text("<stale/>", encoding="utf-8")
@@ -175,7 +201,7 @@ def test_caption_folder_write_xmp_overwrites_existing_sidecar(tmp_path: Path) ->
     stale_txt.write_text("stale caption", encoding="utf-8")
 
     client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
-    resp = client.post("/caption/folder", json={"folder": str(tmp_path), "write_xmp": True})
+    resp = client.post("/caption/folder", json={"folder": str(tmp_path), "write_xmp": True, "xmp_overwrite": True})
     assert resp.status_code == 200
     body = resp.json()
     assert body["captioned"] == 1
@@ -187,24 +213,24 @@ def test_caption_folder_write_xmp_overwrites_existing_sidecar(tmp_path: Path) ->
     assert stale_txt.read_text(encoding="utf-8") == body["results"][0]["final_caption"]
 
 
-def test_caption_folder_xmp_overwrite_false_protects_existing_sidecar(tmp_path: Path) -> None:
-    """xmp_overwrite=false reports a pre-existing .xmp as a per-image error instead of replacing it."""
+def test_caption_folder_unreadable_xmp_is_an_error_not_clobbered(tmp_path: Path) -> None:
+    """A pre-existing .xmp that isn't valid XMP is a per-image error and is left untouched."""
     _png(tmp_path / "01.jpg")
     existing = tmp_path / "01.jpg.xmp"
-    existing.write_text("<precious digikam metadata/>", encoding="utf-8")
+    existing.write_text("<precious digikam metadata", encoding="utf-8")
 
     client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
     resp = client.post(
         "/caption/folder",
-        json={"folder": str(tmp_path), "write_sidecar": False, "write_xmp": True, "xmp_overwrite": False},
+        json={"folder": str(tmp_path), "write_sidecar": False, "write_xmp": True},
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["failed"] == 1
     assert body["xmp_written"] == 0
-    assert "already exists" in body["errors"][0]["error"]
+    assert "unreadable" in body["errors"][0]["error"]
     # the third-party sidecar is untouched
-    assert existing.read_text(encoding="utf-8") == "<precious digikam metadata/>"
+    assert existing.read_text(encoding="utf-8") == "<precious digikam metadata"
 
 
 def test_folders_browse(tmp_path: Path) -> None:

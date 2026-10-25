@@ -32,6 +32,10 @@ class Tag:
     source: str = ""
     region: Region | None = None
 
+    def passes(self, min_score: float | None) -> bool:
+        """Return True if this tag clears *min_score* (unscored tags always pass; ``None`` passes all)."""
+        return min_score is None or self.score is None or self.score >= min_score
+
 
 @dataclass
 class BackendOutput:
@@ -53,9 +57,9 @@ class BackendOutput:
             min_score: If set, drop tags whose ``score`` is below this threshold.
                 Tags without a score are always kept.
         """
-        labels = [tag.label for tag in self.tags if min_score is None or tag.score is None or tag.score >= min_score]
-        return ", ".join(labels)
+        labels = [tag.label.strip() for tag in self.tags if tag.passes(min_score)]
+        return ", ".join(label for label in labels if label)
 
     def to_caption_string(self, *, min_score: float | None = None) -> str:
         """Best-effort single string: prose if present, else flattened tags."""
-        return self.prose or self.tag_string(min_score=min_score)
+        return self.prose if self.prose.strip() else self.tag_string(min_score=min_score)

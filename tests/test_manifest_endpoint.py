@@ -322,23 +322,23 @@ def test_manifest_write_xmp_collision_detected_across_path_spellings(client: Tes
     assert "collision" in body["errors"][0]["error"]
 
 
-def test_manifest_write_xmp_overwrite_false_protects_existing_sidecar(client: TestClient, tmp_path: Path) -> None:
-    """xmp_overwrite=false turns a pre-existing .xmp into a per-image error instead of replacing it."""
+def test_manifest_write_xmp_unreadable_sidecar_is_an_error(client: TestClient, tmp_path: Path) -> None:
+    """A pre-existing .xmp that isn't valid XMP is a per-image error and is left untouched (never clobbered)."""
     img = tmp_path / "01.jpg"
     _png(img)
     existing = tmp_path / "01.jpg.xmp"
-    existing.write_text("<precious/>", encoding="utf-8")
+    existing.write_text("<precious", encoding="utf-8")
     rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
     resp = client.post(
         "/caption/manifest",
         files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
-        data={"write_sidecar": "false", "write_xmp": "true", "xmp_overwrite": "false"},
+        data={"write_sidecar": "false", "write_xmp": "true"},
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["failed"] == 1
-    assert "already exists" in body["errors"][0]["error"]
-    assert existing.read_text(encoding="utf-8") == "<precious/>"
+    assert "unreadable" in body["errors"][0]["error"]
+    assert existing.read_text(encoding="utf-8") == "<precious"
 
 
 def test_manifest_stream_write_xmp(client: TestClient, tmp_path: Path) -> None:

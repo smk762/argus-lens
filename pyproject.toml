@@ -34,6 +34,8 @@ dependencies = [
     "Pillow>=10.0",
     "structlog>=24.0",
     "httpx>=0.27",
+    # XMP sidecar read/merge/write (argus_cortex.xmp), shared with argus-curator.
+    "argus-cortex>=0.3.0",
 ]
 
 [project.optional-dependencies]
