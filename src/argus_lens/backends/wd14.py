@@ -6,13 +6,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-import structlog
 from PIL import Image
 
 from argus_lens.backends.base import LocalBackend
 from argus_lens.registry import ModelRegistry, get_default_registry
-
-logger = structlog.get_logger()
 
 _HF_REPO = "SmilingWolf/wd-vit-tagger-v3"
 _MODEL_FILENAME = "wd-vit-tagger-v3.onnx"
@@ -43,7 +40,7 @@ def _model_filename(repo: str) -> str:
 
 def _download_model(dest_dir: Path, repo: str = _HF_REPO) -> None:
     """Download WD14 model files for *repo* from HuggingFace if not present."""
-    import httpx
+    from argus_lens.backends._download import stream_download
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     base_url = f"https://huggingface.co/{repo}/resolve/main"
@@ -54,24 +51,8 @@ def _download_model(dest_dir: Path, repo: str = _HF_REPO) -> None:
 
     for filename, url in remote_files.items():
         dest = dest_dir / filename
-        if dest.exists():
-            continue
-
-        logger.info("wd14.download", file=filename, dest=str(dest))
-        tmp = dest.with_suffix(".part")
-        with httpx.stream("GET", url, follow_redirects=True, timeout=300.0) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            downloaded = 0
-            with tmp.open("wb") as fh:
-                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                    fh.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded * 100 // total
-                        logger.debug("wd14.download.progress", file=filename, pct=pct)
-        tmp.rename(dest)
-        logger.info("wd14.download.done", file=filename, size_mb=round(dest.stat().st_size / 1024 / 1024, 1))
+        if not dest.exists():
+            stream_download(url, dest, event="wd14.download")
 
 
 class WD14Backend(LocalBackend):

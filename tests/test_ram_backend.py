@@ -28,6 +28,7 @@ from argus_lens.backends.output import BackendOutput
 from argus_lens.backends.ram import CHECKPOINT_FILENAME, DEFAULT_MODEL_ID, RamBackend
 from argus_lens.engine import ArgusLens, _resolve_backend
 from argus_lens.gpu import resolve_min_vram_mb
+from argus_lens.registry import ModelRegistry
 
 # -- contract & configuration (no optional deps) ------------------------------
 
@@ -45,11 +46,11 @@ def test_ram_backend_metadata():
 def test_constructor_defaults_and_overrides(tmp_path):
     """Defaults to RAM++'s calibrated per-tag thresholds; a uniform threshold and model dir can be set."""
     default = RamBackend()
-    assert default._model_id == DEFAULT_MODEL_ID
+    assert default._repo_id == DEFAULT_MODEL_ID
     assert default._threshold is None
 
-    custom = RamBackend(model_id="org/custom-ram", threshold=0.6, model_dir=tmp_path)
-    assert custom._model_id == "org/custom-ram"
+    custom = RamBackend(repo_id="org/custom-ram", threshold=0.6, model_dir=tmp_path)
+    assert custom._repo_id == "org/custom-ram"
     assert custom._threshold == 0.6
     assert custom._model_dir == tmp_path
 
@@ -147,8 +148,25 @@ def test_missing_checkpoint_downloads_to_first_search_dir(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(ram_module, "_download_checkpoint", lambda dest, repo: calls.append((dest, repo)))
     target = tmp_path / "models"
-    assert RamBackend(model_dir=target, model_id="org/ram")._ensure_checkpoint() == target / CHECKPOINT_FILENAME
+    assert RamBackend(model_dir=target, repo_id="org/ram")._ensure_checkpoint() == target / CHECKPOINT_FILENAME
     assert calls == [(target / CHECKPOINT_FILENAME, "org/ram")]
+
+
+def test_custom_repo_gets_its_own_cache_dir(tmp_path, monkeypatch):
+    """A non-default repo never picks up the default repo's cached checkpoint; it downloads beside it."""
+    monkeypatch.delenv("RAM_MODEL_DIR", raising=False)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / CHECKPOINT_FILENAME).write_bytes(b"default")
+    monkeypatch.setattr(ram_module, "_DEFAULT_CACHE_DIR", cache)
+    calls = []
+    monkeypatch.setattr(ram_module, "_download_checkpoint", lambda dest, repo: calls.append((dest, repo)))
+
+    assert RamBackend()._ensure_checkpoint() == cache / CHECKPOINT_FILENAME
+    assert calls == []
+    expected = cache / "org--custom-ram" / CHECKPOINT_FILENAME
+    assert RamBackend(repo_id="org/custom-ram")._ensure_checkpoint() == expected
+    assert calls == [(expected, "org/custom-ram")]
 
 
 def test_download_checkpoint_is_atomic(tmp_path, monkeypatch):
@@ -176,7 +194,30 @@ def test_download_checkpoint_is_atomic(tmp_path, monkeypatch):
     ram_module._download_checkpoint(dest, "org/ram")
     assert dest.read_bytes() == b"abcdef"
     assert seen["url"] == f"https://huggingface.co/org/ram/resolve/main/{CHECKPOINT_FILENAME}"
-    assert not dest.with_suffix(".part").exists()
+    assert [p.name for p in tmp_path.iterdir()] == [CHECKPOINT_FILENAME]  # no temp file left behind
+
+
+def test_failed_download_leaves_nothing_behind(tmp_path, monkeypatch):
+    """An interrupted download removes its temp file and never creates the checkpoint."""
+
+    class _Resp:
+        headers = {}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, chunk_size):
+            yield b"abc"
+            raise ConnectionError("connection dropped")
+
+    @contextlib.contextmanager
+    def _stream(method, url, **kwargs):
+        yield _Resp()
+
+    monkeypatch.setattr("httpx.stream", _stream)
+    with pytest.raises(ConnectionError):
+        ram_module._download_checkpoint(tmp_path / CHECKPOINT_FILENAME, "org/ram")
+    assert list(tmp_path.iterdir()) == []
 
 
 # -- engine integration ------------------------------------------------------------
@@ -188,10 +229,14 @@ def test_engine_registers_ram_standalone_and_in_hybrids():
     assert isinstance(backend, RamBackend) and backend._threshold == 0.5
 
     for prose in ("florence2", "openai-compat"):
-        hybrid = _resolve_backend(f"hybrid:ram+{prose}", base_url="http://localhost:11434/v1")
+        hybrid = _resolve_backend(
+            f"hybrid:ram+{prose}", base_url="http://localhost:11434/v1", model_id="qwen3-vl:8b-instruct"
+        )
         assert isinstance(hybrid, HybridPipeline)
         assert isinstance(hybrid._tag, RamBackend)
         assert hybrid._prose.name == prose
+        # --model-id names the prose model; it must not become RAM++'s checkpoint repo.
+        assert hybrid._tag._repo_id == DEFAULT_MODEL_ID
 
 
 class _Tagger(CaptionBackend):
@@ -275,12 +320,14 @@ def test_annotate_image_thresholds_and_sorts(monkeypatch):
 
     monkeypatch.setattr(RamBackend, "_loader", _fake_loader)
     image = Image.new("RGB", (64, 64))
-    backend = RamBackend()
+    # A private registry, so the fake model is never cached where a real-weights test would get it.
+    registry = ModelRegistry()
+    backend = RamBackend(registry=registry)
     backend.load("cpu")
     out = backend.annotate_image(image)
     assert [(t.label, t.score) for t in out.tags] == [("sunset", 0.95), ("beach", 0.9)]
     assert backend.caption_image(image) == "sunset, beach"
-    lenient = RamBackend(threshold=0.4)
+    lenient = RamBackend(threshold=0.4, registry=registry)
     lenient.load("cpu")
     assert lenient.caption_image(image) == "sunset, beach, dog"
 
