@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises `argus_cortex.xmp.XmpError` (a per-image error on the endpoints) and
   is left untouched.
 
+### Fixed
+- `BackendOutput.tag_string` drops empty / whitespace-only tag labels instead
+  of emitting stray `", ,"` entries into the caption.
+- `BackendOutput.to_caption_string` falls back to the tags when `prose` is
+  whitespace-only, rather than returning a blank caption.
+- The tag score threshold is now one rule (`Tag.passes`) shared by the
+  flattened caption and the provenance `included` flag, so they can't disagree.
+
 ## [0.6.0] - 2026-10-24
 
 ### Added
