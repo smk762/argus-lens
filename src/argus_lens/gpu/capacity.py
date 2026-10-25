@@ -21,7 +21,7 @@ _FOOTPRINT_MB: dict[str, int] = {
     "wd14": 1500,
     "florence2": 2500,
     "blip2": 8000,
-    "ram": 2000,
+    "ram": 1000,  # RAM++ Swin-L fp16: ~740 MB peak measured on an RTX 3090
 }
 # Backends that hold no VRAM *in the argus process*. Note: openai-compat may
 # point at a local model server (Ollama) that does use the shared GPU — argus's
