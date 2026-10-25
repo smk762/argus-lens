@@ -43,12 +43,14 @@ def _register_backends() -> None:
     from argus_lens.backends.nvidia_nim import NVIDIANIMBackend
     from argus_lens.backends.openai import OpenAIBackend
     from argus_lens.backends.openai_compat import OpenAICompatBackend
+    from argus_lens.backends.ram import RamBackend
     from argus_lens.backends.replicate import ReplicateBackend
     from argus_lens.backends.wd14 import WD14Backend
 
     _BACKEND_REGISTRY.update(
         {
             "wd14": WD14Backend,
+            "ram": RamBackend,
             "blip2": BLIP2Backend,
             "florence2": Florence2Backend,
             "openai": OpenAIBackend,
@@ -414,7 +416,8 @@ class ArgusLens:
             if isinstance(self._backend, HybridPipeline):
                 return self._backend.caption_image_split(pil)
             raw = self._backend.caption_image(pil)
-            if self._backend.style == "anime" or self._backend.name == "wd14":
+            # Taggers feed the tag side; anime-style custom backends are treated as taggers too.
+            if getattr(self._backend, "emits_tags", False) or self._backend.style == "anime":
                 return raw, ""
             return "", raw
 

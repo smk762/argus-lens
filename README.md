@@ -57,7 +57,7 @@ The model is just an input source. The real value is what happens after inferenc
 
 ## Features
 
-- **Multi-model backends**: WD14, Florence-2, BLIP-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM, and any OpenAI-compatible server — Ollama, vLLM, LM Studio (cloud or self-hosted API)
+- **Multi-model backends**: WD14, RAM++, Florence-2, BLIP-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM, and any OpenAI-compatible server — Ollama, vLLM, LM Studio (cloud or self-hosted API)
 - **Structured captions**: Category-bucketed variants (identity, wardrobe, pose, setting, lighting, action)
 - **Training-optimised**: Tiered tag protection, omission cycles, CLIP/T5 token budgets, identity suppression
 - **Zero-shot variant**: Identity-first, prose-preferred captions for generation without LoRA
@@ -76,10 +76,10 @@ pip handles all Python dependencies through extras. Pick the extras that match y
 pip install argus-lens
 
 # Local backends (GPU inference)
-pip install argus-lens[local]      # WD14 + Florence-2 + BLIP-2
+pip install argus-lens[local]      # WD14 + RAM++ + Florence-2 + BLIP-2
 pip install argus-lens[wd14]       # WD14 only (CPU, no torch)
 pip install argus-lens[wd14-gpu]   # WD14 only, CUDA onnxruntime (no torch)
-pip install argus-lens[torch]      # Florence-2 / BLIP-2 only
+pip install argus-lens[torch]      # RAM++ / Florence-2 / BLIP-2 only
 
 # Cloud backends (no GPU needed)
 pip install argus-lens[openai]     # GPT-4o vision
@@ -245,6 +245,8 @@ argus-lens caption ./images/ --recursive --refine-model qwen3:8b
 - `metadata["subjects"]`: a headcount estimate (`count`, `multiple`, `agree`, `evidence`)
 - `caption_variants["training_prose"]`: sentence-form training captions for T5 models (Flux, SD3), next to the tag-form `training` caption for CLIP models (SDXL)
 
+**Photo libraries: use RAM++ for tags.** WD14 is a Danbooru tagger, right for booru/anime checkpoints but a poor index for everyday photos. `ram` is [RAM++](https://github.com/xinyu1205/recognize-anything) (Recognize Anything Plus): 4585 photo-domain tags ("beach", "christmas market", "wedding dress") with calibrated per-tag thresholds, emitted with scores. Run it alone (`ARGUS_BACKEND=ram`) or as the tag stage of a hybrid (`hybrid:ram+florence2`, `hybrid:ram+openai-compat`). It needs only `[torch]` (~1 GB VRAM in fp16, ~50 ms/image on an RTX 3090). The ~3 GB checkpoint downloads to `~/.cache/ram_plus/` on first use (override with `RAM_MODEL_DIR`), and `threshold=` swaps the calibrated cut-offs for one uniform value.
+
 Newer models plug in directly: `--wd14-repo SmilingWolf/wd-eva02-large-tagger-v3` for tags, and `hybrid:wd14+openai-compat --model-id qwen3-vl:8b-instruct --prompt straightforward` for prose from Qwen3-VL, JoyCaption or any served VLM.
 
 ### GPU sharing (lifecycle + coordinator)
@@ -376,7 +378,7 @@ Copy or create a `.env` file for the Docker deployment:
 
 | Variable | Default | Description |
 |---|---|---|
-| `ARGUS_BACKEND` | `hybrid` | Captioning backend (`hybrid`, `wd14`, `florence2`, `openai`, etc.) |
+| `ARGUS_BACKEND` | `hybrid` | Captioning backend (`hybrid`, `wd14`, `ram`, `florence2`, `openai`, `hybrid:ram+florence2`, etc.) |
 | `OPENAI_API_KEY` / `REPLICATE_API_TOKEN` / `HF_TOKEN` / `NVIDIA_API_KEY` | -- | API key for the matching cloud backend (each backend reads its own variable) |
 | `IMMICH_URL` / `IMMICH_API_KEY` | -- | Immich server URL + API key for the `/immich/*` endpoints (unset: those endpoints return 503) |
 | `ARGUS_PORT` | `8080` | Host port for the server |

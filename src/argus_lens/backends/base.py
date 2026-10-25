@@ -29,6 +29,9 @@ class CaptionBackend(ABC):
     name: str = "base"
     kind: BackendKind = BackendKind.LOCAL
     style: str = "photo"
+    # True for taggers (WD14, RAM++): their output feeds the assembly pipeline's
+    # tag side rather than its prose side when run standalone.
+    emits_tags: bool = False
     requires_gpu: bool = False
 
     @abstractmethod

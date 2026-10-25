@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **RAM++ photo tagger** (`ram`, #60). The RAM++ scaffold is now a working backend: an
+  inference-only, torch-only port of recognize-anything's Swin-L RAM++ (vendored under
+  `backends/_ram/` with its Apache-2.0 licence; no timm/transformers/torchvision/fairscale),
+  loading `xinyu1205/recognize-anything-plus-model` unchanged (`weights_only=True`, auto-downloaded
+  to `~/.cache/ram_plus/`, or `RAM_MODEL_DIR`). `annotate_image()` returns scored tags that clear
+  RAM++'s calibrated per-tag thresholds (or a uniform `threshold=`), highest first. Selectable as
+  `ram`, `hybrid:ram+florence2` and `hybrid:ram+openai-compat`. Reproduces upstream's published
+  demo output exactly in fp32 and fp16; ~740 MB peak VRAM, ~50 ms/image on an RTX 3090.
+- `CaptionBackend.emits_tags`: taggers set it so a standalone run feeds the assembly pipeline's
+  tag side. Previously only `style == "anime"` or the name `wd14` did, so a photo-style tagger's
+  output was treated as prose.
+
+### Changed
+- `RamBackend(threshold=)` now defaults to `None` (RAM++'s per-tag thresholds) instead of `0.35`.
+- The GPU lease estimate for `ram` is 1000 MB (measured), down from a 2000 MB guess.
+
 ## [0.7.0] - 2026-10-25
 
 ### Changed

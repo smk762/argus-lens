@@ -92,6 +92,7 @@ class WD14Backend(LocalBackend):
 
     name = "wd14"
     style = "anime"
+    emits_tags = True
     requires_gpu = False
 
     def __init__(
