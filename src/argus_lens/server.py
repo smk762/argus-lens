@@ -19,6 +19,7 @@ except ImportError as exc:
 
 import httpx
 import structlog
+from argus_cortex.xmp import XmpError
 from PIL import Image
 
 from argus_lens._version import __version__
@@ -68,7 +69,7 @@ class CaptionFolderRequest(BaseModel):
     recursive: bool = False
     write_sidecar: bool = True
     write_xmp: bool = False
-    xmp_overwrite: bool = True
+    xmp_overwrite: bool = False
     trigger_word: str = ""
     target_style: str = "photo"
     target_category: str = "identity"
@@ -283,10 +284,10 @@ def _caption_and_write(
     batch, resolved so two spellings of one target still collide: same-stem
     images (``cat.jpg`` + ``cat.png``) map to the same ``cat.txt``, and the
     collision is reported as an error instead of silently overwriting the
-    first caption. With ``xmp_overwrite`` (the default) an existing ``.xmp``
-    on disk is replaced like the ``.txt`` sidecars; without it a pre-existing
-    sidecar (e.g. written by Lightroom/digiKam, whose metadata is not merged)
-    is a per-image error instead.
+    first caption. An existing ``.xmp`` on disk is merged by default (lens's
+    keywords/description replace those properties; Lightroom/digiKam/curator
+    metadata is kept); ``xmp_overwrite`` discards it and writes a fresh one. An
+    unparseable existing ``.xmp`` is a per-image error, never clobbered.
     """
     try:
         result = engine.caption(
@@ -335,14 +336,13 @@ def _caption_and_write(
             }
         keywords = _parse_keywords(result.raw_tags)
         try:
-            # xmp_overwrite=True mirrors the .txt sidecar semantics above (a
-            # pre-existing file on disk is replaced); False protects sidecars
-            # other tools already populated, since XmpSink never merges.
+            # Merge by default so metadata other tools stored survives;
+            # xmp_overwrite=True discards the existing sidecar instead.
             _XMP_SINK.write(ref, keywords=keywords, description=result.final_caption, overwrite=xmp_overwrite)
-        except FileExistsError:
+        except XmpError as exc:
             return {
                 "rel_path": rel_path,
-                "error": f"xmp sidecar already exists: {xmp_path.name} (xmp_overwrite is false){txt_note}",
+                "error": f"xmp sidecar unreadable, left untouched: {xmp_path.name} ({exc}){txt_note}",
             }
         except OSError as exc:
             return {"rel_path": rel_path, "error": f"xmp write failed: {exc}{txt_note}"}
@@ -749,7 +749,7 @@ def create_app(
         trigger_word: str = Form(""),
         write_sidecar: bool = Form(True),
         write_xmp: bool = Form(False),
-        xmp_overwrite: bool = Form(True),
+        xmp_overwrite: bool = Form(False),
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
     ) -> dict[str, Any]:
@@ -760,9 +760,9 @@ def create_app(
         sidecar is written next to each image. ``write_xmp`` also writes an
         ``<image>.xmp`` sidecar (dc:subject keywords + dc:description caption)
         that Lightroom/digiKam/Immich ingest natively; it is independent of
-        ``write_sidecar``, and ``xmp_overwrite: false`` turns a pre-existing
-        ``.xmp`` (e.g. one another tool populated) into a per-image error
-        instead of replacing it.
+        ``write_sidecar``. A pre-existing ``.xmp`` (e.g. one Lightroom or
+        curator populated) is merged — only those two properties are replaced —
+        unless ``xmp_overwrite: true``, which discards it.
 
         Image locations: manifest 2.0 rows carry ``exported_path`` (relative
         to the curator's export root — the manifest itself sits at
@@ -811,7 +811,7 @@ def create_app(
         trigger_word: str = Form(""),
         write_sidecar: bool = Form(True),
         write_xmp: bool = Form(False),
-        xmp_overwrite: bool = Form(True),
+        xmp_overwrite: bool = Form(False),
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
     ) -> StreamingResponse:
@@ -898,8 +898,8 @@ def create_app(
         profile, and — by default — writes a ``.txt`` sidecar next to each
         image. ``write_xmp`` additionally (and independently) writes an
         ``<image>.xmp`` sidecar for Lightroom/digiKam/Immich ingestion;
-        ``xmp_overwrite: false`` makes a pre-existing ``.xmp`` a per-image
-        error instead of replacing it. Returns the same shape as
+        a pre-existing ``.xmp`` is merged unless ``xmp_overwrite: true``,
+        which discards it. Returns the same shape as
         ``/caption/manifest``.
         """
         root = _confine_folder(default_source, req.folder)

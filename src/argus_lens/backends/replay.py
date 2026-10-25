@@ -16,9 +16,9 @@ are gone) falls back to the asset ``uri``; if neither resolves, the lookup is a
 real error rather than something to paper over with a live model.
 
 Reads are direct: this backend runs one small ``SELECT`` joining ``source_asset``
-and ``caption`` against ``CORTEX_PG_URL``. It does **not** depend on the
-``argus-cortex`` package (the suite's dependency direction is cortex → lens,
-never the reverse); it only relies on the documented, stable lineage schema.
+and ``caption`` against ``CORTEX_PG_URL``. It does **not** use the
+``argus-cortex`` package's store layer; it only relies on the documented,
+stable lineage schema.
 ``psycopg`` lives behind the ``argus-lens[replay]`` extra and is imported lazily.
 
 The caption text lives in Postgres, so ``CORTEX_S3_*`` (the blob store) is not

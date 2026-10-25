@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **XMP sidecars now merge instead of replace.** The XMP writer moved to
+  `argus_cortex.xmp` (the suite's one implementation, shared with
+  argus-curator), and `argus-cortex>=0.3.0` is now a dependency. `XmpSink` and
+  the `write_xmp` endpoints replace only `dc:subject` / `dc:description` (latest
+  write wins) and preserve everything else in an existing sidecar — Lightroom
+  ratings, GPS, develop settings, curator face regions. Empty keywords / caption
+  leave the existing value alone.
+- **`xmp_overwrite` now defaults to `false` and means "discard and rewrite".**
+  `false` merges (previously: per-image error on an existing sidecar); `true`
+  discards the existing sidecar (previously the default). `XmpSink.write`
+  no longer raises `FileExistsError`; an existing sidecar that isn't valid XMP
+  raises `argus_cortex.xmp.XmpError` (a per-image error on the endpoints) and
+  is left untouched.
+
 ## [0.6.0] - 2026-10-24
 
 ### Added
