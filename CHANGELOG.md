@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   becomes RAM++'s checkpoint repo. A non-default repo caches under `~/.cache/ram_plus/<org>--<name>/`.
 - Model downloads (WD14, RAM++) go to a unique temp file that is removed on failure.
 - The GPU lease estimate for `ram` is 1000 MB (measured), down from a 2000 MB guess.
+- `docker-compose.yaml` persists `~/.cache/ram_plus`, so containers don't re-download the 3 GB
+  RAM++ checkpoint.
 
 ## [0.7.0] - 2026-10-25
 

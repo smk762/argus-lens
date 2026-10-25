@@ -36,6 +36,9 @@ services:
       # Writable so a new WD14_MODEL_REPO can download into its own subdir.
       - ~/.cache/wd14_tagger:/root/.cache/wd14_tagger
       - ~/.cache/huggingface:/root/.cache/huggingface
+      # RAM++ checkpoint (~3 GB) for ARGUS_BACKEND=ram / hybrid:ram+*; persisted so a
+      # fresh container doesn't re-download it.
+      - ~/.cache/ram_plus:/root/.cache/ram_plus
     deploy:
       resources:
         reservations:

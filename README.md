@@ -401,7 +401,7 @@ sudo systemctl restart docker
 
 #### Model caching
 
-The `docker-compose.yaml` bind-mounts `~/.cache/wd14_tagger` and `~/.cache/huggingface` from the host so models persist across container rebuilds. Models auto-download on first use if not already cached.
+The `docker-compose.yaml` bind-mounts `~/.cache/wd14_tagger`, `~/.cache/ram_plus` and `~/.cache/huggingface` from the host so models persist across container rebuilds. Models auto-download on first use if not already cached.
 
 ## Security
 
