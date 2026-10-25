@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-25
+
 ### Changed
 - **XMP sidecars now merge instead of replace.** The XMP writer moved to
   `argus_cortex.xmp` (the suite's one implementation, shared with
@@ -385,7 +387,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/smk762/argus-lens/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/smk762/argus-lens/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/smk762/argus-lens/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/smk762/argus-lens/compare/v0.3.0...v0.4.0
