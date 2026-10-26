@@ -6,6 +6,7 @@ from PIL import Image
 
 from argus_lens.assembly.filtering import filter_redundant_clauses
 from argus_lens.backends.base import CaptionBackend
+from argus_lens.backends.output import BackendOutput
 
 
 class HybridPipeline(CaptionBackend):
@@ -45,6 +46,16 @@ class HybridPipeline(CaptionBackend):
         filtered = filter_redundant_clauses(prose, tags) if prose and tags else prose
         parts = [p for p in [tags, filtered] if p]
         return ", ".join(parts)
+
+    def annotate_image(self, image: Image.Image) -> BackendOutput:
+        """Tags from the tag stage (scores kept, e.g. RAM++/WD14) plus the prose stage's prose (#57)."""
+        tagged = self._tag.annotate_image(image)
+        described = self._prose.annotate_image(image)
+        return BackendOutput(
+            tags=tagged.tags,
+            prose=described.prose or described.to_caption_string(),
+            raw={"tag_backend": self._tag.name, "prose_backend": self._prose.name},
+        )
 
     def caption_image_split(self, image: Image.Image) -> tuple[str, str]:
         """Return ``(tags, prose)`` separately for structured assembly.

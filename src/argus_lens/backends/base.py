@@ -10,6 +10,7 @@ from typing import Any
 
 from PIL import Image
 
+from argus_lens.backends.output import BackendOutput, Tag
 from argus_lens.types import BackendKind
 
 
@@ -52,6 +53,21 @@ class CaptionBackend(ABC):
         Returns unstructured text (tags or prose) that will be fed into
         the assembly pipeline.
         """
+
+    def annotate_image(self, image: Image.Image) -> BackendOutput:
+        """Structured output: tags (with confidence/region/source when known) and/or prose (#57).
+
+        Every backend has this. The default wraps :meth:`caption_image` according to the
+        backend's output kind: a tagger (``emits_tags``) has its comma-separated string split
+        into unscored :class:`Tag` objects; anything else (Florence-2, BLIP-2, cloud VLMs) is
+        returned as prose. Backends that know per-tag scores (WD14, RAM++) override this so the
+        scores survive into provenance.
+        """
+        raw = self.caption_image(image)
+        if self.emits_tags:
+            labels = (t.strip() for t in raw.split(","))
+            return BackendOutput(tags=[Tag(label=label, source=self.name) for label in labels if label])
+        return BackendOutput(prose=raw.strip())
 
     @abstractmethod
     def unload(self) -> None:
