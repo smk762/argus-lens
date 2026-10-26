@@ -12,8 +12,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# (x1, y1, x2, y2) in pixel coordinates.
-Region = tuple[int, int, int, int]
+# A bounding box as (x1, y1, x2, y2): top-left and bottom-right corners, in absolute pixels of
+# the *source* image (origin top-left), as floats (#58). This is what Florence-2 ``<OD>`` and most
+# detectors emit, so a backend stores it unrounded. Normalised coordinates are derived at the
+# boundary that needs them, where the image size is known: see :func:`region_to_normalized` and
+# :func:`region_to_mwg_area` (the centre-based form XMP ``mwg-rs`` face regions use).
+Region = tuple[float, float, float, float]
+
+
+def region_to_normalized(region: Region, width: float, height: float) -> Region:
+    """Scale a pixel ``(x1, y1, x2, y2)`` box to 0–1 by the image size, clamped to the frame."""
+    if width <= 0 or height <= 0:
+        raise ValueError(f"image size must be positive, got {width}x{height}")
+    x1, y1, x2, y2 = region
+    clamp = lambda v: min(max(v, 0.0), 1.0)  # noqa: E731
+    return (clamp(x1 / width), clamp(y1 / height), clamp(x2 / width), clamp(y2 / height))
+
+
+def region_to_mwg_area(region: Region, width: float, height: float) -> tuple[float, float, float, float]:
+    """Return ``(cx, cy, w, h)`` normalised to 0–1: the MWG region area XMP sidecars store.
+
+    ``cx``/``cy`` are the box *centre* (MWG's convention, used by ``argus_cortex.xmp.XmpRegion``).
+    """
+    x1, y1, x2, y2 = region_to_normalized(region, width, height)
+    return ((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1)
 
 
 @dataclass(frozen=True)

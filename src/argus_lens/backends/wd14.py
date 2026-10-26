@@ -9,6 +9,7 @@ from typing import Any
 from PIL import Image
 
 from argus_lens.backends.base import LocalBackend
+from argus_lens.backends.output import BackendOutput, Tag
 from argus_lens.registry import ModelRegistry, get_default_registry
 
 _HF_REPO = "SmilingWolf/wd-vit-tagger-v3"
@@ -239,8 +240,17 @@ class WD14Backend(LocalBackend):
         arr = np.asarray(canvas, dtype=np.float32)[:, :, ::-1]  # RGB -> BGR
         return np.ascontiguousarray(np.expand_dims(arr, 0))
 
+    def annotate_image(self, image: Image.Image) -> BackendOutput:
+        """Return the tags above the threshold with their scores, excluding rating tags (#57)."""
+        tags = [Tag(label=name, score=round(score, 4), source=self.name) for name, score in self._scored_tags(image)]
+        return BackendOutput(tags=tags)
+
     def caption_image(self, image: Image.Image) -> str:
         """Return comma-separated booru tags above the threshold, excluding rating tags."""
+        return ", ".join(name for name, _score in self._scored_tags(image))
+
+    def _scored_tags(self, image: Image.Image) -> list[tuple[str, float]]:
+        """Run the tagger: ``(tag, probability)`` above the threshold, rating tags excluded, in vocab order."""
         device = self._device
         cache_key = self._cache_key(device)
         with self._acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
@@ -251,11 +261,11 @@ class WD14Backend(LocalBackend):
                     f"WD14 model output ({len(probs)}) does not match tag count ({len(tags)}); "
                     "the model and selected_tags.csv are out of sync"
                 )
-            return ", ".join(
-                name
+            return [
+                (name, float(prob))
                 for (name, category), prob in zip(tags, probs, strict=True)
                 if prob > self.threshold and category != _RATING_CATEGORY
-            )
+            ]
 
     def prefetch(self) -> None:
         """Download the ONNX model + tag CSV if missing, outside the GPU lease (#64)."""

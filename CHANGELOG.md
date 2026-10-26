@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`annotate_image()` on every backend** (#57). `CaptionBackend` now provides a default that wraps
+  `caption_image()` by output kind: taggers (`emits_tags`) get their comma string split into
+  unscored `Tag`s, everything else is returned as `prose`. WD14 overrides it to keep its real
+  per-tag probabilities (as RAM++ already did), and `hybrid` returns the tag stage's scored tags
+  plus the prose stage's prose, so scores survive into provenance in every mode.
+- `region_to_normalized()` / `region_to_mwg_area()` helpers in `backends/output.py`: convert a
+  region to 0–1 coordinates, or to the centre-based MWG area `argus_cortex.xmp.XmpRegion` uses.
+
+### Changed
+- **`Region` is now `tuple[float, float, float, float]`** (#58): `(x1, y1, x2, y2)` in absolute
+  pixels of the source image (origin top-left), unrounded, which is what Florence-2 `<OD>` and most
+  detectors emit. Normalised coordinates are derived where the image size is known. No backend
+  emitted regions yet, so nothing changes on the wire.
+
 ### Fixed
 - **`unload()` now frees registry-cached models** (#63). `wd14`, `florence2`, `blip2` and `ram`
   implemented `unload()` as a no-op, so `engine.unload()`, the idle reaper and `/admin/unload`
