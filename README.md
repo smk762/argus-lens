@@ -224,6 +224,8 @@ argus-lens eval ./images/ --reconcile tag-prior --baseline before.json
 
 Deterministic assembly always runs first, and every variant passes a coherence post-check that repairs dangling words, orphan sentences, openers, hedging and duplicate tags. For more fluent captions, a `Refiner` can rewrite selected variants with any OpenAI-compatible chat model. A rewrite is **accepted only if it passes the same post-check** plus rules for identity suppression, token budget and grounding in the tagger/prose output. Otherwise the deterministic caption is kept.
 
+`argus-lens serve` and `argus-lens caption` refine **by default**: every variant is rewritten with `qwen3:8b` on local Ollama (`ARGUS_REFINE_MODEL`, `ARGUS_REFINE_BASE_URL`, `ARGUS_REFINE_API_KEY` to point elsewhere; `ARGUS_REFINE_VARIANTS` or `--refine-variants` to narrow it). Opt out with `ARGUS_REFINE=off` or `--no-refine`. If the endpoint is unreachable, captioning carries on deterministically and retries refinement after a 60 s cooldown. For CLIP targets (SDXL), `training_prose` rewrites are held to one or two short sentences.
+
 ```python
 from argus_lens.refine import OpenAICompatRewriter, Refiner
 
@@ -232,7 +234,7 @@ engine = ArgusLens(backend="hybrid", refiner=refiner)
 ```
 
 ```bash
-argus-lens caption ./images/ --recursive --refine-model qwen3:8b
+argus-lens caption ./images/ --recursive --refine-model qwen3:14b   # refine is on by default; --no-refine to skip
 ```
 
 `result.metadata["refine"]` records what was accepted or rejected, and why.

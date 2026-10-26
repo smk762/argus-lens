@@ -95,7 +95,7 @@ class OpenAICompatRewriter:
         *,
         temperature: float = 0.0,
         seed: int | None = 0,
-        max_tokens: int = 1200,
+        max_tokens: int = 2000,
         timeout: float = 120.0,
         reasoning_effort: str | None = None,
         client: httpx.Client | None = None,
@@ -117,7 +117,9 @@ class OpenAICompatRewriter:
         """Return (creating on first use) the HTTP client."""
         if self._client is None:
             headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-            self._client = httpx.Client(base_url=self.base_url, headers=headers, timeout=self.timeout)
+            # Short connect timeout: an absent endpoint should fail fast, not stall captioning.
+            timeout = httpx.Timeout(self.timeout, connect=min(self.timeout, 5.0))
+            self._client = httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout)
         return self._client
 
     def rewrite(self, request: RefineRequest, image: Image.Image | None = None) -> dict[str, str]:
