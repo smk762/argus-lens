@@ -102,6 +102,19 @@ _GLUE_WORDS: frozenset[str] = frozenset(
         "they",
         "them",
         "him",
+        # Placement verbs and light wording a rewrite needs to turn "day, sunlight" into fluent text.
+        "sits",
+        "rests",
+        "hangs",
+        "lies",
+        "above",
+        "below",
+        "under",
+        "daylight",
+        "natural",
+        "light",
+        "lighting",
+        "lit",
     }
 )
 
@@ -132,16 +145,20 @@ HEADCOUNT_FORBIDDEN: frozenset[str] = frozenset(
     {"1girl", "1boy", "1other", "solo", "2girls", "2boys", "3girls", "multiple girls", "multiple boys"}
 )
 
-_LIST_STYLE = (
+# "{list_style}" in the rules below is filled per target style by ``render_rules``.
+_LIST_STYLE_ANIME = (
     "Comma-separated booru-style tags and short noun phrases (underscores or spaces are both fine), "
     "most important first. No sentences, no pronouns, no dangling words."
+)
+_LIST_STYLE_PHOTO = (
+    "Comma-separated short noun phrases of one to three plain words, spaces not underscores "
+    '("red dress", not "red_dress"), most important first. No sentences, no pronouns, no dangling words.'
 )
 VARIANT_SPECS: dict[str, VariantSpec] = {
     "training": VariantSpec(
         "list",
-        "Tag caption for SDXL/CLIP LoRA training. "
-        + _LIST_STYLE
-        + " Cover framing, pose, clothing, action, setting, lighting and notable objects. "
+        "Tag caption for SDXL/CLIP LoRA training. {list_style}"
+        " Cover framing, pose, clothing, action, setting, lighting and notable objects. "
         "Never mention hair, eyes, face, skin, body type or age: the LoRA learns identity from the pixels. "
         "No headcount tags (1girl, solo). At most {budget} CLIP tokens.",
         suppress_identity=True,
@@ -158,20 +175,22 @@ VARIANT_SPECS: dict[str, VariantSpec] = {
     ),
     "zeroshot": VariantSpec(
         "list",
-        "Prompt for generating this image without a LoRA. " + _LIST_STYLE + " Identity first (hair, eyes, "
+        "Prompt for generating this image without a LoRA. {list_style} Identity first (hair, eyes, "
         "age, build), then action, pose, clothing, lighting, setting. At most {budget} CLIP tokens.",
     ),
 }
 _CATEGORY_RULES = (
     "Tags and short noun phrases describing ONLY the {category} of the image, for search and grouping. "
-    + _LIST_STYLE
-    + ' Use plain, reusable vocabulary ("red dress", "kitchen", "cooking") so images group well.'
+    "{list_style}"
+    ' Use plain, reusable vocabulary ("red dress", "kitchen", "cooking") so images group well.'
     "{identity_rule} If the image shows nothing of this category, return an empty string."
 )
 _NOT_IDENTITY = " Never include hair, eyes, face, skin, body or age: those belong to identity."
 # CLIP (SDXL, SD1.5) reads ~75 tokens, so prose for it stays short; T5 (Flux, SD3) takes more.
 _PROSE_LENGTH_CLIP = "one or two concise, complete, grammatical sentences, most important detail first"
 _PROSE_LENGTH_T5 = "one to four complete, grammatical sentences"
+_MAX_SENTENCES_CLIP = 2
+_SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
 
 
 def variant_spec(name: str) -> VariantSpec:
@@ -183,14 +202,18 @@ def variant_spec(name: str) -> VariantSpec:
     return VariantSpec("list", rules, suppress_identity=name != "identity", allow_empty=True)
 
 
-def render_rules(name: str, token_budget: int, target_backend: str | None) -> str:
-    """Return *name*'s rewrite rules with budget and encoder filled in for *target_backend*."""
+def render_rules(name: str, token_budget: int, target_backend: str | None, target_style: str = "photo") -> str:
+    """Return *name*'s rewrite rules filled in for the target encoder and style.
+
+    Photo targets get plain spaced phrases; anime targets keep booru-style tags.
+    """
     t5 = is_t5_backend(target_backend)
     return (
         variant_spec(name)
         .rules.replace("{budget}", str(token_budget))
         .replace("{encoder}", "T5" if t5 else "CLIP")
         .replace("{length}", _PROSE_LENGTH_T5 if t5 else _PROSE_LENGTH_CLIP)
+        .replace("{list_style}", _LIST_STYLE_ANIME if target_style == "anime" else _LIST_STYLE_PHOTO)
     )
 
 
@@ -271,7 +294,7 @@ class Refiner:
     def _problems(self, name: str, text: str, request: RefineRequest, vocab: frozenset[str]) -> list[str]:
         """Validate one rewrite against its spec."""
         spec = variant_spec(name)
-        return check_caption(
+        problems = check_caption(
             text,
             spec.kind,
             trigger_word=request.trigger_word,
@@ -281,6 +304,11 @@ class Refiner:
             allowed_vocabulary=vocab,
             max_novel_ratio=self.max_novel_ratio,
         )
+        if spec.kind == "prose" and not is_t5_backend(request.target_backend):
+            sentences = len(_SENTENCE_END.findall(text.strip()))
+            if sentences > _MAX_SENTENCES_CLIP:
+                problems.append(f"too many sentences for a CLIP target ({sentences} > {_MAX_SENTENCES_CLIP})")
+        return problems
 
     def refine(
         self,
@@ -310,7 +338,10 @@ class Refiner:
             buckets=result.metadata.get("buckets", {}),
             subjects=result.metadata.get("subjects", {}),
             drafts={n: result.caption_variants[n] for n in names},
-            rules={n: render_rules(n, profile.token_budget.budget, profile.target_backend) for n in names},
+            rules={
+                n: render_rules(n, profile.token_budget.budget, profile.target_backend, profile.target_style)
+                for n in names
+            },
             token_budget=profile.token_budget.budget,
             target_backend=profile.target_backend,
         )
@@ -336,6 +367,8 @@ class Refiner:
             for name in pending:
                 spec = variant_spec(name)
                 text = (out.get(name) or "").strip()
+                if text and spec.kind == "list" and profile.target_style != "anime":
+                    text = text.replace("_", " ")  # photo targets want plain phrases, not booru tags
                 if text:
                     text, _ = repair_caption(text, spec.kind, trigger_word=trigger_word)
                 if spec.allow_empty and name in out and text.strip() in ("", trigger_word.strip()):

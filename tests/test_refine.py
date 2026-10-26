@@ -16,7 +16,7 @@ from argus_lens.types import resolve_target_profile
 TAGS = "1girl, solo, brown_hair, red_dress, kitchen, standing, cup"
 PROSE = "A woman with brown hair stands in a kitchen wearing a red dress, holding a cup."
 GOOD = {
-    "training": "sks, standing, red_dress, kitchen, holding cup",
+    "training": "sks, standing, red dress, kitchen, holding cup",
     "training_prose": "sks, A woman stands in a kitchen, wearing a red dress and holding a cup.",
 }
 
@@ -251,6 +251,28 @@ def test_prose_rules_follow_the_text_encoder() -> None:
     assert "{" not in clip + t5
 
 
+def test_list_rules_follow_the_target_style() -> None:
+    """Photo targets ask for spaced phrases; anime targets keep booru underscores."""
+    from argus_lens.refine import render_rules
+
+    photo = render_rules("setting", 60, "sdxl", "photo")
+    anime = render_rules("setting", 60, "sdxl", "anime")
+    assert "spaces not underscores" in photo and "booru-style" not in photo
+    assert "booru-style" in anime
+    assert "{" not in photo + anime
+
+
+def test_clip_prose_over_two_sentences_is_retried() -> None:
+    """A three-sentence rewrite for SDXL is fed back and the shorter retry is kept."""
+    long = "sks, A woman stands in a kitchen. She wears a red dress. She is holding a cup."
+    short = "sks, A woman stands in a kitchen wearing a red dress. She is holding a cup."
+    rewriter = _ScriptedRewriter({"training_prose": long}, {"training_prose": short})
+    result, profile = _result("sdxl")
+    refined = Refiner(rewriter, variants=("training_prose",)).refine(result, profile, trigger_word="sks")
+    assert refined.caption_variants["training_prose"] == short
+    assert any("too many sentences" in p for p in rewriter.requests[1][0].feedback["training_prose"])
+
+
 def test_rewriter_disables_reasoning_and_falls_back_on_400() -> None:
     """``reasoning_effort: none`` is sent by default; a 400 drops it for good."""
     bodies = []
@@ -297,3 +319,11 @@ def test_training_rewrite_rejects_headcount_tags() -> None:
         result, profile, trigger_word="sks"
     )
     assert "1girl" in " ".join(refined.metadata["refine"]["rejected"]["training"])
+
+
+def test_photo_list_rewrites_drop_underscores() -> None:
+    """Booru underscores copied from the tagger become spaces for photo targets."""
+    result, profile = _result()
+    reply = {"training": "sks, standing, red_dress, kitchen, holding cup"}
+    refined = Refiner(_ScriptedRewriter(reply), variants=("training",)).refine(result, profile, trigger_word="sks")
+    assert refined.caption_variants["training"] == "sks, standing, red dress, kitchen, holding cup"
