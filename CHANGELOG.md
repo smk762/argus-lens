@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-26
+
 ### Added
 - **RAM++ vocabulary packs** (#62): custom tags without retraining. `argus-lens ram-vocab build`
   writes 51 descriptions per tag with any OpenAI-compatible LLM (upstream's prompts; defaults to the
