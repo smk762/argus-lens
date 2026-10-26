@@ -243,7 +243,7 @@ class WD14Backend(LocalBackend):
         """Return comma-separated booru tags above the threshold, excluding rating tags."""
         device = self._device
         cache_key = self._cache_key(device)
-        with self._registry.acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
+        with self._acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
             img_np = self._preprocess(image, self._input_size(session))
             probs = session.run(None, {input_name: img_np})[0][0]
             if len(probs) != len(tags):
@@ -257,6 +257,6 @@ class WD14Backend(LocalBackend):
                 if prob > self.threshold and category != _RATING_CATEGORY
             )
 
-    def unload(self) -> None:
-        """Do nothing; session lifetime is managed by the shared registry."""
-        pass
+    def prefetch(self) -> None:
+        """Download the ONNX model + tag CSV if missing, outside the GPU lease (#64)."""
+        self._ensure_model()

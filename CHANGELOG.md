@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`unload()` now frees registry-cached models** (#63). `wd14`, `florence2`, `blip2` and `ram`
+  implemented `unload()` as a no-op, so `engine.unload()`, the idle reaper and `/admin/unload`
+  reported success while the model stayed in VRAM until the registry's own idle sweep (up to
+  `ARGUS_MODEL_IDLE_SECONDS`, default 300 s). `ModelRegistry.evict(key)` frees an unreferenced
+  model immediately; `LocalBackend.unload()` evicts the keys that backend acquired, and leaves a
+  model another caption is still using in place for the next unload.
+- **First-use weight downloads no longer hold the GPU lease** (#64). A new `prefetch()` hook
+  (WD14 model, RAM++ checkpoint, Florence-2 / BLIP-2 HF snapshot) runs once per engine *before*
+  the coordinator lease, so a multi-GB download no longer blocks other GPU tenants.
+
 ## [0.8.0] - 2026-10-25
 
 ### Added
