@@ -56,6 +56,11 @@ class HybridPipeline(CaptionBackend):
         prose = self._prose.caption_image(image)
         return tags, prose
 
+    def prefetch(self) -> None:
+        """Fetch both sub-backends' weights, outside the GPU lease (#64)."""
+        self._tag.prefetch()
+        self._prose.prefetch()
+
     def unload(self) -> None:
         """Unload both sub-backends."""
         self._tag.unload()

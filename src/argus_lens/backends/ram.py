@@ -147,9 +147,9 @@ class RamBackend(LocalBackend):
         # Round thresholds through fp32 so the comparison matches upstream's tensor `>` exactly.
         return model, tags, torch.tensor(thresholds).tolist(), dtype
 
-    def unload(self) -> None:
-        """Do nothing; model lifetime is managed by the shared registry."""
-        pass
+    def prefetch(self) -> None:
+        """Download the RAM++ checkpoint if missing, outside the GPU lease (#64)."""
+        self._ensure_checkpoint()
 
     # -- inference --------------------------------------------------------
 
@@ -159,7 +159,7 @@ class RamBackend(LocalBackend):
         from argus_lens.backends._ram.vocab import select_tags
 
         device = self.resolve_device()
-        with self._registry.acquire(self._cache_key(device), lambda: self._loader(device)) as loaded:
+        with self._acquire(self._cache_key(device), lambda: self._loader(device)) as loaded:
             model, tags, thresholds, dtype = loaded
             probs = model(preprocess(image, device, dtype))[0].float().cpu().tolist()
         return self._build_output([(tags[i], p) for i, p in select_tags(probs, thresholds, self._threshold)])

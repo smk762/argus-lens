@@ -242,6 +242,10 @@ class ArgusLens:
         self._kwargs = kwargs
         self._last_used: float | None = None
         self._active = 0  # in-flight inferences; guarded by _load_lock
+        # Weights are fetched once, outside the GPU lease (#64). Separate lock: a
+        # multi-minute download must not block unload() or the busy counter.
+        self._prefetched = False
+        self._prefetch_lock = threading.Lock()
 
         self._reconciler = None
         if verifier is not None:
@@ -379,6 +383,19 @@ class ArgusLens:
                 self._backend.load(self._device)
                 self._loaded = True
 
+    def _ensure_prefetched(self) -> None:
+        """Download the backend's weights once, before any GPU lease is taken (#64).
+
+        Concurrent first callers wait for the one download rather than starting
+        their own. A failed download leaves the flag unset, so the next caption retries.
+        """
+        if self._prefetched:
+            return
+        with self._prefetch_lock:
+            if not self._prefetched:
+                self._backend.prefetch()
+                self._prefetched = True
+
     def _infer(self, pil: Image.Image) -> tuple[str, str]:
         """Run backend inference behind the GPU capacity lease (#38).
 
@@ -389,6 +406,7 @@ class ArgusLens:
         """
         from argus_lens.gpu import resolve_min_vram_mb  # noqa: PLC0415
 
+        self._ensure_prefetched()  # network-bound: never under the GPU lease
         footprint = resolve_min_vram_mb(self._backend.name)
         use_lease = getattr(self._backend, "requires_gpu", False) and footprint > 0
         lease = (

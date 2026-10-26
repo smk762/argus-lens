@@ -42,3 +42,24 @@ def stream_download(url: str, dest: Path, *, event: str, chunk_size: int = 1024 
         tmp.unlink(missing_ok=True)
         raise
     logger.info(f"{event}.done", file=dest.name, size_mb=round(dest.stat().st_size / 1024 / 1024, 1))
+
+
+# Weight formats transformers skips when a repo also ships safetensors (it prefers them), plus
+# docs. Fetching them too would double the download (e.g. microsoft/Florence-2-base ships both).
+_HF_SKIP_PATTERNS = ["*.bin", "*.pt", "*.pth", "*.ckpt", "*.h5", "*.msgpack", "*.onnx", "*.onnx_data", "*.md"]
+
+
+def prefetch_hf_snapshot(repo_id: str) -> None:
+    """Download a Hugging Face model repo into the shared HF cache, without loading it (#64).
+
+    ``from_pretrained`` later finds the files locally. Repos that ship *only* a
+    skipped format (``.bin`` with no safetensors) still work: ``from_pretrained``
+    fetches the remainder at load time, i.e. the old behaviour. A missing
+    ``huggingface_hub`` (it comes with ``transformers``) is not an error here.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return
+    logger.info("hf.prefetch", repo=repo_id)
+    snapshot_download(repo_id, ignore_patterns=_HF_SKIP_PATTERNS)

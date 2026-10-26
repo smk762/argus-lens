@@ -148,6 +148,24 @@ class ModelRegistry:
                 self._refs[key] = max(0, self._refs.get(key, 1) - 1)
                 self._last_used[key] = time.monotonic()
 
+    def evict(self, key: str) -> bool:
+        """Evict and free *key* now if nothing holds it; return whether it was freed (#63).
+
+        A key with live references (an inference in flight) is left alone and
+        reported as not freed, so a caller can't pull a model out from under a
+        running caption. An unknown key is simply not freed.
+        """
+        with self._lock:
+            if key not in self._models or self._refs.get(key, 0) > 0:
+                return False
+            obj = self._models.pop(key)
+            self._refs.pop(key, None)
+            self._last_used.pop(key, None)
+        logger.info("model_evicted", key=key, reason="explicit")
+        _free_model(obj)
+        gc.collect()
+        return True
+
     def status(self) -> dict[str, dict[str, Any]]:
         """Return current cache state for diagnostics."""
         with self._lock:
