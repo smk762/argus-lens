@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **RAM++ vocabulary packs** (#62): custom tags without retraining. `argus-lens ram-vocab build`
+  writes 51 descriptions per tag with any OpenAI-compatible LLM (upstream's prompts; defaults to the
+  `ARGUS_REFINE_*` endpoint) or takes supplied descriptions, embeds them with CLIP ViT-B/16 via
+  `transformers`, and writes a pack (`manifest.json` + fp16 `embeddings.safetensors` +
+  `descriptions.json`). `RamBackend(vocab_packs=[...])` / `RAM_VOCAB_PACKS` appends pack tags to the
+  built-in 4585 (a pack tag replaces a built-in duplicate; a tag in two packs is an error);
+  `builtin_vocab=False` uses packs alone. Pack tags default to threshold 0.5 (upstream's open-set
+  value), overridable per tag, and report `source="ram:<pack>"`. `ram-vocab inspect` summarises a pack.
+  `safetensors` is now listed in the `[torch]` extra.
 - **`annotate_image()` on every backend** (#57). `CaptionBackend` now provides a default that wraps
   `caption_image()` by output kind: taggers (`emits_tags`) get their comma string split into
   unscored `Tag`s, everything else is returned as `prose`. WD14 overrides it to keep its real

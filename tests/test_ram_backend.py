@@ -316,7 +316,7 @@ def test_annotate_image_thresholds_and_sorts(monkeypatch):
 
     def _fake_loader(self, device):
         model = lambda pixels: torch.tensor([[0.9, 0.5, 0.95]])  # noqa: E731
-        return model, tags, [0.65, 0.65, 0.8], torch.float32
+        return model, tags, [0.65, 0.65, 0.8], torch.float32, ["", "", ""]
 
     monkeypatch.setattr(RamBackend, "_loader", _fake_loader)
     image = Image.new("RGB", (64, 64))

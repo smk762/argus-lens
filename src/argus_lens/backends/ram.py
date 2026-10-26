@@ -17,6 +17,7 @@ transformers, torchvision or fairscale. Weights
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,12 @@ class RamBackend(LocalBackend):
        for any other
 
     When none has it, it is downloaded into the first of these.
+
+    *vocab_packs* (or ``RAM_VOCAB_PACKS``, ``os.pathsep``-separated) adds custom tags from
+    vocabulary packs built with ``argus-lens ram-vocab build`` (#62). Pack tags extend the
+    built-in 4585; a pack tag that duplicates a built-in one replaces it, and a tag in two
+    packs is an error. ``builtin_vocab=False`` tags with the packs alone (upstream's
+    open-set mode). Pack tags carry ``source="ram:<pack name>"``.
     """
 
     name = "ram"
@@ -71,12 +78,18 @@ class RamBackend(LocalBackend):
         threshold: float | None = None,
         model_dir: str | Path | None = None,
         registry: ModelRegistry | None = None,
+        vocab_packs: Sequence[str | Path] | None = None,
+        builtin_vocab: bool = True,
     ) -> None:
-        """Configure the HF repo, an optional uniform score threshold, the model directory, and the registry."""
+        """Configure the HF repo, score threshold, model directory, registry, and vocabulary packs."""
         self._repo_id = repo_id or DEFAULT_MODEL_ID
         self._threshold = threshold
         self._model_dir = Path(model_dir) if model_dir else None
         self._registry = registry or get_default_registry()
+        if vocab_packs is None:
+            vocab_packs = [p for p in os.environ.get("RAM_VOCAB_PACKS", "").split(os.pathsep) if p.strip()]
+        self._vocab_packs = [Path(p).expanduser().resolve() for p in vocab_packs]
+        self._builtin_vocab = builtin_vocab
 
     # -- availability -----------------------------------------------------
 
@@ -123,17 +136,18 @@ class RamBackend(LocalBackend):
     def _cache_key(self, device: str) -> str:
         """Registry key: device + checkpoint source, so differently-configured backends never share a model."""
         source = str(self._model_dir or os.environ.get("RAM_MODEL_DIR") or self._repo_id)
-        return f"ram:{device}:{source}"
+        vocab = ("" if self._builtin_vocab else "packs-only") + "".join(f"+{p}" for p in self._vocab_packs)
+        return f"ram:{device}:{source}{':' + vocab if vocab else ''}"
 
-    def _loader(self, device: str) -> tuple[Any, list[str], list[float], Any]:
+    def _loader(self, device: str) -> tuple[Any, list[str], list[float], Any, list[str]]:
         """Build the RAM++ module, load the checkpoint, and move it to *device* (fp16 on CUDA)."""
         import torch
 
         from argus_lens.backends._ram.model import RamPlus
         from argus_lens.backends._ram.vocab import load_tag_vocabulary, prepare_state_dict, unexpectedly_missing
 
-        tags, thresholds = load_tag_vocabulary()
-        model = RamPlus(num_tags=len(tags))
+        builtin_tags, builtin_thresholds = load_tag_vocabulary()
+        model = RamPlus(num_tags=len(builtin_tags))
         # weights_only: the checkpoint is a plain tensor dict, so never unpickle arbitrary objects.
         # mmap: page the ~3 GB file in as load_state_dict copies it, rather than holding a full
         # in-memory copy next to the model's own fp32 weights.
@@ -142,10 +156,31 @@ class RamBackend(LocalBackend):
         del checkpoint
         if missing := unexpectedly_missing(result.missing_keys):
             raise RuntimeError(f"RAM++ checkpoint is missing {len(missing)} weights (e.g. {missing[:3]})")
+        tags, thresholds, sources = self._apply_vocab_packs(model, builtin_tags, builtin_thresholds)
         dtype = torch.float16 if device.startswith("cuda") else torch.float32
         model = model.to(device=device, dtype=dtype).eval()
         # Round thresholds through fp32 so the comparison matches upstream's tensor `>` exactly.
-        return model, tags, torch.tensor(thresholds).tolist(), dtype
+        return model, tags, torch.tensor(thresholds).tolist(), dtype, sources
+
+    def _apply_vocab_packs(
+        self, model: Any, builtin_tags: list[str], builtin_thresholds: list[float]
+    ) -> tuple[list[str], list[float], list[str]]:
+        """Swap the model's label embeddings for built-in (kept) + pack tags; return tags, thresholds, sources."""
+        if not self._vocab_packs and self._builtin_vocab:
+            return builtin_tags, builtin_thresholds, [""] * len(builtin_tags)
+        import torch
+
+        from argus_lens.backends._ram.packs import PackManifest, load_pack_embeddings, merge_vocabularies
+        from argus_lens.backends._ram.vocab import DESCRIPTIONS_PER_TAG
+
+        manifests = [PackManifest.read(p) for p in self._vocab_packs]
+        merged = merge_vocabularies(builtin_tags, builtin_thresholds, manifests, include_builtin=self._builtin_vocab)
+        builtin = model.label_embed.data.view(len(builtin_tags), DESCRIPTIONS_PER_TAG, -1)
+        parts = [builtin[merged.builtin_keep].reshape(-1, builtin.shape[-1])]
+        parts += [load_pack_embeddings(p, m).float() for p, m in zip(self._vocab_packs, manifests, strict=True)]
+        model.label_embed = torch.nn.Parameter(torch.cat(parts), requires_grad=False)
+        model.num_tags = len(merged.tags)
+        return merged.tags, merged.thresholds, merged.sources
 
     def prefetch(self) -> None:
         """Download the RAM++ checkpoint if missing, outside the GPU lease (#64)."""
@@ -160,9 +195,16 @@ class RamBackend(LocalBackend):
 
         device = self.resolve_device()
         with self._acquire(self._cache_key(device), lambda: self._loader(device)) as loaded:
-            model, tags, thresholds, dtype = loaded
+            model, tags, thresholds, dtype, sources = loaded
             probs = model(preprocess(image, device, dtype))[0].float().cpu().tolist()
-        return self._build_output([(tags[i], p) for i, p in select_tags(probs, thresholds, self._threshold)])
+        kept = select_tags(probs, thresholds, self._threshold)
+        return BackendOutput(
+            tags=[Tag(label=tags[i], score=round(p, 4), source=self._source(sources[i])) for i, p in kept]
+        )
+
+    def _source(self, pack: str) -> str:
+        """Provenance for a tag: ``ram`` for built-in tags, ``ram:<pack>`` for pack tags."""
+        return f"{self.name}:{pack}" if pack else self.name
 
     def caption_image(self, image: Image.Image) -> str:
         """Backward-compatible shim: the kept tags as a comma-separated string."""
