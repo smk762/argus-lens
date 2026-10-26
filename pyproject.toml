@@ -41,8 +41,8 @@ dependencies = [
 [project.optional-dependencies]
 wd14 = ["onnxruntime>=1.16", "numpy>=1.24"]
 wd14-gpu = ["onnxruntime-gpu>=1.16", "numpy>=1.24"]
-torch = ["torch>=2.1", "transformers>=4.46"]
-local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46"]
+torch = ["torch>=2.1", "transformers>=4.46", "safetensors>=0.4"]
+local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46", "safetensors>=0.4"]
 openai = ["openai>=1.30"]
 replicate = ["replicate>=0.25"]
 replay = ["psycopg[binary]>=3.1"]
@@ -54,6 +54,7 @@ all = [
     "numpy>=1.24",
     "torch>=2.1",
     "transformers>=4.46",
+    "safetensors>=0.4",
     "openai>=1.30",
     "replicate>=0.25",
     "psycopg[binary]>=3.1",

@@ -75,6 +75,7 @@ _BACKEND_CTOR_KWARGS: tuple[str, ...] = (
     "florence_model_id",
     "threshold",
     "base_url",
+    "vocab_packs",
 )
 
 

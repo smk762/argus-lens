@@ -203,6 +203,88 @@ def backends() -> None:
         typer.echo(line)
 
 
+ram_vocab_app = typer.Typer(help="Build and inspect RAM++ vocabulary packs (custom tags, #62).", no_args_is_help=True)
+app.add_typer(ram_vocab_app, name="ram-vocab")
+
+
+@ram_vocab_app.command("build")
+def ram_vocab_build(
+    source: Path = Argument(
+        ...,
+        exists=True,
+        dir_okay=False,
+        help="Tag list (one per line, optional TAB threshold) or descriptions JSON ([{tag: [desc, ...]}]).",
+    ),
+    out: Path = Option(..., "--out", "-o", help="Directory to write the pack into."),
+    name: str = Option(..., "--name", "-n", help="Pack name; pack tags report source 'ram:<name>'."),
+    threshold: float = Option(0.5, help="Threshold for tags without their own (upstream's open-set default)."),
+    license: str | None = Option(None, help="Licence of the tag list / descriptions, recorded in the manifest."),
+    base_url: str | None = Option(
+        None, help="OpenAI-compatible endpoint for writing descriptions [ARGUS_REFINE_BASE_URL]."
+    ),
+    model: str | None = Option(None, help="LLM that writes the descriptions [ARGUS_REFINE_MODEL]."),
+    api_key: str | None = Option(None, help="API key for the endpoint [ARGUS_REFINE_API_KEY]."),
+    device: str = Option("auto", help="Device for the CLIP text encoder."),
+) -> None:
+    """Build a pack: write 51 descriptions per tag with an LLM (or use supplied ones), embed them with CLIP."""
+    from argus_lens.backends._ram.build import build_pack, read_tag_input
+    from argus_lens.backends._ram.embed import ClipTextEmbedder
+    from argus_lens.backends._ram.packs import CLIP_MODEL
+
+    parsed = read_tag_input(source)
+    descriptions = dict(parsed.descriptions)
+    todo = [t for t in parsed.tags if not descriptions.get(t)]
+    source_info: dict[str, object] = {"input": source.name}
+    if todo:
+        from argus_lens.backends._ram.describe import DescriptionWriter
+
+        writer = DescriptionWriter(base_url=base_url, model_id=model, api_key=api_key)
+        typer.echo(f"Writing descriptions for {len(todo)} tag(s) with {writer.model_id} at {writer.base_url} ...")
+        try:
+            descriptions.update(
+                writer.describe_all(todo, on_progress=lambda i, n, tag: typer.echo(f"  [{i}/{n}] {tag}"))
+            )
+        finally:
+            writer.close()
+        source_info.update(llm=writer.model_id, endpoint=writer.base_url, prompts="upstream")
+    else:
+        source_info["descriptions"] = "supplied"
+
+    typer.echo(f"Embedding {len(parsed.tags) * 51} descriptions with {CLIP_MODEL} ...")
+    manifest = build_pack(
+        out,
+        name=name,
+        tags=parsed.tags,
+        descriptions=descriptions,
+        embed=ClipTextEmbedder(device=device).embed,
+        thresholds=parsed.thresholds,
+        default_threshold=threshold,
+        description_source=source_info,
+        license=license,
+    )
+    typer.echo(f"Wrote pack {manifest.name!r} with {len(manifest.tags)} tag(s) to {out}")
+
+
+@ram_vocab_app.command("inspect")
+def ram_vocab_inspect(pack: Path = Argument(..., exists=True, file_okay=False, help="Pack directory.")) -> None:
+    """Show a pack's manifest and check it against the built-in vocabulary."""
+    from argus_lens.backends._ram.packs import PackManifest
+    from argus_lens.backends._ram.vocab import load_tag_vocabulary
+
+    manifest = PackManifest.read(pack)
+    builtin = set(load_tag_vocabulary()[0])
+    overrides = [t for t in manifest.tags if t in builtin]
+    typer.echo(f"{manifest.name}: {len(manifest.tags)} tag(s), created {manifest.created or 'unknown'}")
+    typer.echo(f"  licence: {manifest.license or 'unspecified'}")
+    typer.echo(f"  description source: {json.dumps(manifest.description_source)}")
+    if overrides:
+        typer.echo(f"  replaces {len(overrides)} built-in tag(s): {', '.join(overrides[:10])}")
+    for tag, thr in list(zip(manifest.tags, manifest.thresholds, strict=True))[:20]:
+        typer.echo(f"  {thr:.2f}  {tag}")
+    if len(manifest.tags) > 20:
+        typer.echo(f"  ... and {len(manifest.tags) - 20} more")
+
+
 @app.command("eval")
 def eval_command(
     path: Path = Argument(..., help="Image directory (reference-free) or .jsonl golden manifest"),
