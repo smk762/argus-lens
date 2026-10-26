@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-26
+
 ### Changed
-- **LLM refinement is now on by default (opt-out)** in `argus-lens serve` and `argus-lens caption`.
+- **LLM refinement is now on by default (opt-out)** (#72) in `argus-lens serve` and `argus-lens caption`.
   It rewrites **every** variant (the categories as well as `training`/`training_prose`/`zeroshot`) with
   `qwen3:8b` on local Ollama unless `ARGUS_REFINE_MODEL` / `ARGUS_REFINE_BASE_URL` say otherwise.
   Disable it with `ARGUS_REFINE=off` or `--no-refine`. `ARGUS_REFINE_VARIANTS` / `--refine-variants`
@@ -17,7 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An unreachable refine endpoint fails fast (5 s connect timeout) and refinement is skipped for 60 s
   (`metadata["refine"]["skipped"] = "unavailable"`), so a missing LLM doesn't stall captioning.
 - `training_prose` rewrites for CLIP targets (SDXL, SD1.5) ask for one or two concise sentences
-  within the CLIP budget. T5 targets (Flux, SD3) still allow up to four.
+  within the CLIP budget, and a rewrite with more than two sentences is rejected and retried with
+  feedback. T5 targets (Flux, SD3) still allow up to four.
+- List rewrites for photo targets ask for plain spaced phrases, and underscores are replaced with
+  spaces (the LLM copied WD14's booru tags). Anime targets keep booru-style tags.
+
+### Fixed
+- A lighting rewrite of "day, sunlight" as "daylight" was rejected as ungrounded and fell back to the
+  deterministic caption. A few lighting and placement words (`daylight`, `lit`, `sits`, `hangs`…) are
+  now allowed glue.
 
 ## [0.9.0] - 2026-10-26
 
@@ -460,7 +470,9 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/smk762/argus-lens/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/smk762/argus-lens/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/smk762/argus-lens/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/smk762/argus-lens/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/smk762/argus-lens/compare/v0.5.0...v0.6.0
