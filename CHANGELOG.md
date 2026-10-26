@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **LLM refinement is now on by default (opt-out)** in `argus-lens serve` and `argus-lens caption`.
+  It rewrites **every** variant (the categories as well as `training`/`training_prose`/`zeroshot`) with
+  `qwen3:8b` on local Ollama unless `ARGUS_REFINE_MODEL` / `ARGUS_REFINE_BASE_URL` say otherwise.
+  Disable it with `ARGUS_REFINE=off` or `--no-refine`. `ARGUS_REFINE_VARIANTS` / `--refine-variants`
+  still narrow the list (`all` is the default). The `Refiner` library default is unchanged (the two
+  training variants); pass `variants=None` for all.
+- An unreachable refine endpoint fails fast (5 s connect timeout) and refinement is skipped for 60 s
+  (`metadata["refine"]["skipped"] = "unavailable"`), so a missing LLM doesn't stall captioning.
+- `training_prose` rewrites for CLIP targets (SDXL, SD1.5) ask for one or two concise sentences
+  within the CLIP budget. T5 targets (Flux, SD3) still allow up to four.
+
 ## [0.9.0] - 2026-10-26
 
 ### Added

@@ -24,7 +24,10 @@ from argus_lens.refine.refiner import (
     Refiner,
     RefineRequest,
     VariantSpec,
+    parse_variants,
+    refine_opted_out,
     refiner_from_env,
+    render_rules,
     variant_spec,
 )
 
@@ -37,6 +40,9 @@ __all__ = [
     "Refiner",
     "VariantSpec",
     "parse_rewrite",
+    "parse_variants",
+    "refine_opted_out",
     "refiner_from_env",
+    "render_rules",
     "variant_spec",
 ]

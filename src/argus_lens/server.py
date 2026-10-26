@@ -518,7 +518,7 @@ def create_app(
     if "refiner" not in kwargs:
         from argus_lens.refine import refiner_from_env
 
-        kwargs["refiner"] = refiner_from_env()  # ARGUS_REFINE_MODEL=... enables LLM rewrites
+        kwargs["refiner"] = refiner_from_env()  # on by default; ARGUS_REFINE=off disables
     idle = os.environ.get("ARGUS_IDLE_UNLOAD_S", "").strip()
     if idle and "idle_unload_s" not in kwargs:
         # Free VRAM after this many idle seconds (e.g. when sharing a GPU with ComfyUI).

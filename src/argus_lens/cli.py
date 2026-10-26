@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -81,13 +82,18 @@ def caption(
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
     verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
-    refine_model: str | None = Option(
-        None, "--refine-model", help="Rewrite training captions with this OpenAI-compatible chat model (validated)"
+    refine: bool = Option(
+        True, "--refine/--no-refine", help="Rewrite captions with an LLM, validated (on unless ARGUS_REFINE=off)"
     ),
-    refine_url: str | None = Option(None, "--refine-url", help="Base URL for the refine model (default: Ollama)"),
+    refine_model: str | None = Option(
+        None, "--refine-model", help="OpenAI-compatible chat model for refinement [ARGUS_REFINE_MODEL, qwen3:8b]"
+    ),
+    refine_url: str | None = Option(
+        None, "--refine-url", help="Base URL for the refine model [ARGUS_REFINE_BASE_URL, local Ollama]"
+    ),
     refine_key: str | None = Option(None, "--refine-key", help="API key for the refine model"),
-    refine_variants: str = Option(
-        "training,training_prose", "--refine-variants", help="Comma-separated variants to rewrite"
+    refine_variants: str | None = Option(
+        None, "--refine-variants", help="Comma-separated variants to rewrite, or 'all' [ARGUS_REFINE_VARIANTS, all]"
     ),
     refine_image: bool = Option(False, "--refine-image", help="Send the image to the refine model (vision models)"),
     verbose: bool = Option(False, "--verbose", "-v", help="Verbose output"),
@@ -113,13 +119,15 @@ def caption(
 
     verifier = _make_verifier(reconcile, verifier_url, verifier_model, verifier_key, verifier_device)
     refiner = None
-    if refine_model:
-        from argus_lens.refine import OpenAICompatRewriter, Refiner
+    from argus_lens.refine import refine_opted_out
+
+    if refine and not refine_opted_out():
+        from argus_lens.refine import OpenAICompatRewriter, Refiner, parse_variants
 
         refiner = Refiner(
             OpenAICompatRewriter(base_url=refine_url, model_id=refine_model, api_key=refine_key),
-            variants=tuple(v.strip() for v in refine_variants.split(",") if v.strip()),
-            send_image=refine_image,
+            variants=parse_variants(refine_variants or os.environ.get("ARGUS_REFINE_VARIANTS") or "all"),
+            send_image=refine_image or os.environ.get("ARGUS_REFINE_IMAGE", "").strip().lower() in ("1", "true", "yes"),
         )
     engine = ArgusLens(backend=backend, verifier=verifier, refiner=refiner, **kwargs)
 

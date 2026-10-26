@@ -110,6 +110,7 @@ def test_profiles_exposes_taxonomy_from_sources_of_truth() -> None:
 
 def test_server_env_enables_refiner_and_idle_unload(monkeypatch) -> None:
     """ARGUS_REFINE_MODEL and ARGUS_IDLE_UNLOAD_S configure the served engine."""
+    monkeypatch.delenv("ARGUS_REFINE", raising=False)
     monkeypatch.setenv("ARGUS_REFINE_MODEL", "qwen3:8b")
     monkeypatch.setenv("ARGUS_IDLE_UNLOAD_S", "120")
     captured = {}
