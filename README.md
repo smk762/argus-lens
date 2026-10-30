@@ -298,6 +298,18 @@ argus-lens serve --backend replay      # or ARGUS_BACKEND=replay
 
 Each request is keyed by the source image's **sha256** — the same content id cortex stores on `source_asset` — so the engine hashes the bytes it ingests and returns the recorded `CaptionResult` **verbatim** (variants included), bypassing the assembly pipeline; profile knobs like `target_style` don't re-mangle captured output. An image with no recorded caption is a `404` (`ReplayMiss`) rather than a silent fall back to a live model. The caption text lives in Postgres, so the blob store (`CORTEX_S3_*`) isn't needed for replay.
 
+#### Recording the tape
+
+Lens writes the tape itself. With `LENS_RECORD_LINEAGE=1` and `CORTEX_PG_URL` set, every **live** caption (from `serve`'s caption endpoints or `argus-lens caption`) is recorded as a `source_asset` (keyed on the original bytes' sha256, the key replay looks up) plus a `caption` row with its variants, raw tags/prose, backend and target profile. This is what `--backend replay`, [argus-lightbox](https://github.com/smk762/argus-lightbox) and the argus-halo tape read. With `CORTEX_S3_ENDPOINT`/`CORTEX_S3_BUCKET` also set, the original image bytes go to the cortex blob store under the same sha256, so a GPU-free host can show the image too.
+
+```bash
+pip install argus-lens[lineage,cli,server,local]
+export CORTEX_PG_URL=postgresql://user:pass@host/db LENS_RECORD_LINEAGE=1
+argus-lens caption ./dataset/            # each image's caption lands in the lineage store
+```
+
+Recording is opt-in through its own flag, not `CORTEX_PG_URL` alone, because a replay host reads that URL and must never write into the tape it serves; replayed captions are never recorded. The flag set without `CORTEX_PG_URL` is a startup error. A failed write is logged and the caption still returned, and a pre-decoded PIL input (no original bytes, so no sha256) is not recorded. The OpenAI-compatible `/v1` endpoints (Frigate) never record.
+
 ### HTTP Server
 
 Run the built-in FastAPI server for frontend consumers (e.g. [argus-studio](https://github.com/smk762/argus-studio)):

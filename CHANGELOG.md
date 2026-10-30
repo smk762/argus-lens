@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Lens records captions into the cortex lineage store** (`argus_lens.lineage`, `[lineage]` extra).
+  With `LENS_RECORD_LINEAGE=1` and `CORTEX_PG_URL`, every live caption from `serve` and
+  `argus-lens caption` becomes a `source_asset` (keyed on the original bytes' sha256) plus a
+  `caption` row, in one transaction, through `argus_cortex.store`. With `CORTEX_S3_*` set the
+  original bytes also go to the blob store. This is the writer for the tape that `--backend replay`,
+  argus-lightbox and argus-halo read; until now nothing in the suite wrote it.
+  - Opt-in via its own flag: a replay host sets `CORTEX_PG_URL` too and must not write to the tape it
+    serves. The flag without `CORTEX_PG_URL`, or a value that isn't true/false, is a startup error.
+  - Replayed captions, the `/v1` (Frigate) endpoints and pre-decoded PIL inputs are never recorded.
+  - A failed write is logged and the caption is still returned.
+  - `ArgusLens(recorder=...)`; `ImageAsset` carries the original bytes (`data`, not part of equality).
+  - The Docker image installs the extra; `docker-compose.yaml` passes `LENS_RECORD_LINEAGE` and
+    `CORTEX_*` through.
+
 ### Changed
 - **The GPU coordinator is now the suite's shared `argus_cortex.gpu`** (`argus-cortex>=0.4.3,<0.5`).
   `argus_lens.gpu` re-exports it and keeps lens's own per-backend footprint estimates.

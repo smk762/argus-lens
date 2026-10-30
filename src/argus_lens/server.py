@@ -551,7 +551,14 @@ def create_app(
     if idle and "idle_unload_s" not in kwargs:
         # Free VRAM after this many idle seconds (e.g. when sharing a GPU with ComfyUI).
         kwargs["idle_unload_s"] = float(idle)
-    engine = ArgusLens(backend=default_backend, **kwargs)
+    # Only the captioning engine records lineage, not the /v1 router's engines:
+    # Frigate's camera snapshots don't belong in the training tape.
+    recorder = kwargs.pop("recorder", None)
+    if recorder is None:
+        from argus_lens.lineage import recorder_from_env
+
+        recorder = recorder_from_env()  # off unless LENS_RECORD_LINEAGE=1 (+ CORTEX_PG_URL)
+    engine = ArgusLens(backend=default_backend, recorder=recorder, **kwargs)
     # Root for GET /folders browsing + relative folder captioning (UI folder picker).
     default_source = source_root or os.environ.get("LENS_SOURCE_PATH")
 

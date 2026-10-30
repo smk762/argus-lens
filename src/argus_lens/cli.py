@@ -129,7 +129,9 @@ def caption(
             variants=parse_variants(refine_variants or os.environ.get("ARGUS_REFINE_VARIANTS") or "all"),
             send_image=refine_image or os.environ.get("ARGUS_REFINE_IMAGE", "").strip().lower() in ("1", "true", "yes"),
         )
-    engine = ArgusLens(backend=backend, verifier=verifier, refiner=refiner, **kwargs)
+    from argus_lens.lineage import recorder_from_env
+
+    engine = ArgusLens(backend=backend, verifier=verifier, refiner=refiner, recorder=recorder_from_env(), **kwargs)
 
     if path.is_file():
         try:
