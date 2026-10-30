@@ -266,24 +266,25 @@ engine.unload()          # free VRAM now; reloads lazily on the next caption
 engine.vram_status()     # {backend, loaded, coordinator, free_vram_mb, idle_s}
 ```
 
-The server exposes `GET /health` (now includes a `gpu` block) and `POST /admin/unload` — the same `/unload` contract gothmog's idle reaper / `/v1/gpu/evict` expect.
+The server exposes `GET /health` (now includes a `gpu` block) and `POST /admin/unload`, so an external scheduler can free lens's VRAM on demand.
 
-**Coordinator** — gate heavy inference behind a capacity lease so two GPU jobs don't collide. Selected via env (defaults to `none`, i.e. unchanged behaviour):
+**Coordinator** — gate heavy inference behind the suite's shared GPU lease ([`argus_cortex.gpu`](https://github.com/smk762/argus-cortex)), so lens, argus-curator and any other argus GPU service on the host take turns. Selected via env (defaults to `none`, i.e. unchanged behaviour):
 
 | `ARGUS_GPU_COORDINATOR` | Behaviour | Needs |
 |---|---|---|
 | `none` (default) | no gating | — |
-| `lease` | one heavy job at a time via a host file lock | POSIX (`ARGUS_GPU_LEASE_PATH` optional) |
-| `gothmog` | acquire/release a slot from [gothmog](https://github.com/smk762/gothmog)'s `/v1/gpu` capacity API | `GOTHMOG_URL` (+ `GOTHMOG_API_KEY`) |
+| `lease` | one argus GPU job at a time via a host-wide file lock, started only once the card has room | POSIX; NVML (`nvidia-ml-py`, pulled in by the `local`/`torch`/`wd14-gpu` extras) for the VRAM wait |
 
 ```bash
-# Serialise against your other GPU jobs through gothmog
-ARGUS_GPU_COORDINATOR=gothmog GOTHMOG_URL=http://192.168.1.109:8030 argus-lens serve
+# Share the GPU with argus-curator: both name the same lock file
+ARGUS_GPU_COORDINATOR=lease ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock argus-lens serve
 ```
 
-Cloud backends (zero VRAM footprint) bypass the lease automatically. The lease sizes its request from a per-backend VRAM estimate, and OOM retry remains the reactive backstop.
+The lease takes the lock, then waits until NVML reports enough free VRAM, which accounts for tenants that never take the lock (ComfyUI, Ollama). Lens asks for its per-backend VRAM estimate only when the model still has to load; once it is resident the lease just takes the lock. Without NVML (or on a CPU host) the VRAM wait is skipped and the lease is the lock alone. Cloud backends (zero VRAM footprint) bypass the lease, and OOM retry remains the reactive backstop.
 
-Extra knobs (all optional): `ARGUS_GPU_MIN_VRAM_MB` overrides the per-backend footprint the lease requests (e.g. for Florence-2-large or a non-default hybrid); `ARGUS_GPU_LEASE_TIMEOUT_S` caps how long the lease waits for a slot (raising `GpuLeaseTimeout`, a `TimeoutError`, if it can't); `ARGUS_GPU_LEASE_PATH` sets the `lease` lock file; `ARGUS_ADMIN_TOKEN` protects `POST /admin/unload`.
+The default lock is `<tempdir>/argus-gpu.lock`, the same file argus-curator uses. Containers each have their own `/tmp`, so in Docker point `ARGUS_GPU_LEASE_PATH` at a directory every GPU service mounts (see `docker-compose.yaml`).
+
+Extra knobs (all optional, and host-wide: every argus service should agree on them): `ARGUS_GPU_MIN_VRAM_MB` overrides the per-backend footprint the lease waits for (e.g. for Florence-2-large or a non-default hybrid); `ARGUS_GPU_LEASE_TIMEOUT_S` caps how long the lease waits (default 300 s, raising `GpuLeaseTimeout`, a `TimeoutError`); `ARGUS_GPU_LEASE_PATH` sets the lock file; `ARGUS_GPU_DEVICE` picks the card the VRAM wait probes. `ARGUS_ADMIN_TOKEN` protects `POST /admin/unload`.
 
 ### Replay backend (recorded captions, no GPU)
 

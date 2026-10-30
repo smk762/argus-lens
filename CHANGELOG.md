@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The GPU coordinator is now the suite's shared `argus_cortex.gpu`** (`argus-cortex>=0.4.3,<0.5`).
+  `argus_lens.gpu` re-exports it and keeps lens's own per-backend footprint estimates.
+  - The `lease` lock defaults to `<tempdir>/argus-gpu.lock` (was `argus-lens-gpu.lock`), the same file
+    argus-curator takes, so the two serialise without configuration on one host. The lock is created
+    `0666` so services running as different container users can share it.
+  - The lease now honours `min_vram_mb`: after taking the lock it waits until NVML reports that much
+    free VRAM, which accounts for ComfyUI/Ollama. Lens asks for its footprint only when the model has
+    to load; a resident model takes the lock with no VRAM wait (it would otherwise wait on its own
+    weights). Without NVML the wait is skipped. `nvidia-ml-py` comes with the `local`, `torch`,
+    `wd14-gpu` and `all` extras (via `argus-cortex[gpu]`).
+  - New `ARGUS_GPU_DEVICE` selects the card the VRAM wait probes.
+  - `docker-compose.yaml` mounts the shared lock directory (`ARGUS_GPU_LOCK_DIR`, default
+    `/tmp/argus-gpu`) at `/run/argus-gpu`, matching argus-curator's compose.
+
+### Removed
+- **The `gothmog` coordinator** (`GothmogCoordinator`, `GOTHMOG_URL`, `GOTHMOG_API_KEY`). The suite's
+  lease covers host-wide GPU sharing; `ARGUS_GPU_COORDINATOR=gothmog` now raises at startup.
+- `LocalLeaseCoordinator`: use `LeaseCoordinator` (cortex's).
+
 ## [0.10.0] - 2026-10-26
 
 ### Changed

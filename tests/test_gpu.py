@@ -11,9 +11,8 @@ from argus_lens.backends.base import CaptionBackend
 from argus_lens.engine import ArgusLens
 from argus_lens.gpu import (
     DEFAULT_FOOTPRINT_MB,
-    GothmogCoordinator,
     GpuLeaseTimeout,
-    LocalLeaseCoordinator,
+    LeaseCoordinator,
     NullCoordinator,
     build_coordinator,
     coordinator_from_env,
@@ -92,7 +91,7 @@ def test_null_coordinator_is_passthrough() -> None:
 
 def test_local_lease_acquires_when_free(tmp_path) -> None:
     """A free lock is acquired and released around the body."""
-    coord = LocalLeaseCoordinator(lock_path=str(tmp_path / "g.lock"), timeout_s=1.0)
+    coord = LeaseCoordinator(lock_path=str(tmp_path / "g.lock"), timeout_s=1.0, probe=lambda _d: None)
     with coord.lease(caller="t", min_vram_mb=0):
         pass  # acquired without raising
     # A second lease succeeds because the first released.
@@ -106,7 +105,7 @@ def test_local_lease_times_out_when_held(tmp_path) -> None:
     import os
 
     lock = str(tmp_path / "g.lock")
-    coord = LocalLeaseCoordinator(lock_path=lock, timeout_s=0.3, poll_s=0.05)
+    coord = LeaseCoordinator(lock_path=lock, timeout_s=0.3, poll_s=0.05)
     fd = os.open(lock, os.O_CREAT | os.O_RDWR)
     fcntl.flock(fd, fcntl.LOCK_EX)
     try:
@@ -117,39 +116,12 @@ def test_local_lease_times_out_when_held(tmp_path) -> None:
         os.close(fd)
 
 
-def test_gothmog_coordinator_acquire_release(monkeypatch) -> None:
-    """The gothmog adapter acquires a token, runs, then releases it."""
-    import httpx
-
-    calls: dict[str, object] = {}
-
-    class _Resp:
-        def raise_for_status(self) -> None:
-            pass
-
-        def json(self) -> dict:
-            return {"token_id": "tok-1", "vram_free_mb": 1000}
-
-    monkeypatch.setattr(httpx, "post", lambda url, json, headers, timeout: calls.update(acquire=(url, json)) or _Resp())
-    monkeypatch.setattr(httpx, "delete", lambda url, headers, timeout: calls.update(release=url))
-
-    with GothmogCoordinator(base_url="http://gm:8030").lease(caller="argus-lens", min_vram_mb=2500):
-        pass
-
-    assert calls["acquire"][0].endswith("/v1/gpu/capacity/acquire")
-    assert calls["acquire"][1] == {"caller": "argus-lens", "min_vram_mb": 2500, "timeout_s": 300.0}
-    assert str(calls["release"]).endswith("/v1/gpu/capacity/tokens/tok-1")
-
-
 def test_build_coordinator_and_from_env(monkeypatch) -> None:
     """Factory builds each kind and validates; env selects the default + timeout."""
     assert build_coordinator("none").name == "none"
     assert build_coordinator("lease").name == "lease"
-    assert build_coordinator("gothmog", base_url="http://x").name == "gothmog"
-    with pytest.raises(ValueError, match="GOTHMOG_URL"):
-        build_coordinator("gothmog")
-    with pytest.raises(ValueError, match="Unknown GPU coordinator"):
-        build_coordinator("bogus")
+    with pytest.raises(ValueError, match="unknown GPU coordinator"):
+        build_coordinator("gothmog")  # dropped: cortex has none and lease covers the suite
 
     monkeypatch.delenv("ARGUS_GPU_COORDINATOR", raising=False)
     monkeypatch.delenv("ARGUS_GPU_LEASE_TIMEOUT_S", raising=False)
@@ -167,7 +139,7 @@ def test_lease_timeout_is_gpu_lease_timeout(tmp_path) -> None:
     import os
 
     lock = str(tmp_path / "g.lock")
-    coord = LocalLeaseCoordinator(lock_path=lock, timeout_s=0.2, poll_s=0.05)
+    coord = LeaseCoordinator(lock_path=lock, timeout_s=0.2, poll_s=0.05)
     fd = os.open(lock, os.O_CREAT | os.O_RDWR)
     fcntl.flock(fd, fcntl.LOCK_EX)
     try:
@@ -271,8 +243,8 @@ def test_cloud_hybrid_bypasses_lease() -> None:
 def test_two_local_lease_instances_serialize(tmp_path) -> None:
     """Two coordinators on the same lock file mutually exclude."""
     lock = str(tmp_path / "g.lock")
-    held = LocalLeaseCoordinator(lock_path=lock, timeout_s=1.0)
-    other = LocalLeaseCoordinator(lock_path=lock, timeout_s=0.3, poll_s=0.05)
+    held = LeaseCoordinator(lock_path=lock, timeout_s=1.0)
+    other = LeaseCoordinator(lock_path=lock, timeout_s=0.3, poll_s=0.05)
     with held.lease(caller="a", min_vram_mb=0), pytest.raises(TimeoutError), other.lease(caller="b", min_vram_mb=0):
         pass
 
@@ -296,6 +268,37 @@ def test_coordinator_lease_wraps_inference() -> None:
     eng.caption(_img())
     assert events[0] == ("enter", "florence2", 2500)
     assert events[-1] == ("exit",)
+
+
+def test_resident_model_leases_without_vram_wait() -> None:
+    """Once loaded, the lease asks for no free VRAM: the model's own weights already fill it."""
+    requested: list[int] = []
+
+    class _Recording:
+        name = "rec"
+
+        @contextlib.contextmanager
+        def lease(self, *, caller: str, min_vram_mb: int):
+            requested.append(min_vram_mb)
+            yield
+
+    eng = ArgusLens(backend=_LifecycleBackend(), coordinator=_Recording())
+    eng.caption(_img())
+    eng.caption(_img())
+    eng.unload()
+    eng.caption(_img())
+    assert requested == [2500, 0, 2500]
+
+
+def test_lease_shares_the_suite_lock(monkeypatch, tmp_path) -> None:
+    """Lens builds cortex's lease on cortex's default lock, so it serialises with curator."""
+    from argus_cortex.gpu import default_lock_path
+
+    monkeypatch.setenv("ARGUS_GPU_COORDINATOR", "lease")
+    monkeypatch.delenv("ARGUS_GPU_LEASE_PATH", raising=False)
+    coord = ArgusLens(backend=_LifecycleBackend())._coordinator
+    assert isinstance(coord, LeaseCoordinator)
+    assert coord.lock_path == default_lock_path()
 
 
 def test_engine_honors_min_vram_override(monkeypatch) -> None:

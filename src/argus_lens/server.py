@@ -536,7 +536,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         """Service liveness/identity probe (mirrors argus-curator's /health shape).
 
-        Includes GPU residency + free VRAM so a coordinator (e.g. gothmog) can
+        Includes GPU residency + free VRAM so an external scheduler can
         attribute and reclaim this backend's memory (#37). The VRAM probe runs
         off the event loop (its first CUDA call can trigger context init).
         """
@@ -552,8 +552,7 @@ def create_app(
     async def admin_unload(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """Unload the model to free VRAM for a co-resident GPU tenant (#37).
 
-        Matches the ``/unload`` contract gothmog's idle reaper / ``/v1/gpu/evict``
-        expect; the model reloads lazily on the next caption. Set ``ARGUS_ADMIN_TOKEN``
+        The model reloads lazily on the next caption. Set ``ARGUS_ADMIN_TOKEN``
         to require ``Authorization: Bearer <token>`` (otherwise the endpoint is open —
         keep it off untrusted networks to avoid unload/reload-thrash abuse).
         """

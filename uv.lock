@@ -38,9 +38,27 @@ wheels = [
 ]
 
 [[package]]
+name = "argus-cortex"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c4/a9/fc53dc151ab91ec8bebfed4ecae37d5493e597c57e5d43f83a52172c073a/argus_cortex-0.4.3.tar.gz", hash = "sha256:83acf9a28f2adc4a374d973dcb9dc78f86917d52e7e740f0d776751fd6d66161", size = 84460, upload-time = "2026-10-30T06:57:42.354Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8a/08/15fdf96968aa8bef1d1098803eda1bdec495744df6936922a6a081a07f0f/argus_cortex-0.4.3-py3-none-any.whl", hash = "sha256:edae6d2ca90145153bca191d7e1fa2f4e94b88e0aca91ae8977aefbd27097cf1", size = 62792, upload-time = "2026-10-30T06:57:41.067Z" },
+]
+
+[package.optional-dependencies]
+gpu = [
+    { name = "nvidia-ml-py" },
+]
+
+[[package]]
 name = "argus-lens"
 source = { editable = "." }
 dependencies = [
+    { name = "argus-cortex" },
     { name = "certifi" },
     { name = "httpx" },
     { name = "pillow" },
@@ -49,6 +67,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "argus-cortex", extra = ["gpu"] },
     { name = "fastapi" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -58,6 +77,7 @@ all = [
     { name = "python-multipart" },
     { name = "replicate" },
     { name = "rich" },
+    { name = "safetensors" },
     { name = "torch" },
     { name = "transformers" },
     { name = "typer" },
@@ -79,9 +99,11 @@ eval = [
     { name = "transformers" },
 ]
 local = [
+    { name = "argus-cortex", extra = ["gpu"] },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "onnxruntime" },
+    { name = "safetensors" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -100,6 +122,8 @@ server = [
     { name = "uvicorn" },
 ]
 torch = [
+    { name = "argus-cortex", extra = ["gpu"] },
+    { name = "safetensors" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -109,6 +133,7 @@ wd14 = [
     { name = "onnxruntime" },
 ]
 wd14-gpu = [
+    { name = "argus-cortex", extra = ["gpu"] },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "onnxruntime-gpu" },
@@ -116,6 +141,11 @@ wd14-gpu = [
 
 [package.metadata]
 requires-dist = [
+    { name = "argus-cortex", specifier = ">=0.4.3,<0.5" },
+    { name = "argus-cortex", extras = ["gpu"], marker = "extra == 'all'", specifier = ">=0.4.3,<0.5" },
+    { name = "argus-cortex", extras = ["gpu"], marker = "extra == 'local'", specifier = ">=0.4.3,<0.5" },
+    { name = "argus-cortex", extras = ["gpu"], marker = "extra == 'torch'", specifier = ">=0.4.3,<0.5" },
+    { name = "argus-cortex", extras = ["gpu"], marker = "extra == 'wd14-gpu'", specifier = ">=0.4.3,<0.5" },
     { name = "certifi", specifier = ">=2026.10.19" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.110" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.110" },
@@ -144,6 +174,9 @@ requires-dist = [
     { name = "rich", marker = "extra == 'all'", specifier = ">=13.0" },
     { name = "rich", marker = "extra == 'cli'", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.16" },
+    { name = "safetensors", marker = "extra == 'all'", specifier = ">=0.4" },
+    { name = "safetensors", marker = "extra == 'local'", specifier = ">=0.4" },
+    { name = "safetensors", marker = "extra == 'torch'", specifier = ">=0.4" },
     { name = "structlog", specifier = ">=24.0" },
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.1" },
     { name = "torch", marker = "extra == 'eval'", specifier = ">=2.1" },
@@ -942,6 +975,15 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/46/e1/cdc1797eadf82d3a9a575a19b33fdc871a97edbec42c00b5b5e914f4aff4/nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_aarch64.whl", hash = "sha256:4dca476c50bf4780d46cd0bfbd82e2bc10a08e4fef7950917ce8d7578d22a23f", size = 221051344, upload-time = "2025-09-05T18:49:51.289Z" },
     { url = "https://files.pythonhosted.org/packages/34/7d/2661f2fb3ac4302f3a246f5fc030213ac60c1fe0bce84f9783dbd831dbb7/nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_x86_64.whl", hash = "sha256:786ce87568c303fadb5afcc7102d454cd3040d75f6f8626f5db460d1871f4dd0", size = 170148586, upload-time = "2025-09-05T18:50:50.248Z" },
+]
+
+[[package]]
+name = "nvidia-ml-py"
+version = "13.615.71"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/30/b25216758be3d3e2834825d8193609e2d71c770a8bd7984438c058c90268/nvidia_ml_py-13.615.71.tar.gz", hash = "sha256:bebe4e48f51b1dc75028c0815cb7bfa14a31a5bb80be70c9d980c6036953fc3d", size = 57485, upload-time = "2026-09-25T15:15:28.226Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/a1/1681dfa1c904d4e3e72e51b55a0ff012d50b766843ef832d584abe2113c6/nvidia_ml_py-13.615.71-py3-none-any.whl", hash = "sha256:959bf4adf6fe1308e4bd739e722236b0d1ec8392e2cefad33ff70c311380b9b6", size = 58132, upload-time = "2026-09-25T15:15:26.54Z" },
 ]
 
 [[package]]

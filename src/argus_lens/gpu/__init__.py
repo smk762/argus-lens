@@ -1,11 +1,22 @@
 """GPU lifecycle + coordination (#37/#38).
 
-``capacity`` exposes free-VRAM and per-backend footprint estimates; ``coordinator``
-provides the pluggable capacity-lease (``none``/``lease``/``gothmog``). The model
-lifecycle levers (unload, idle eviction) live on ``ArgusLens`` itself.
+``capacity`` exposes free-VRAM and per-backend footprint estimates (each stage
+owns its own). The coordinator is the suite's shared one, :mod:`argus_cortex.gpu`:
+``none`` or ``lease`` (a host-wide ``flock`` taken by every argus service, then a
+wait for free VRAM), selected by ``ARGUS_GPU_COORDINATOR``. The model lifecycle
+levers (unload, idle eviction) live on ``ArgusLens`` itself.
 """
 
 from __future__ import annotations
+
+from argus_cortex.gpu import (
+    GpuCoordinator,
+    GpuLeaseTimeout,
+    LeaseCoordinator,
+    NullCoordinator,
+    build_coordinator,
+    coordinator_from_env,
+)
 
 from argus_lens.gpu.capacity import (
     DEFAULT_FOOTPRINT_MB,
@@ -13,22 +24,12 @@ from argus_lens.gpu.capacity import (
     free_vram_mb,
     resolve_min_vram_mb,
 )
-from argus_lens.gpu.coordinator import (
-    GothmogCoordinator,
-    GpuCoordinator,
-    GpuLeaseTimeout,
-    LocalLeaseCoordinator,
-    NullCoordinator,
-    build_coordinator,
-    coordinator_from_env,
-)
 
 __all__ = [
     "DEFAULT_FOOTPRINT_MB",
-    "GothmogCoordinator",
     "GpuCoordinator",
     "GpuLeaseTimeout",
-    "LocalLeaseCoordinator",
+    "LeaseCoordinator",
     "NullCoordinator",
     "build_coordinator",
     "coordinator_from_env",
