@@ -327,6 +327,10 @@ Endpoints:
 
 The `/immich/*` endpoints read `IMMICH_URL` and `IMMICH_API_KEY` from the environment at request time; if either is unset they return `503` and the rest of the server is unaffected.
 
+**CORS and cross-site writes.** `--cors` allows only the localhost dev frontend (`http://localhost:3000`, `http://127.0.0.1:3000`). Allow-list other origins with `--cors-origin <origin>` (repeatable) or `LENS_CORS_ORIGINS` (comma-separated), or use `--cors-any` for a credential-less wildcard on public demos. A literal `*` in the allow-list is treated as `--cors-any`.
+
+The caption endpoints have no auth and write sidecars, and CORS is not a write boundary: a `multipart/form-data` POST needs no preflight, so any page a browser visits could drive one. So every unsafe request (POST/PUT/PATCH/DELETE) is checked by Origin, with or without `--cors`: no `Origin` (curl, argus-curator, Frigate) passes, the same host as the request (a UI proxied onto this host) passes, and so does an allow-listed origin; anything else is a `403`. `--cors-any` therefore grants reads, not writes: name an origin with `--cors-origin` to let it write. The guard is the suite's shared [`argus_cortex.server.WriteGuard`](https://github.com/smk762/argus-cortex), as in argus-curator, argus-forge and argus-proof.
+
 ### Immich
 
 Immich is strong at CLIP search and faces but weak at descriptive keywords and captions -- the gap Argus Lens fills. Immich has no in-process ML plugin hook, so Argus Lens runs as a companion service: pull assets via the Immich API, caption them, and push keywords + description back.
@@ -390,6 +394,7 @@ Copy or create a `.env` file for the Docker deployment:
 | `WD14_MODEL_DIR` | `~/.cache/wd14_tagger/` | WD14 ONNX model directory (auto-downloads on first use) |
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
 | `HF_TRUST_REMOTE_CODE` | `false` | Only needed for legacy `microsoft/Florence-2-*` weights. See [Security](#security) |
+| `LENS_CORS_ORIGINS` | -- | Comma-separated origins allowed CORS and cross-site writes (the image runs `--cors`, which trusts only `localhost:3000`) |
 | `LENS_SOURCE_PATH` | `/data/images` | Host image folder mounted read-write at `/data/images` for the folder picker and `POST /caption/folder`; `.txt` sidecars are written next to the images |
 
 #### GPU prerequisites

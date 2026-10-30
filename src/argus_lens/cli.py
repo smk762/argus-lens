@@ -423,7 +423,13 @@ def serve(
     backend: str = Option(
         "hybrid", "--backend", "-b", envvar="ARGUS_BACKEND", help="Default backend for /caption endpoints"
     ),
-    cors: bool = Option(False, "--cors", help="Enable CORS (allow all origins)"),
+    cors: bool = Option(False, "--cors", help="Enable CORS for the localhost dev frontend (:3000)"),
+    cors_origin: list[str] = Option(
+        [], "--cors-origin", help="Allowed CORS origin (repeatable; implies CORS; or LENS_CORS_ORIGINS)"
+    ),
+    cors_any: bool = Option(
+        False, "--cors-any", help="Allow ANY origin to read, credential-less (public demos only; implies CORS)"
+    ),
     source_root: str | None = Option(None, "--source-root", help="Root folder for /folders browsing (UI picker)"),
 ) -> None:
     """Start the Argus Lens micro-server (FastAPI).
@@ -445,7 +451,13 @@ def serve(
 
     from argus_lens.server import create_app
 
-    app = create_app(default_backend=backend, cors=cors, source_root=source_root)
+    app = create_app(
+        default_backend=backend,
+        cors=cors,
+        cors_origins=cors_origin or None,
+        cors_allow_any=cors_any,
+        source_root=source_root,
+    )
     uvicorn.run(app, host=host, port=port)
 
 

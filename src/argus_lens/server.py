@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from argus_cortex.server import WriteGuard, cross_site_refuse
     from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
     from fastapi.responses import StreamingResponse
     from pydantic import BaseModel
@@ -47,6 +48,8 @@ SUPPORTED_EXTS = IMAGE_SUFFIXES
 _XMP_SINK = XmpSink()  # stateless; shared by every endpoint that writes XMP sidecars
 _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing snappy)
 _PULL_CONCURRENCY = 4  # parallel Immich downloads per /immich/pull request
+# The dev frontend (argus-studio) that bare --cors trusts, matching argus-curator.
+_LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
 class CaptionURLRequest(BaseModel):
@@ -490,9 +493,18 @@ def create_app(
     cors: bool = False,
     cors_origins: list[str] | None = None,
     source_root: str | None = None,
+    cors_allow_any: bool = False,
     **kwargs: Any,
 ) -> FastAPI:
-    """Create a FastAPI application for image captioning."""
+    """Create a FastAPI application for image captioning.
+
+    *cors* allows the localhost dev frontend (:3000); *cors_origins* (or
+    ``LENS_CORS_ORIGINS``, comma-separated) allow-lists other origins, and
+    *cors_allow_any* is a credential-less wildcard. Whatever CORS allows, a
+    cross-site write (POST from a browser page on another origin) is refused
+    unless that origin is named: the caption endpoints write sidecars and have
+    no auth.
+    """
 
     app = FastAPI(
         title="Argus Lens",
@@ -500,17 +512,33 @@ def create_app(
         version="0.1.0",
     )
 
-    if cors:
+    if cors_origins is None and (env_origins := os.environ.get("LENS_CORS_ORIGINS")):
+        cors_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+
+    # A "*" in the allow-list means --cors-any: anonymous reads from anywhere,
+    # never credentials (with credentials Starlette reflects any Origin back,
+    # silently granting every site credentialed access).
+    wildcard = cors_allow_any or bool(cors_origins and "*" in cors_origins)
+    # Origins the operator named are the only ones trusted to write cross-site;
+    # the wildcard grants reads, not writes. A "*" co-listed with a real origin
+    # still lets that origin write.
+    named = [o for o in (cors_origins or []) if o != "*"]
+    trusted_origins = named or ([] if wildcard else (_LOCALHOST_ORIGINS if cors else []))
+
+    # CORS is not a write boundary: a multipart POST needs no preflight, so any
+    # page a user visits could drive /caption/folder into the source root. The
+    # guard refuses unsafe methods from an untrusted Origin; same-host (a UI
+    # proxied onto this host) and Origin-less (curl, curator, Frigate) callers
+    # pass. Added before CORS so CORS is the outer layer and annotates a 403.
+    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins))
+
+    if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
 
-        origins = cors_origins or ["*"]
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=origins,
-            # Credentials with a wildcard origin is invalid per the CORS spec
-            # (Starlette would echo the caller's origin, silently granting any
-            # site credentialed access) — only allow it for explicit origins.
-            allow_credentials="*" not in origins,
+            allow_origins=["*"] if wildcard else (cors_origins or _LOCALHOST_ORIGINS),
+            allow_credentials=not wildcard,
             allow_methods=["*"],
             allow_headers=["*"],
         )

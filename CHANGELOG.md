@@ -21,11 +21,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New `ARGUS_GPU_DEVICE` selects the card the VRAM wait probes.
   - `docker-compose.yaml` mounts the shared lock directory (`ARGUS_GPU_LOCK_DIR`, default
     `/tmp/argus-gpu`) at `/run/argus-gpu`, matching argus-curator's compose.
+- **`--cors` now trusts only the localhost dev frontend** (`http://localhost:3000`,
+  `http://127.0.0.1:3000`), matching argus-curator; it used to allow every origin. New
+  `--cors-origin` (repeatable) / `LENS_CORS_ORIGINS` name other origins, and `--cors-any` is a
+  credential-less wildcard for reads (a `*` in the list means the same). `create_app` gains
+  `cors_allow_any`. The `server` extra adds `argus-cortex[server]`.
 
 ### Removed
 - **The `gothmog` coordinator** (`GothmogCoordinator`, `GOTHMOG_URL`, `GOTHMOG_API_KEY`). The suite's
   lease covers host-wide GPU sharing; `ARGUS_GPU_COORDINATOR=gothmog` now raises at startup.
 - `LocalLeaseCoordinator`: use `LeaseCoordinator` (cortex's).
+
+### Security
+- **Cross-site writes are refused** (`argus_cortex.server.WriteGuard`, as in argus-curator, forge and
+  proof). The caption endpoints have no auth and write sidecars, and CORS never stopped a
+  no-preflight `multipart/form-data` POST from another site. Every POST/PUT/PATCH/DELETE carrying an
+  `Origin` that is neither the request's host nor allow-listed now gets a `403`, with or without
+  `--cors`. Requests with no `Origin` (curl, argus-curator, Frigate) and same-host UIs (a reverse
+  proxy such as argus-halo's) are unaffected.
 
 ## [0.10.0] - 2026-10-26
 
