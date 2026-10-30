@@ -53,6 +53,9 @@ wheels = [
 gpu = [
     { name = "nvidia-ml-py" },
 ]
+server = [
+    { name = "starlette" },
+]
 
 [[package]]
 name = "argus-lens"
@@ -67,7 +70,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "argus-cortex", extra = ["gpu"] },
+    { name = "argus-cortex", extra = ["gpu", "server"] },
     { name = "fastapi" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -117,6 +120,7 @@ replicate = [
     { name = "replicate" },
 ]
 server = [
+    { name = "argus-cortex", extra = ["server"] },
     { name = "fastapi" },
     { name = "python-multipart" },
     { name = "uvicorn" },
@@ -146,6 +150,8 @@ requires-dist = [
     { name = "argus-cortex", extras = ["gpu"], marker = "extra == 'local'", specifier = ">=0.4.3,<0.5" },
     { name = "argus-cortex", extras = ["gpu"], marker = "extra == 'torch'", specifier = ">=0.4.3,<0.5" },
     { name = "argus-cortex", extras = ["gpu"], marker = "extra == 'wd14-gpu'", specifier = ">=0.4.3,<0.5" },
+    { name = "argus-cortex", extras = ["server"], marker = "extra == 'all'", specifier = ">=0.4.3,<0.5" },
+    { name = "argus-cortex", extras = ["server"], marker = "extra == 'server'", specifier = ">=0.4.3,<0.5" },
     { name = "certifi", specifier = ">=2026.10.19" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.110" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.110" },
