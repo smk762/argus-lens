@@ -34,15 +34,17 @@ dependencies = [
     "Pillow>=10.0",
     "structlog>=24.0",
     "httpx>=0.27",
-    # XMP sidecar read/merge/write (argus_cortex.xmp), shared with argus-curator.
-    "argus-cortex>=0.3.0",
+    # argus_cortex.xmp (sidecars, shared with argus-curator) and argus_cortex.gpu
+    # (the host-wide GPU lease). Capped below 0.5: cortex is pre-1.0, where a
+    # minor bump may break.
+    "argus-cortex>=0.4.3,<0.5",
 ]
 
 [project.optional-dependencies]
 wd14 = ["onnxruntime>=1.16", "numpy>=1.24"]
-wd14-gpu = ["onnxruntime-gpu>=1.16", "numpy>=1.24"]
-torch = ["torch>=2.1", "transformers>=4.46", "safetensors>=0.4"]
-local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46", "safetensors>=0.4"]
+wd14-gpu = ["onnxruntime-gpu>=1.16", "numpy>=1.24", "argus-cortex[gpu]>=0.4.3,<0.5"]
+torch = ["torch>=2.1", "transformers>=4.46", "safetensors>=0.4", "argus-cortex[gpu]>=0.4.3,<0.5"]
+local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46", "safetensors>=0.4", "argus-cortex[gpu]>=0.4.3,<0.5"]
 openai = ["openai>=1.30"]
 replicate = ["replicate>=0.25"]
 replay = ["psycopg[binary]>=3.1"]
@@ -50,6 +52,7 @@ cli = ["typer>=0.12", "rich>=13.0"]
 eval = ["torch>=2.1", "transformers>=4.46"]
 server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7"]
 all = [
+    "argus-cortex[gpu]>=0.4.3,<0.5",
     "onnxruntime>=1.16",
     "numpy>=1.24",
     "torch>=2.1",

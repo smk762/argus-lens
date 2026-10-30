@@ -410,8 +410,12 @@ class ArgusLens:
         self._ensure_prefetched()  # network-bound: never under the GPU lease
         footprint = resolve_min_vram_mb(self._backend.name)
         use_lease = getattr(self._backend, "requires_gpu", False) and footprint > 0
+        # The lease waits for min_vram_mb *free*, and a resident model is already
+        # counted as used: asking for the footprint again would wait on our own
+        # weights. Only a load needs room; a resident model just takes the lock.
+        min_vram_mb = 0 if self._loaded else footprint
         lease = (
-            self._coordinator.lease(caller=self._backend.name, min_vram_mb=footprint)
+            self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb)
             if use_lease
             else contextlib.nullcontext()
         )
