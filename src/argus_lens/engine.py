@@ -9,7 +9,7 @@ import io
 import threading
 import time
 from collections.abc import Callable, Generator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +154,8 @@ class ImageAsset:
     name: str
     sha256: str | None = None
     uri: str | None = None
+    # The original bytes, kept for the lineage recorder's blob write; not identity.
+    data: bytes | None = field(default=None, repr=False, compare=False)
 
 
 def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, Image.Image]:
@@ -166,7 +168,7 @@ def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, I
     if isinstance(source, Image.Image):
         return ImageAsset(name="image"), source.convert("RGB")
     if isinstance(source, bytes):
-        asset = ImageAsset(name="bytes", sha256=hashlib.sha256(source).hexdigest())
+        asset = ImageAsset(name="bytes", sha256=hashlib.sha256(source).hexdigest(), data=source)
         return asset, Image.open(io.BytesIO(source)).convert("RGB")
     if isinstance(source, str) and source.startswith(("http://", "https://")):
         import httpx
@@ -174,12 +176,12 @@ def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, I
         resp = httpx.get(source, follow_redirects=True, timeout=30.0)
         resp.raise_for_status()
         name = source.rsplit("/", 1)[-1].split("?")[0] or "image"
-        asset = ImageAsset(name=name, sha256=hashlib.sha256(resp.content).hexdigest(), uri=source)
+        asset = ImageAsset(name=name, sha256=hashlib.sha256(resp.content).hexdigest(), uri=source, data=resp.content)
         return asset, Image.open(io.BytesIO(resp.content)).convert("RGB")
     path = Path(source)
     if path.exists():
         data = path.read_bytes()
-        asset = ImageAsset(name=path.name, sha256=hashlib.sha256(data).hexdigest(), uri=str(path))
+        asset = ImageAsset(name=path.name, sha256=hashlib.sha256(data).hexdigest(), uri=str(path), data=data)
         return asset, Image.open(io.BytesIO(data)).convert("RGB")
     raise FileNotFoundError(f"Image not found: {source}")
 
@@ -214,6 +216,7 @@ class ArgusLens:
         refiner: Any | None = None,
         coordinator: Any | None = None,
         idle_unload_s: float | None = None,
+        recorder: Any | None = None,
         **kwargs: Any,
     ) -> None:
         """Resolve the backend and store configuration; models load lazily on first caption.
@@ -232,6 +235,11 @@ class ArgusLens:
         (``ARGUS_GPU_COORDINATOR``), i.e. ``none`` unless configured.
         *idle_unload_s* enables a background reaper that unloads the model after
         that many idle seconds (#37).
+
+        *recorder* (a :class:`argus_lens.lineage.LineageRecorder`) writes every
+        live caption into the cortex lineage store, the tape the ``replay``
+        backend, argus-lightbox and argus-halo read. Replayed captions are never
+        recorded. Without one, lens stays DB-free.
         """
         self._backend = _resolve_backend(backend, **kwargs)
         self._device = device
@@ -254,6 +262,7 @@ class ArgusLens:
 
             self._reconciler = Reconciler(verifier)
         self._refiner = refiner
+        self._recorder = recorder
 
         if coordinator is not None:
             self._coordinator = coordinator
@@ -323,6 +332,8 @@ class ArgusLens:
         if self._reaper_stop is not None:
             self._reaper_stop.set()
         self.unload()
+        if self._recorder is not None:
+            self._recorder.close()
 
     def _start_idle_reaper(self, idle_unload_s: float) -> None:
         """Start a daemon thread that unloads the model after idle periods (#37).
@@ -545,13 +556,28 @@ class ArgusLens:
             categories=self._categories,
             backend_name=self._backend.name,
         )
-        return self._refine(result, profile, trigger_word, pil)
+        return self._finish(result, profile, trigger_word, pil, asset, asset.name)
 
     def _refine(self, result: CaptionResult, profile: Any, trigger_word: str, pil: Image.Image) -> CaptionResult:
         """Apply the optional LLM refiner (validated, falls back to *result*)."""
         if self._refiner is None:
             return result
         return self._refiner.refine(result, profile, trigger_word=trigger_word, image=pil)
+
+    def _finish(
+        self,
+        result: CaptionResult,
+        profile: Any,
+        trigger_word: str,
+        pil: Image.Image,
+        asset: ImageAsset,
+        name: str,
+    ) -> CaptionResult:
+        """Refine a live caption, then record it in the lineage store when a recorder is set."""
+        result = self._refine(result, profile, trigger_word, pil)
+        if self._recorder is not None:
+            self._recorder.record(asset, result, name=name, profile=profile, params={"trigger_word": trigger_word})
+        return result
 
     def caption_batch(
         self,
@@ -633,7 +659,7 @@ class ArgusLens:
                     categories=self._categories,
                     backend_name=self._backend.name,
                 )
-                results[name] = self._refine(composed, profile, trigger_word, pil)
+                results[name] = self._finish(composed, profile, trigger_word, pil, asset, name)
 
             if progress is not None:
                 progress(idx + 1, total, name, results[name])
@@ -701,7 +727,7 @@ class ArgusLens:
                 categories=self._categories,
                 backend_name=self._backend.name,
             )
-            yield name, self._refine(result, profile, trigger_word, pil)
+            yield name, self._finish(result, profile, trigger_word, pil, asset, name)
 
     def caption_directory(
         self,

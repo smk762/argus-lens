@@ -48,6 +48,9 @@ local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46",
 openai = ["openai>=1.30"]
 replicate = ["replicate>=0.25"]
 replay = ["psycopg[binary]>=3.1"]
+# Record captions into the cortex lineage store (LENS_RECORD_LINEAGE=1); the S3
+# extra lets it also put the original bytes in the blob store.
+lineage = ["argus-cortex[postgres,s3]>=0.4.3,<0.5"]
 cli = ["typer>=0.12", "rich>=13.0"]
 eval = ["torch>=2.1", "transformers>=4.46"]
 # argus-cortex[server]: the shared cross-site write guard (argus_cortex.server).
@@ -65,6 +68,7 @@ all = [
     "typer>=0.12",
     "rich>=13.0",
     "argus-cortex[server]>=0.4.3,<0.5",
+    "argus-cortex[postgres,s3]>=0.4.3,<0.5",
     "fastapi>=0.110",
     "uvicorn>=0.27",
     "python-multipart>=0.0.7",
