@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A new argus-cortex rebuilds the published image.** `release.yml` also runs on
+  the `cortex-released` dispatch argus-cortex's release sends: only the image job runs,
+  rebuilding the newest final `v*` tag without cache and republishing its tags, so the
+  image picks up the cortex its pyproject range now resolves to.
 - **Lens records captions into the cortex lineage store** (`argus_lens.lineage`, `[lineage]` extra).
   With `LENS_RECORD_LINEAGE=1` and `CORTEX_PG_URL`, every live caption from `serve` and
   `argus-lens caption` becomes a `source_asset` (keyed on the original bytes' sha256) plus a
