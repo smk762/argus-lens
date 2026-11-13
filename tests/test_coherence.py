@@ -196,6 +196,46 @@ def test_check_flags_identity_budget_and_grounding() -> None:
     assert any("not grounded" in p for p in problems)
 
 
+@pytest.mark.parametrize(
+    "caption",
+    [
+        # #86: accepted identity rewrites from qwen3:4b with no commas at all.
+        "man beard",
+        "man beard officer soldier",
+        "army soldier horse officer man",
+        "woman geisha kimono",
+        "sks, sword shield helmet armor horse",
+    ],
+)
+def test_check_flags_space_separated_lists(caption: str) -> None:
+    """Nouns run together without commas are a list missing its separators (#86)."""
+    problems = check_caption(caption, "list", trigger_word="sks" if caption.startswith("sks") else "")
+    assert any("separate items with commas" in p for p in problems), problems
+
+
+def test_check_flags_dangling_participle() -> None:
+    """A fragment ending on a transitive participle is dangling (#86)."""
+    problems = check_caption("black dress, white dress, woman wearing", "list")
+    assert any("dangling fragment" in p and "wearing" in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "caption",
+    [
+        "man, beard, officer, soldier",
+        "man, white hair, black beard",
+        "long sleeve white shirt",
+        "man in a dark suit, woman holding a cup",
+        "woman smiling, red dress",
+        "sks, man bun, holding",
+        "army officer, police officer",
+    ],
+)
+def test_check_accepts_well_formed_lists(caption: str) -> None:
+    """Comma-separated phrases, grammatical clauses and person-noun compounds pass."""
+    assert check_caption(caption, "list", trigger_word="sks" if caption.startswith("sks") else "") == []
+
+
 def test_check_passes_clean_prose() -> None:
     """A well-formed sentence caption passes."""
     assert check_caption("sks, A woman reads a book on a sofa.", "prose", trigger_word="sks") == []

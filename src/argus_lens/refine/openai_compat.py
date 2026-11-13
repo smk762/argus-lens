@@ -40,7 +40,9 @@ SYSTEM_PROMPT = (
     "colour the inputs do not already state for it.\n"
     "- Begin every caption with the trigger word, if one is given, followed by a comma.\n"
     '- No markdown, no hedging ("appears to be", "possibly"), no filler ("The image shows").\n'
-    'Reply with ONLY a JSON object mapping each requested caption name to its text, e.g. {"training": "..."}.'
+    '- List captions separate every item with a comma: "man, beard, uniform", never "man beard uniform".\n'
+    "Reply with ONLY a JSON object mapping each requested caption name to its text, e.g.\n"
+    '{"identity": "man, mustache, white hair", "training_prose": "A man in a dark suit stands by a window."}'
 )
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.S)
