@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`/health` advertises write capabilities** (#78): `read_only`, `immich` and
+  `immich_write_back` booleans, so Studio can disable a control before a write is refused.
+- **Read-only mode.** `serve --read-only` or `LENS_READ_ONLY=1` refuses sidecar/XMP
+  writes, `/immich/pull` and Immich write-back with a 403. Captions returned in the
+  response still work.
+- **`include_buckets` on batch captioning** (#79): `/caption/folder` and both manifest
+  endpoints add `metadata.buckets` to each row when asked. Off by default to keep large
+  batch payloads small.
 - **A new argus-cortex rebuilds the published image.** `release.yml` also runs on
   the `cortex-released` dispatch argus-cortex's release sends: only the image job runs,
   rebuilding the newest final `v*` tag without cache and republishing its tags, so the

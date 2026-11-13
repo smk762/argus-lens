@@ -332,12 +332,16 @@ Endpoints:
 - `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars)
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
-- `GET /health` -- liveness probe: `{status, service, version, source_root}`
+- `GET /health` -- liveness probe: `{status, service, version, source_root, read_only, immich, immich_write_back, gpu}`. The three booleans advertise write capabilities so a UI can disable controls up front: `read_only` (the server refuses writes), `immich` (`IMMICH_URL` and `IMMICH_API_KEY` are set) and `immich_write_back` (Immich is configured and the server is not read-only)
 - `GET /profiles` -- caption taxonomy for UIs: `{assembly_profiles, target_styles, target_categories, target_backends, token_budgets}`
 - `GET /immich/albums` -- list Immich albums (`{albums: [{id, name, asset_count}]}`); requires `IMMICH_URL` + `IMMICH_API_KEY`
 - `POST /immich/pull` -- download an Immich album (or selected `asset_ids`) into a folder under the source root; NDJSON progress stream, atomic concurrent downloads, skips existing files (in-request filename collisions are per-asset errors, and non-captionable originals like HEIC/DNG get a `warning`)
 - `POST /immich/caption/stream` -- caption Immich album assets in memory (NDJSON progress); `write_back: true` pushes captions back to Immich (`write_xmp` is rejected here -- assets never touch disk; pull first, then `/caption/folder`)
 - `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider)
+
+`/caption/folder`, `/caption/manifest` and `/caption/manifest/stream` rows carry only `rel_path` and `final_caption` (plus `xmp_path`). Pass `include_buckets: true` to add `metadata.buckets` (`{tags, prose}` → category → fragments) to each row, for faceted filtering over batch results.
+
+**Read-only mode.** `--read-only` or `LENS_READ_ONLY=1` refuses every request that would write, with a `403`: `.txt`/`.xmp` sidecars (pass `write_sidecar: false`), `/immich/pull` and Immich `write_back`. Captions returned in the response still work.
 
 The `/immich/*` endpoints read `IMMICH_URL` and `IMMICH_API_KEY` from the environment at request time; if either is unset they return `503` and the rest of the server is unaffected.
 
@@ -409,6 +413,7 @@ Copy or create a `.env` file for the Docker deployment:
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
 | `HF_TRUST_REMOTE_CODE` | `false` | Only needed for legacy `microsoft/Florence-2-*` weights. See [Security](#security) |
 | `LENS_CORS_ORIGINS` | -- | Comma-separated origins allowed CORS and cross-site writes (the image runs `--cors`, which trusts only `localhost:3000`) |
+| `LENS_READ_ONLY` | -- | `1` refuses sidecar/XMP writes, Immich pulls and write-back with a 403 (advertised as `read_only` on `/health`) |
 | `LENS_SOURCE_PATH` | `/data/images` | Host image folder mounted read-write at `/data/images` for the folder picker and `POST /caption/folder`; `.txt` sidecars are written next to the images |
 
 #### GPU prerequisites

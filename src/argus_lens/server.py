@@ -50,6 +50,7 @@ _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing sn
 _PULL_CONCURRENCY = 4  # parallel Immich downloads per /immich/pull request
 # The dev frontend (argus-studio) that bare --cors trusts, matching argus-curator.
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+_TRUTHY = frozenset({"1", "true", "yes", "on"})  # accepted spellings of an on-flag env var
 
 
 class CaptionURLRequest(BaseModel):
@@ -81,6 +82,7 @@ class CaptionFolderRequest(BaseModel):
     hybrid_preset: str | None = None
     prose_bias: float | None = None
     prose_enrichment: bool = True
+    include_buckets: bool = False
 
 
 class ImmichPullRequest(BaseModel):
@@ -276,6 +278,7 @@ def _caption_and_write(
     written: set[Path],
     hybrid_preset: str | None = None,
     prose_bias: float | None = None,
+    include_buckets: bool = False,
 ) -> dict[str, Any]:
     """Caption one image and (optionally) write its ``.txt``/``.xmp`` sidecars.
 
@@ -291,6 +294,8 @@ def _caption_and_write(
     keywords/description replace those properties; Lightroom/digiKam/curator
     metadata is kept); ``xmp_overwrite`` discards it and writes a fresh one. An
     unparseable existing ``.xmp`` is a per-image error, never clobbered.
+    ``include_buckets`` adds ``metadata.buckets`` (the tag/prose category
+    buckets) to a successful row for faceted filtering (#79).
     """
     try:
         result = engine.caption(
@@ -322,6 +327,8 @@ def _caption_and_write(
             return {"rel_path": rel_path, "error": f"sidecar write failed: {exc}"}
         written.add(sidecar_key)
     outcome: dict[str, Any] = {"rel_path": rel_path, "final_caption": result.final_caption}
+    if include_buckets:
+        outcome["metadata"] = {"buckets": result.metadata.get("buckets", {})}
     if write_xmp:
         ref = AssetRef(id=rel_path, path=image_path)
         xmp_path = XmpSink.sidecar_path(ref)
@@ -365,6 +372,7 @@ def _caption_manifest_row(
     prose_enrichment: bool,
     written: set[Path],
     export_root: Path | None = None,
+    include_buckets: bool = False,
 ) -> dict[str, Any]:
     """Caption one manifest row via its resolved image path and ``target_profile``.
 
@@ -418,6 +426,7 @@ def _caption_manifest_row(
         write_xmp=write_xmp,
         xmp_overwrite=xmp_overwrite,
         written=written,
+        include_buckets=include_buckets,
     )
 
 
@@ -494,6 +503,7 @@ def create_app(
     cors_origins: list[str] | None = None,
     source_root: str | None = None,
     cors_allow_any: bool = False,
+    read_only: bool | None = None,
     **kwargs: Any,
 ) -> FastAPI:
     """Create a FastAPI application for image captioning.
@@ -504,6 +514,11 @@ def create_app(
     cross-site write (POST from a browser page on another origin) is refused
     unless that origin is named: the caption endpoints write sidecars and have
     no auth.
+
+    *read_only* (or ``LENS_READ_ONLY=1``) refuses every request that would
+    write: ``.txt``/``.xmp`` sidecars, Immich pulls to disk and Immich
+    write-back are a 403, while captions returned in the response still work.
+    ``/health`` advertises it so a UI can disable those controls up front.
     """
 
     app = FastAPI(
@@ -561,6 +576,16 @@ def create_app(
     engine = ArgusLens(backend=default_backend, recorder=recorder, **kwargs)
     # Root for GET /folders browsing + relative folder captioning (UI folder picker).
     default_source = source_root or os.environ.get("LENS_SOURCE_PATH")
+    if read_only is None:
+        read_only = os.environ.get("LENS_READ_ONLY", "").strip().lower() in _TRUTHY
+
+    def _refuse_if_read_only(writes: bool, what: str) -> None:
+        """Raise 403 when *writes* is requested on a read-only server."""
+        if read_only and writes:
+            raise HTTPException(
+                status_code=403,
+                detail=f"server is read-only (LENS_READ_ONLY): {what} are disabled; retry with writes off",
+            )
 
     # OpenAI-compatible /v1 endpoints (Frigate GenAI provider).
     # Always mounted — Frigate's genai block uses POST /v1/chat/completions.
@@ -574,12 +599,22 @@ def create_app(
         Includes GPU residency + free VRAM so an external scheduler can
         attribute and reclaim this backend's memory (#37). The VRAM probe runs
         off the event loop (its first CUDA call can trigger context init).
+
+        Write capabilities are advertised as booleans (#78) so a UI can gate
+        controls before a refused write: ``read_only`` (sidecar/XMP writes,
+        Immich pulls and write-back are refused), ``immich`` (``IMMICH_URL`` and
+        ``IMMICH_API_KEY`` are set) and ``immich_write_back`` (Immich is
+        configured and the server is not read-only).
         """
+        immich = bool(os.environ.get("IMMICH_URL") and os.environ.get("IMMICH_API_KEY"))
         return {
             "status": "ok",
             "service": "argus-lens",
             "version": __version__,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
+            "read_only": read_only,
+            "immich": immich,
+            "immich_write_back": immich and not read_only,
             "gpu": await asyncio.to_thread(engine.vram_status),
         }
 
@@ -786,6 +821,7 @@ def create_app(
         xmp_overwrite: bool = Form(False),
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
+        include_buckets: bool = Form(False),
     ) -> dict[str, Any]:
         """Batch-caption an argus-curator JSONL manifest.
 
@@ -807,6 +843,7 @@ def create_app(
         which assumes a volume shared with the curator. Rows declaring a
         ``manifest_version`` outside the 1.x/2.x majors are rejected with 400.
         """
+        _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
         rows = _parse_manifest(await manifest.read())
         root = _manifest_export_root(export_root)
 
@@ -826,6 +863,7 @@ def create_app(
                     prose_enrichment=prose_enrichment,
                     written=written,
                     export_root=root,
+                    include_buckets=include_buckets,
                 )
                 (errors if "error" in outcome else results).append(outcome)
             return {
@@ -848,6 +886,7 @@ def create_app(
         xmp_overwrite: bool = Form(False),
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
+        include_buckets: bool = Form(False),
     ) -> StreamingResponse:
         """Streaming variant of /caption/manifest for live progress.
 
@@ -861,6 +900,7 @@ def create_app(
         volume with the curator) otherwise; a ``.txt`` sidecar is written next
         to each by default.
         """
+        _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
         rows = _parse_manifest(await manifest.read())
         root = _manifest_export_root(export_root)
         total = len(rows)
@@ -885,6 +925,7 @@ def create_app(
                     prose_enrichment=prose_enrichment,
                     written=written,
                     export_root=root,
+                    include_buckets=include_buckets,
                 )
                 if "error" in outcome:
                     failed += 1
@@ -936,6 +977,7 @@ def create_app(
         which discards it. Returns the same shape as
         ``/caption/manifest``.
         """
+        _refuse_if_read_only(req.write_sidecar or req.write_xmp, "sidecar writes")
         root = _confine_folder(default_source, req.folder)
         if not root.is_dir():
             raise HTTPException(status_code=400, detail=f"not a directory: {req.folder}")
@@ -964,6 +1006,7 @@ def create_app(
                     write_xmp=req.write_xmp,
                     xmp_overwrite=req.xmp_overwrite,
                     written=written,
+                    include_buckets=req.include_buckets,
                 )
                 (errors if "error" in outcome else results).append(outcome)
             return {
@@ -1006,6 +1049,7 @@ def create_app(
         silently dropped. ``dest_folder`` must resolve inside the configured
         source root.
         """
+        _refuse_if_read_only(True, "pulling Immich assets to disk")
         url, api_key = _immich_config()
         dest = _confine_folder(default_source, req.dest_folder)
         source = ImmichSource(url, api_key)
@@ -1156,6 +1200,7 @@ def create_app(
                     "with write_xmp=true (or use write_back to store captions in Immich itself)."
                 ),
             )
+        _refuse_if_read_only(req.write_back, "Immich write-back")
         url, api_key = _immich_config()
         source = ImmichSource(url, api_key)
         sink = ImmichSink(url, api_key) if req.write_back else None
