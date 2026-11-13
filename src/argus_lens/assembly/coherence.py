@@ -102,6 +102,58 @@ _SUBJECTLESS_PREDICATE = re.compile(
 )
 # Sentence opening on a participle with no subject: "Smiling at the camera."
 _GERUND_START = re.compile(r"^[A-Z]?[a-z]+ing\b(?![^.]*\b(?:is|are|was|were)\b)")
+# Person nouns that head a phrase. In a list fragment with no function word,
+# one of these followed by more words means a missing comma: "man beard",
+# "woman geisha kimono", "army soldier horse officer man" (#86).
+_PERSON_NOUNS: frozenset[str] = frozenset(
+    {
+        "man",
+        "men",
+        "woman",
+        "women",
+        "girl",
+        "girls",
+        "boy",
+        "boys",
+        "person",
+        "people",
+        "child",
+        "children",
+        "kid",
+        "kids",
+        "lady",
+        "gentleman",
+        "baby",
+        "toddler",
+        "teenager",
+        "soldier",
+        "soldiers",
+        "officer",
+        "couple",
+    }
+)
+# Compounds where a person noun legitimately modifies the next word.
+_PERSON_COMPOUNDS: frozenset[str] = frozenset({"man bun", "girl scout", "boy scout", "boy band", "girl group"})
+# A run of this many bare words with no function word is a list missing its commas.
+_MAX_BARE_RUN = 4
+# Transitive participles that cannot end a list fragment: "woman wearing", "man holding".
+_DANGLING_PARTICIPLES: frozenset[str] = frozenset(
+    {
+        "wearing",
+        "holding",
+        "carrying",
+        "wielding",
+        "featuring",
+        "depicting",
+        "showing",
+        "using",
+        "riding",
+        "wears",
+        "holds",
+        "carries",
+        "dressed",
+    }
+)
 _REPEATED_WORD = re.compile(r"\b(\w+)(?:\s+\1\b)+", re.I)
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _WORD = re.compile(r"[a-z0-9][a-z0-9'+-]*")
@@ -110,6 +162,32 @@ _WORD = re.compile(r"[a-z0-9][a-z0-9'+-]*")
 def _words(text: str) -> list[str]:
     """Lower-cased word tokens (underscored tags split into words)."""
     return _WORD.findall(text.lower().replace("_", " "))
+
+
+def _list_fragment_problem(fragment: str) -> str | None:
+    """Describe what is wrong with one list fragment beyond what repair fixes, or ``None``.
+
+    Catches the two shapes a small rewriter produces when it ignores the list
+    format (#86): several nouns run together with spaces instead of commas
+    ("man beard officer soldier"), and a fragment cut off after a transitive
+    participle ("woman wearing").
+    """
+    words = _words(fragment)
+    if len(words) < 2:
+        return None
+    if words[-1] in _DANGLING_PARTICIPLES:
+        return f"dangling fragment (ends on {words[-1]!r}): {fragment!r}"
+    if any(w in _TRAILING_FUNCTION_WORDS for w in words):
+        return None  # a phrase with grammar ("man in a suit", "woman holding a cup")
+    joined = " ".join(words)
+    # A person noun followed by a participle is a phrase ("woman smiling"); by a noun, a run-on.
+    person_not_head = any(
+        w in _PERSON_NOUNS and not words[i + 1].endswith("ing") and f"{w} {words[i + 1]}" not in _PERSON_COMPOUNDS
+        for i, w in enumerate(words[:-1])
+    )
+    if person_not_head or len(words) > _MAX_BARE_RUN:
+        return f"separate items with commas, not spaces: {joined!r}"
+    return None
 
 
 def clean_prose(prose: str) -> tuple[str, list[str]]:
@@ -296,6 +374,9 @@ def check_caption(
         bad = [f.strip() for f in body.split(",") if _SUBJECTLESS_PREDICATE.match(f.strip())]
         if bad:
             problems.append(f"fragment missing its subject: {bad[0]!r}")
+        fragment_problems = [p for f in body.split(",") if (p := _list_fragment_problem(f.strip()))]
+        if fragment_problems:
+            problems.append(fragment_problems[0])
     else:
         sentences = [s for s in _SENTENCE_SPLIT.split(body.strip()) if s]
         bad = [s for s in sentences[1:] if _GERUND_START.match(s)]
