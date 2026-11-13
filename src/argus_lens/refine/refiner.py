@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import httpx
 import structlog
 
+from argus_lens.assembly import tag_reconcile
 from argus_lens.assembly.coherence import check_caption, repair_caption
-from argus_lens.assembly.tag_reconcile import HUE_WORDS
 from argus_lens.assembly.token_budget import is_t5_backend
 
 if TYPE_CHECKING:
@@ -270,9 +270,9 @@ def _ungrounded_hue_pairs(text: str, *sources: str) -> list[str]:
     pairs = [
         f"{w} {nxt}"
         for w, nxt in zip(words, words[1:], strict=False)
-        if w in HUE_WORDS and nxt not in HUE_WORDS and nxt not in _MEDIUM_WORDS
+        if w in tag_reconcile.HUE_WORDS and nxt not in tag_reconcile.HUE_WORDS and nxt not in _MEDIUM_WORDS
     ]
-    if words and words[-1] in HUE_WORDS:
+    if words and words[-1] in tag_reconcile.HUE_WORDS:
         pairs.append(words[-1])
     return [p for p in dict.fromkeys(pairs) if f" {p} " not in haystack]
 
