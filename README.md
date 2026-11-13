@@ -9,6 +9,8 @@ One image. A hundred perspectives.
 
 Multi-model captioning pipeline for LoRA training, dataset curation, and generative AI workflows. Unlike traditional captioners that describe an image, Argus Lens produces **intent-aware caption subsets** -- structured, filtered, and optimised for how captions are actually used downstream.
 
+> **See it run:** [Lightbox](https://lightbox.dragonhound.dev) is a live demo of the assembly pipeline: real captions, every variant, and what each step removed and why.
+>
 > **Looking for the web UI?** See [argus-studio](https://github.com/smk762/argus-studio) -- a thin Next.js frontend for exploring argus-lens interactively.
 
 ## Quick Start
@@ -58,7 +60,7 @@ The model is just an input source. The real value is what happens after inferenc
 ## Features
 
 - **Multi-model backends**: WD14, RAM++, Florence-2, BLIP-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM, and any OpenAI-compatible server — Ollama, vLLM, LM Studio (cloud or self-hosted API)
-- **Structured captions**: Category-bucketed variants (identity, wardrobe, pose, setting, lighting, action)
+- **Structured captions**: Category-bucketed variants (identity, wardrobe, pose, setting, lighting, action). A category with nothing in its bucket borrows fragments from the others; `metadata["empty_categories"]` lists which categories did
 - **Training-optimised**: Tiered tag protection, omission cycles, CLIP/T5 token budgets, identity suppression
 - **Zero-shot variant**: Identity-first, prose-preferred captions for generation without LoRA
 - **Hybrid pipelines**: Mix local + cloud backends (e.g. WD14 tags + GPT-4o prose)
@@ -169,6 +171,34 @@ argus-lens caption photo.jpg --backend openai-compat \
 argus-lens backends
 ```
 
+Every command and option is listed in the [CLI reference](https://github.com/smk762/argus-lens/blob/dev/docs/cli.md), generated from the CLI itself. The fields of a caption result are documented in the [caption result reference](https://github.com/smk762/argus-lens/blob/dev/docs/caption-result.md).
+
+### OpenAI-compatible VLMs (prompt presets)
+
+The `openai-compat` backend (alone, or as the prose stage of `hybrid:wd14+openai-compat` / `hybrid:ram+openai-compat`) sends each image to any `/v1/chat/completions` server that accepts `image_url` data URIs: Ollama, vLLM, LM Studio, LocalAI, llama.cpp or a hosted gateway. It needs no API key for local servers. Prefer non-thinking model variants (`qwen3-vl:8b-instruct` rather than `qwen3-vl:8b`): thinking variants can spend the whole token budget reasoning and return no caption.
+
+`--prompt` (or `prompt=` in Python) takes a preset name or literal prompt text:
+
+| Preset | Asks the model for | Use it for |
+|---|---|---|
+| `detailed` (default) | "Describe this image in detail." | A quick start with any VLM. |
+| `straightforward` | A concise caption that starts with the main subject and medium, uses confident, definite language, and focuses on concrete details (colour, shape, texture, spatial relationships). No mood, speculation, absences or "This image is" opener. | Captions from capable VLMs (Qwen3-VL 8B, JoyCaption). This is JoyCaption Beta One's trained wording, kept as trained. Lightbox's demo captions use it. |
+| `grounded` | `straightforward` without "confident, definite language", plus: on a black-and-white or sepia image, say so and name no colours; give counts only for things counted one by one; quote text only when every letter is legible; name no army, side, organisation or rank unless it is written in the image. | Small general VLMs (e.g. `qwen3-vl:2b-instruct` on CPU), which state guessed counts and misread names as fact. Opt-in: at 2B the model follows these rules unreliably and can introduce new slips. |
+| `descriptive` | "Write a long descriptive caption for this image in a formal tone." | Long, formal prose. JoyCaption's descriptive mode. |
+| `booru` | "Write a list of Booru-like tags for this image." | Booru-style tags from a VLM. JoyCaption's booru mode. |
+
+There is also a `count` preset, which asks only for the number of people visible. It is not a caption prompt.
+
+| Variable | Default | Description |
+|---|---|---|
+| `ARGUS_OPENAI_COMPAT_BASE_URL` | `http://localhost:11434/v1` (Ollama) | Endpoint (`--base-url`, `base_url=`) |
+| `ARGUS_OPENAI_COMPAT_MODEL` | `llava` | Model ID (`--model-id`, `model_id=`) |
+| `ARGUS_OPENAI_COMPAT_API_KEY` | -- | API key, if the server needs one (`--api-key`, `api_key=`) |
+| `ARGUS_OPENAI_COMPAT_PROMPT` | `detailed` | Preset name or literal prompt text (`--prompt`, `prompt=`) |
+| `ARGUS_OPENAI_COMPAT_MAX_SIDE` | `1024` | Long edge, in pixels, that images are downscaled to before sending (`max_image_side=`); `0` sends full size. A 3600×2400 photo costs about 4k vision tokens and overflows Ollama's default 4096 context, while 1024 px is about 1.1k. |
+
+Arguments win over environment variables, which win over the defaults.
+
 ### Evaluation
 
 Measure caption quality so model swaps, hybrid presets, and future summariser / VQA passes can be judged by numbers instead of vibes. Requires the `[eval]` extra for CLIPScore only (`pip install argus-lens[cli,eval]`); every other metric is dependency-free.
@@ -188,7 +218,7 @@ argus-lens eval ./images/ --hybrid-preset descriptive --baseline keywords.json
 argus-lens eval eval/golden.jsonl --clip --baseline baseline.json --fail-on-regression
 ```
 
-Metrics: **tag↔prose contradiction** (colour/pose — reference-free), **token-budget adherence**, **redundancy/filler rate**, **tag-coverage recall** (labelled), and optional **CLIPScore**. A labelled golden set is a JSONL manifest — see [eval/README.md](eval/README.md) for the format.
+Metrics: **tag↔prose contradiction** (colour/pose — reference-free), **token-budget adherence**, **redundancy/filler rate**, **tag-coverage recall** (labelled), and optional **CLIPScore**. A labelled golden set is a JSONL manifest — see [eval/README.md](https://github.com/smk762/argus-lens/blob/dev/eval/README.md) for the format.
 
 ### Reconciliation (colour/pose fixes)
 
@@ -237,11 +267,23 @@ engine = ArgusLens(backend="hybrid", refiner=refiner)
 argus-lens caption ./images/ --recursive --refine-model qwen3:14b   # refine is on by default; --no-refine to skip
 ```
 
-`result.metadata["refine"]` records what was accepted or rejected, and why.
+`result.metadata["refine"]` records what was accepted or rejected, and why (see the [caption result reference](https://github.com/smk762/argus-lens/blob/dev/docs/caption-result.md#metadata)).
+
+| Variable | Default | Description |
+|---|---|---|
+| `ARGUS_REFINE` | on | `off` (or `0`/`false`/`no`/`none`) disables refinement |
+| `ARGUS_REFINE_MODEL` | `qwen3:8b` | Chat model for the rewrite (`--refine-model`) |
+| `ARGUS_REFINE_BASE_URL` | `http://localhost:11434/v1` (Ollama) | OpenAI-compatible endpoint (`--refine-url`) |
+| `ARGUS_REFINE_API_KEY` | -- | API key, if the endpoint needs one (`--refine-key`) |
+| `ARGUS_REFINE_VARIANTS` | `all` | Comma-separated variants to rewrite (`--refine-variants`) |
+| `ARGUS_REFINE_IMAGE` | `false` | `true`/`1`/`yes` also sends the image (downscaled to 1024 px) for vision models (`--refine-image`) |
+| `ARGUS_REFINE_REASONING_EFFORT` | `none` | `reasoning_effort` sent with each request. `none` turns off "thinking" on hybrid reasoning models such as Qwen3, which otherwise spend the token budget reasoning and return nothing. Set it empty to never send the parameter. A server that rejects it with HTTP 400 is retried once without it, and it isn't sent again. |
+
+**Tag reconciliation.** Before tags are bucketed, assembly settles tagger output that contradicts itself, the prose or the pixels: `girl`/`boy` next to `woman`/`man` is dropped unless the prose names a child, and `man`+`woman` on a portrait the prose describes as one sex keeps only that one. `beard` becomes `mustache` when the prose names a moustache and no beard (RAM++ has no moustache tag); when the prose says nothing about facial hair, `beard` is kept. On a black-and-white or toned image (a cheap Cb/Cr spread check on the pixels), the bare `black`/`white` tags become one `monochrome` tag. `raw_tags` keeps the tagger's output, and `metadata["reconciled_tags"]`, `metadata["tag_reconcile"]` (`dropped`, `added`, `notes`) and `metadata["monochrome"]` record the result. The refiner sees the reconciled tags, may not reintroduce a dropped term the prose doesn't name, and on a monochrome image rejects colour+noun pairs (`black beard`) that no input states.
 
 ### Dataset curation workflow
 
-[`workflows/`](workflows/README.md) contains a complete, resumable pipeline for a large people-photo library (`<name>/pics/<shoot_id>/*.jpg`). It captions each image once, groups images by shared identity, wardrobe, setting and action tags, flags multi-person images for face ID, and exports SDXL and Flux training datasets. It builds on these result fields:
+[`workflows/`](https://github.com/smk762/argus-lens/blob/dev/workflows/README.md) contains a complete, resumable pipeline for a large people-photo library (`<name>/pics/<shoot_id>/*.jpg`). It captions each image once, groups images by shared identity, wardrobe, setting and action tags, flags multi-person images for face ID, and exports SDXL and Flux training datasets. It builds on these result fields:
 
 - `metadata["buckets"]`: un-truncated per-category tags and prose, with no-match tags kept apart in `unclassified`
 - `metadata["subjects"]`: a headcount estimate (`count`, `multiple`, `agree`, `evidence`)
@@ -251,7 +293,7 @@ argus-lens caption ./images/ --recursive --refine-model qwen3:14b   # refine is 
 
 **Custom RAM++ tags (vocabulary packs).** RAM++ stores each tag as 51 CLIP-embedded text descriptions, so you can add tags it doesn't know without retraining. `argus-lens ram-vocab build tags.txt --out packs/fashion --name fashion` writes 51 descriptions per tag with any OpenAI-compatible LLM (the `ARGUS_REFINE_*` endpoint by default, e.g. a local Ollama model; same prompts as upstream), embeds them with CLIP ViT-B/16, and writes a pack (`manifest.json` + `embeddings.safetensors`, about 70 KB per tag). A tag list is one tag per line, optionally `tag<TAB>threshold` (default 0.5); a descriptions JSON (`[{"tag": ["desc", ...]}]`, upstream's format) skips the LLM step. Use it with `RamBackend(vocab_packs=[...])` or `RAM_VOCAB_PACKS=packs/fashion`. Pack tags extend the built-in 4585 (a pack tag that duplicates a built-in one replaces it), and report `source="ram:<pack>"` in provenance. `builtin_vocab=False` tags with the packs alone. `argus-lens ram-vocab inspect <pack>` summarises one. Built from upstream's 200 OpenImages-Uncommon descriptions, a pack reproduces 5 of the 6 tags in upstream's published open-set example; the sixth scores 0.498 against the 0.5 threshold.
 
-Newer models plug in directly: `--wd14-repo SmilingWolf/wd-eva02-large-tagger-v3` for tags, and `hybrid:wd14+openai-compat --model-id qwen3-vl:8b-instruct --prompt straightforward` for prose from Qwen3-VL, JoyCaption or any served VLM.
+Newer models plug in directly: `--wd14-repo SmilingWolf/wd-eva02-large-tagger-v3` for tags, and `hybrid:wd14+openai-compat --model-id qwen3-vl:8b-instruct --prompt straightforward` for prose from Qwen3-VL, JoyCaption or any served VLM. For small general VLMs (e.g. `qwen3-vl:2b-instruct` on CPU), try `--prompt grounded`. See [prompt presets](#openai-compatible-vlms-prompt-presets).
 
 ### GPU sharing (lifecycle + coordinator)
 
@@ -265,6 +307,8 @@ engine.caption("photo.jpg")
 engine.unload()          # free VRAM now; reloads lazily on the next caption
 engine.vram_status()     # {backend, loaded, coordinator, free_vram_mb, idle_s}
 ```
+
+For `argus-lens serve`, set `ARGUS_IDLE_UNLOAD_S` (seconds) to turn on the same idle unload; it is off when unset. Separately, the WD14, RAM++ and BLIP-2 backends share a process-wide model cache that evicts a model no caller holds after `ARGUS_MODEL_IDLE_SECONDS` of idleness (default 300).
 
 The server exposes `GET /health` (now includes a `gpu` block) and `POST /admin/unload`, so an external scheduler can free lens's VRAM on demand.
 
@@ -330,12 +374,17 @@ Endpoints:
 - `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars)
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
 - `GET /backends` -- list available backends
-- `GET /health` -- liveness probe: `{status, service, version, source_root}`
-- `GET /profiles` -- caption taxonomy for UIs: `{assembly_profiles, target_styles, target_categories, target_backends, token_budgets}`
+- `GET /health` -- liveness probe: `{status, service, version, source_root, read_only, immich, immich_write_back, gpu}`. The three booleans advertise write capabilities so a UI can disable controls up front: `read_only` (the server refuses writes), `immich` (`IMMICH_URL` and `IMMICH_API_KEY` are set) and `immich_write_back` (Immich is configured and the server is not read-only)
+- `GET /profiles` -- caption taxonomy for UIs: `{assembly_profiles, target_styles, target_categories, target_backends, token_budgets, hybrid_presets, default_hybrid_preset}`. `hybrid_presets` maps each preset name to its redundancy threshold (`tags` 0.20 … `prose` 0.85), and `default_hybrid_preset` is `balanced`
 - `GET /immich/albums` -- list Immich albums (`{albums: [{id, name, asset_count}]}`); requires `IMMICH_URL` + `IMMICH_API_KEY`
 - `POST /immich/pull` -- download an Immich album (or selected `asset_ids`) into a folder under the source root; NDJSON progress stream, atomic concurrent downloads, skips existing files (in-request filename collisions are per-asset errors, and non-captionable originals like HEIC/DNG get a `warning`)
 - `POST /immich/caption/stream` -- caption Immich album assets in memory (NDJSON progress); `write_back: true` pushes captions back to Immich (`write_xmp` is rejected here -- assets never touch disk; pull first, then `/caption/folder`)
-- `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider)
+- `GET /v1/models` -- the model IDs `/v1/chat/completions` accepts, in OpenAI list format: `argus-wd14`, `argus-florence2`, `argus-hybrid`
+- `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider). `model` must be one of the `/v1/models` IDs (default `argus-hybrid`); any other value is a 404
+
+`/caption/folder`, `/caption/manifest` and `/caption/manifest/stream` rows carry only `rel_path` and `final_caption` (plus `xmp_path`). Pass `include_buckets: true` to add `metadata.buckets` (`{tags, prose}` → category → fragments) to each row, for faceted filtering over batch results.
+
+**Read-only mode.** `--read-only` or `LENS_READ_ONLY=1` refuses every request that would write, with a `403`: `.txt`/`.xmp` sidecars (pass `write_sidecar: false`), `/immich/pull` and Immich `write_back`. Captions returned in the response still work.
 
 The `/immich/*` endpoints read `IMMICH_URL` and `IMMICH_API_KEY` from the environment at request time; if either is unset they return `503` and the rest of the server is unaffected.
 
@@ -406,7 +455,10 @@ Copy or create a `.env` file for the Docker deployment:
 | `WD14_MODEL_DIR` | `~/.cache/wd14_tagger/` | WD14 ONNX model directory (auto-downloads on first use) |
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
 | `HF_TRUST_REMOTE_CODE` | `false` | Only needed for legacy `microsoft/Florence-2-*` weights. See [Security](#security) |
+| `ARGUS_IDLE_UNLOAD_S` | -- | Free the model's VRAM after this many idle seconds; it reloads on the next caption (unset: stay loaded) |
+| `ARGUS_MODEL_IDLE_SECONDS` | `300` | Idle seconds before the shared WD14/RAM++/BLIP-2 model cache evicts an unused model |
 | `LENS_CORS_ORIGINS` | -- | Comma-separated origins allowed CORS and cross-site writes (the image runs `--cors`, which trusts only `localhost:3000`) |
+| `LENS_READ_ONLY` | -- | `1` refuses sidecar/XMP writes, Immich pulls and write-back with a 403 (advertised as `read_only` on `/health`) |
 | `LENS_SOURCE_PATH` | `/data/images` | Host image folder mounted read-write at `/data/images` for the folder picker and `POST /caption/folder`; `.txt` sidecars are written next to the images |
 
 #### GPU prerequisites

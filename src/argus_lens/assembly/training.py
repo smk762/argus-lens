@@ -23,7 +23,7 @@ from __future__ import annotations
 import random
 
 from argus_lens.assembly.filtering import with_trigger
-from argus_lens.assembly.token_budget import estimate_tokens, try_add_fragment
+from argus_lens.assembly.token_budget import try_add_fragment
 from argus_lens.types import (
     CategoryConfig,
     normalise_target_style,
@@ -261,65 +261,23 @@ def assemble_training_variant(
     removed.extend(pose_dropped + action_dropped + ward_dropped + light_dropped + set_dropped)
 
     # Phase 4: assemble under token budget
-    trigger_tokens = estimate_tokens(trigger_word, target_backend)
-    used_tokens = trigger_tokens
+    # Each fragment is checked against the whole caption so far (trigger included).
     kept: list[str] = []
 
-    for fragment in tier1:
-        added, used_tokens = try_add_fragment(
-            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
-        )
-        if not added:
-            removed.append(fragment)
-
-    for fragment in tier2:
-        added, used_tokens = try_add_fragment(
-            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
-        )
-        if not added:
-            removed.append(fragment)
-
-    for fragment in pose_rest:
-        added, used_tokens = try_add_fragment(
-            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
-        )
-        if not added:
-            removed.append(fragment)
-
-    for fragment in action_all:
-        added, used_tokens = try_add_fragment(
-            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
-        )
-        if not added:
-            removed.append(fragment)
-
-    for fragment in wardrobe_all:
-        added, used_tokens = try_add_fragment(
-            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
-        )
-        if not added:
-            removed.append(fragment)
-
-    for fragment in lighting_all:
-        added, used_tokens = try_add_fragment(
-            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
-        )
-        if not added:
-            removed.append(fragment)
-
-    for fragment in setting_all:
-        added, used_tokens = try_add_fragment(
-            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
-        )
-        if not added:
-            removed.append(fragment)
-
-    # Phase 5: prose enrichment (lowest priority, budget permitting)
-    for fragment in enrichment or []:
-        added, used_tokens = try_add_fragment(
-            fragment, kept, used_tokens, max_segments, clip_token_budget, target_backend
-        )
-        if not added:
+    # Phase 5 (enrichment) is lowest priority, budget permitting.
+    for fragment in (
+        *tier1,
+        *tier2,
+        *pose_rest,
+        *action_all,
+        *wardrobe_all,
+        *lighting_all,
+        *setting_all,
+        *(enrichment or []),
+    ):
+        if not try_add_fragment(
+            fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
+        ):
             removed.append(fragment)
 
     removed.extend(identity_discarded)

@@ -327,3 +327,23 @@ def test_photo_list_rewrites_drop_underscores() -> None:
     reply = {"training": "sks, standing, red_dress, kitchen, holding cup"}
     refined = Refiner(_ScriptedRewriter(reply), variants=("training",)).refine(result, profile, trigger_word="sks")
     assert refined.caption_variants["training"] == "sks, standing, red dress, kitchen, holding cup"
+
+
+def test_space_separated_identity_rewrite_is_retried_then_falls_back() -> None:
+    """``man beard officer soldier`` (#86) is rejected with feedback; the draft survives a repeat."""
+    result, profile = _result()
+    bad = {"identity": "man beard officer soldier"}
+    rewriter = _ScriptedRewriter(bad, bad)
+    refined = Refiner(rewriter, variants=("identity",)).refine(result, profile)
+    assert refined.caption_variants["identity"] == result.caption_variants["identity"]
+    feedback = rewriter.requests[1][0].feedback["identity"]
+    assert any("separate items with commas" in p for p in feedback)
+
+
+def test_space_separated_rewrite_accepted_once_fixed() -> None:
+    """The retry with commas is accepted."""
+    result, profile = _result()
+    rewriter = _ScriptedRewriter({"identity": "woman geisha kimono"}, {"identity": "woman, brown hair"})
+    refined = Refiner(rewriter, variants=("identity",)).refine(result, profile)
+    assert refined.caption_variants["identity"] == "woman, brown hair"
+    assert refined.metadata["refine"]["attempts"] == 2

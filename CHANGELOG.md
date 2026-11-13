@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-13
+
 ### Added
+- **`grounded` prompt preset for small VLMs** (#94, refs #87/#83). `--prompt grounded` or
+  `ARGUS_OPENAI_COMPAT_PROMPT=grounded`: the `straightforward` wording minus "confident,
+  definite language". It asks for counts only of things counted one by one, quoted text only
+  when every letter is legible, no army/side/organisation unless written, and no object colours
+  in a black-and-white image. Opt-in: a CPU run with `qwen3-vl:2b-instruct` fixed the named
+  #87 slips but added new failure modes (see #87), so `straightforward` stays the default.
+- **Tag reconciliation** (`assembly/tag_reconcile.py`, #92, fixes #83/#84/#85). Before
+  bucketing, tags are checked against the prose. A `girl`/`boy` tagged alongside
+  `woman`/`man` is dropped unless the prose names a child. `beard` becomes `mustache` when the
+  prose names only a moustache. On a monochrome image (`is_monochrome`, Pillow only), bare
+  `black`/`white`/`grey` tags fold into `monochrome`. `raw_tags` is unchanged; `metadata`
+  gains `reconciled_tags`, `tag_reconcile` and `monochrome`.
+- **`metadata["empty_categories"]`** (#93) lists the categories whose variant was padded from
+  other buckets, so a UI can mark them.
+- **Reference docs** (#99, refs #96): `docs/caption-result.md` (every `CaptionResult` field
+  and `metadata` key), a generated `docs/cli.md` (`make docs-cli`), a prompt-preset table, and
+  env var tables for openai-compat and refinement. The README links the Lightbox demo.
+- **`/health` advertises write capabilities** (#78): `read_only`, `immich` and
+  `immich_write_back` booleans, so Studio can disable a control before a write is refused.
+- **Read-only mode.** `serve --read-only` or `LENS_READ_ONLY=1` refuses sidecar/XMP
+  writes, `/immich/pull` and Immich write-back with a 403. Captions returned in the
+  response still work.
+- **`include_buckets` on batch captioning** (#79): `/caption/folder` and both manifest
+  endpoints add `metadata.buckets` to each row when asked. Off by default to keep large
+  batch payloads small.
 - **A new argus-cortex rebuilds the published image.** `release.yml` also runs on
   the `cortex-released` dispatch argus-cortex's release sends: only the image job runs,
   rebuilding the newest final `v*` tag without cache and republishing its tags, so the
@@ -25,6 +52,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ArgusLens(recorder=...)`; `ImageAsset` carries the original bytes (`data`, not part of equality).
   - The Docker image installs the extra; `docker-compose.yaml` passes `LENS_RECORD_LINEAGE` and
     `CORTEX_*` through.
+
+### Fixed
+- **`training_prose` no longer cuts sentences mid-phrase** (#91, fixes #88). Identity
+  phrases with coordinated adjectives ("a woman with light-colored, wavy hair") are removed
+  whole. Sentence splitting ignores initials and quoted text (`"J.T. GUARDS."`). CLIP targets
+  keep at most two sentences, as refine already did.
+- **Refine rejects comma-less and dangling list rewrites** (#90, fixes #86): `man beard officer
+  soldier` and `woman wearing` are now flagged and retried, falling back to the
+  deterministic draft.
+- **Refine no longer brings back tags that reconciliation dropped** (#92), and on a monochrome
+  image it rejects colour words the inputs don't state.
+- **Lighting and action prose reach their buckets** (#93, fixes #89). There are more lighting
+  and action hint words. Prose sentences split where they turn to the lighting. RAM++'s
+  `writing`/`painting` tags no longer count as actions.
+- **Packed captions no longer read as over budget** (#80). Assembly (`training`,
+  `zeroshot`, `training_prose`) now checks each fragment against the whole caption so
+  far, trigger word included, using the same `estimate_tokens` that refine,
+  `token_budget_adherence` and Studio use. It used to add up per-fragment estimates,
+  which rounded down each fragment and skipped the comma after the trigger, so 30
+  one-word tags packed at 59 tokens measured 68. Tag-heavy variants may now keep a
+  fragment or two fewer.
 
 ### Changed
 - **The GPU coordinator is now the suite's shared `argus_cortex.gpu`** (`argus-cortex>=0.4.3,<0.5`).
@@ -522,7 +570,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/smk762/argus-lens/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/smk762/argus-lens/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/smk762/argus-lens/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/smk762/argus-lens/compare/v0.7.0...v0.8.0

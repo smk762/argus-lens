@@ -13,6 +13,16 @@ argus-quarry -> argus-curator -> argus-lens -> argus-forge -> your trainer -> ar
 
 The model is just an input source; the value is the **assembly pipeline** that runs after inference (classify → filter → specialise → token-budget → diversify → enrich). Read the README's "assembly pipeline" section for the *why* behind each step.
 
+## Argus suite
+<!-- argus-suite: keep this block; argus-ci checks for it -->
+This repo is part of the Argus suite. The suite map below lists every sibling and what it owns; check it before
+building something a sibling may already do. **On every release, update this repo's row and capabilities in
+argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
+
+@../argus-core/SUITE.md
+
+Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
+
 ## Layout
 
 `src/argus_lens/`:
@@ -51,6 +61,10 @@ Run a single test: `uv run --no-sync pytest tests/test_assembly.py::test_name -q
 - **`CaptionResult` is the wire schema.** Endpoints `asdict()` it to JSON; the `caption_variants` keys (the category names + `training`/`zeroshot`) and field names are the API contract for argus-studio and downstream tools — renaming a field or variant key is a breaking change. Only manifest majors **1.x/2.x** are accepted (`_SUPPORTED_MANIFEST_MAJORS`); a new major must fail loudly.
 - **Versioning is git-tag-derived** (`hatch-vcs`); `src/argus_lens/_version.py` is generated and gitignored. Never hand-edit a version — tag `vX.Y.Z` to release.
 - `structlog` for logging; Ruff line-length 120 (`E`/`F`/`W`/`I`/`UP`/`B`/`SIM`); `interrogate` gates docstring coverage at 80% in CI. Python ≥ 3.11.
+
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev` so the merge commit is not left on `main` alone.
 
 ## CI / release
 

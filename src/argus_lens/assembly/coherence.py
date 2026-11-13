@@ -102,14 +102,139 @@ _SUBJECTLESS_PREDICATE = re.compile(
 )
 # Sentence opening on a participle with no subject: "Smiling at the camera."
 _GERUND_START = re.compile(r"^[A-Z]?[a-z]+ing\b(?![^.]*\b(?:is|are|was|were)\b)")
+# Person nouns that head a phrase. In a list fragment with no function word,
+# one of these followed by more words means a missing comma: "man beard",
+# "woman geisha kimono", "army soldier horse officer man" (#86).
+_PERSON_NOUNS: frozenset[str] = frozenset(
+    {
+        "man",
+        "men",
+        "woman",
+        "women",
+        "girl",
+        "girls",
+        "boy",
+        "boys",
+        "person",
+        "people",
+        "child",
+        "children",
+        "kid",
+        "kids",
+        "lady",
+        "gentleman",
+        "baby",
+        "toddler",
+        "teenager",
+        "soldier",
+        "soldiers",
+        "officer",
+        "couple",
+    }
+)
+# Compounds where a person noun legitimately modifies the next word.
+_PERSON_COMPOUNDS: frozenset[str] = frozenset({"man bun", "girl scout", "boy scout", "boy band", "girl group"})
+# A run of this many bare words with no function word is a list missing its commas.
+_MAX_BARE_RUN = 4
+# Transitive participles that cannot end a list fragment: "woman wearing", "man holding".
+_DANGLING_PARTICIPLES: frozenset[str] = frozenset(
+    {
+        "wearing",
+        "holding",
+        "carrying",
+        "wielding",
+        "featuring",
+        "depicting",
+        "showing",
+        "using",
+        "riding",
+        "wears",
+        "holds",
+        "carries",
+        "dressed",
+    }
+)
 _REPEATED_WORD = re.compile(r"\b(\w+)(?:\s+\1\b)+", re.I)
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+# Candidate sentence ends: terminal punctuation (plus any closing quote/bracket)
+# before whitespace, or a line break. :func:`split_sentences` vets each one.
+_SENTENCE_END = re.compile(r"[.!?;][\"'\u201d\u2019)\]]*(?=\s|$)|\n+")
+# A full stop after an initial or a title is not a sentence end: "J.T. GUARDS", "Dr. Smith".
+_ABBREVIATION = re.compile(r"(?:^|[\s.(\"'\u201c])(?:[A-Z]|Mr|Mrs|Ms|Dr|St|Jr|Sr|Mt)\.$")
+_CLOSERS = "\"'\u201d\u2019)]"
 _WORD = re.compile(r"[a-z0-9][a-z0-9'+-]*")
+
+
+def split_sentences(text: str, *, semicolons: bool = False) -> list[str]:
+    """Split *text* into sentences, keeping each one's terminal punctuation.
+
+    Unlike a bare ``(?<=[.!?])\\s+`` split this does not break after an
+    initial or title (``"J.T. GUARDS."``, ``Dr. Smith``) or inside an open
+    double quote, and it ends a sentence after a closing quote
+    (``... the text "J.T. GUARDS." The photograph ...``). With *semicolons*
+    a ``;`` also ends a sentence. Line breaks always do.
+    """
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_END.finditer(text):
+        mark = match.group(0)
+        if mark[0] != "\n":
+            if mark[0] == ";" and not semicolons:
+                continue
+            chunk = text[start : match.end()]
+            if mark[0] == "." and _ABBREVIATION.search(text[start : match.start() + 1]):
+                continue
+            rest = text[match.end() :]
+            if (chunk.count('"') % 2 and '"' in rest) or (
+                chunk.count("\u201c") > chunk.count("\u201d") and "\u201d" in rest
+            ):
+                continue  # inside a quotation (one that closes: a stray 12" inch mark is not)
+        piece = text[start : match.end()].strip()
+        if piece:
+            sentences.append(piece)
+        start = match.end()
+    tail = text[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def end_sentence(body: str) -> str:
+    """Return *body* with a full stop, unless it already ends ``."`` / ``?)`` style."""
+    stripped = body.rstrip(_CLOSERS)
+    if stripped != body and stripped[-1:] in (".", "!", "?"):
+        return body
+    return body + "."
 
 
 def _words(text: str) -> list[str]:
     """Lower-cased word tokens (underscored tags split into words)."""
     return _WORD.findall(text.lower().replace("_", " "))
+
+
+def _list_fragment_problem(fragment: str) -> str | None:
+    """Describe what is wrong with one list fragment beyond what repair fixes, or ``None``.
+
+    Catches the two shapes a small rewriter produces when it ignores the list
+    format (#86): several nouns run together with spaces instead of commas
+    ("man beard officer soldier"), and a fragment cut off after a transitive
+    participle ("woman wearing").
+    """
+    words = _words(fragment)
+    if len(words) < 2:
+        return None
+    if words[-1] in _DANGLING_PARTICIPLES:
+        return f"dangling fragment (ends on {words[-1]!r}): {fragment!r}"
+    if any(w in _TRAILING_FUNCTION_WORDS for w in words):
+        return None  # a phrase with grammar ("man in a suit", "woman holding a cup")
+    joined = " ".join(words)
+    # A person noun followed by a participle is a phrase ("woman smiling"); by a noun, a run-on.
+    person_not_head = any(
+        w in _PERSON_NOUNS and not words[i + 1].endswith("ing") and f"{w} {words[i + 1]}" not in _PERSON_COMPOUNDS
+        for i, w in enumerate(words[:-1])
+    )
+    if person_not_head or len(words) > _MAX_BARE_RUN:
+        return f"separate items with commas, not spaces: {joined!r}"
+    return None
 
 
 def clean_prose(prose: str) -> tuple[str, list[str]]:
@@ -176,14 +301,16 @@ def repair_fragment(fragment: str, *, standalone: bool = True, pronoun_lead: boo
 
 def _repair_sentence(sentence: str) -> str:
     """Repair one prose sentence; ``""`` if it is an orphan."""
-    body = sentence.strip().rstrip(".!?;,: ")
+    body = sentence.strip()
+    if body.rstrip(_CLOSERS) == body or body.rstrip(_CLOSERS)[-1:] not in (".", "!", "?"):
+        body = body.rstrip(".!?;,: ")  # a quoted "... GUARDS." keeps its own full stop
     clauses = [repair_fragment(c, standalone=i == 0, pronoun_lead=False) for i, c in enumerate(body.split(","))]
     body = ", ".join(c for c in clauses if c)
     if not body:
         return ""
     if len(body.split()) < 3 and not re.search(r"\b\w+(?:s|ed|ing)\b", body):
         return ""  # "She", "A woman" — no predicate left
-    return body[0].upper() + body[1:] + "."
+    return end_sentence(body[0].upper() + body[1:])
 
 
 def _split_trigger(text: str, trigger_word: str) -> tuple[str, str]:
@@ -213,7 +340,7 @@ def repair_caption(text: str, kind: str = "list", *, trigger_word: str = "") -> 
     trigger, body = _split_trigger(text, trigger_word)
     notes: list[str] = []
     if kind == "prose":
-        sentences = [_repair_sentence(s) for s in _SENTENCE_SPLIT.split(body) if s.strip()]
+        sentences = [_repair_sentence(s) for s in split_sentences(body) if s.strip()]
         kept: list[str] = []
         for sentence in sentences:
             if not sentence:
@@ -296,8 +423,11 @@ def check_caption(
         bad = [f.strip() for f in body.split(",") if _SUBJECTLESS_PREDICATE.match(f.strip())]
         if bad:
             problems.append(f"fragment missing its subject: {bad[0]!r}")
+        fragment_problems = [p for f in body.split(",") if (p := _list_fragment_problem(f.strip()))]
+        if fragment_problems:
+            problems.append(fragment_problems[0])
     else:
-        sentences = [s for s in _SENTENCE_SPLIT.split(body.strip()) if s]
+        sentences = split_sentences(body.strip())
         bad = [s for s in sentences[1:] if _GERUND_START.match(s)]
         if sentences and _GERUND_START.match(sentences[0]):
             bad.insert(0, sentences[0])

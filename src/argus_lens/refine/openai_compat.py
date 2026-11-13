@@ -33,10 +33,16 @@ SYSTEM_PROMPT = (
     "mechanically from those inputs (the drafts can be choppy or repetitive). Rewrite each requested "
     "caption so it follows its rules and reads naturally.\n"
     "- Use only facts present in the inputs (or visible in the image, if one is attached). Never invent.\n"
-    "- When the tags and the description disagree, trust the tags.\n"
+    "- When the tags and the description disagree about WHAT is in the image, trust the tags. For details "
+    "the tagger cannot express (a moustache rather than a beard, an adult rather than a child), trust the "
+    "description.\n"
+    "- If monochrome is true the image is black and white: never give a person, garment or object a "
+    "colour the inputs do not already state for it.\n"
     "- Begin every caption with the trigger word, if one is given, followed by a comma.\n"
     '- No markdown, no hedging ("appears to be", "possibly"), no filler ("The image shows").\n'
-    'Reply with ONLY a JSON object mapping each requested caption name to its text, e.g. {"training": "..."}.'
+    '- List captions separate every item with a comma: "man, beard, uniform", never "man beard uniform".\n'
+    "Reply with ONLY a JSON object mapping each requested caption name to its text, e.g.\n"
+    '{"identity": "man, mustache, white hair", "training_prose": "A man in a dark suit stands by a window."}'
 )
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.S)
@@ -61,6 +67,7 @@ def build_user_message(request: RefineRequest) -> str:
         "description": request.prose,
         "tags_by_category": request.buckets.get("tags", {}),
         "person_count": request.subjects.get("count"),
+        "monochrome": request.monochrome,
         "drafts": request.drafts,
         "captions_to_write": request.rules,
     }

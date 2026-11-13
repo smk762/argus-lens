@@ -68,7 +68,7 @@ def caption(
     prompt: str | None = Option(
         None,
         "--prompt",
-        help="openai-compat user prompt: preset (detailed, straightforward, descriptive, booru) or literal text",
+        help="openai-compat user prompt: preset (detailed, straightforward, grounded, descriptive, booru) or literal text",
     ),
     wd14_repo: str | None = Option(
         None, "--wd14-repo", help="WD14 v3 tagger repo, e.g. SmilingWolf/wd-eva02-large-tagger-v3"
@@ -433,6 +433,9 @@ def serve(
         False, "--cors-any", help="Allow ANY origin to read, credential-less (public demos only; implies CORS)"
     ),
     source_root: str | None = Option(None, "--source-root", help="Root folder for /folders browsing (UI picker)"),
+    read_only: bool = Option(
+        False, "--read-only", help="Refuse sidecar/XMP writes, Immich pulls and write-back (or LENS_READ_ONLY=1)"
+    ),
 ) -> None:
     """Start the Argus Lens micro-server (FastAPI).
 
@@ -459,6 +462,7 @@ def serve(
         cors_origins=cors_origin or None,
         cors_allow_any=cors_any,
         source_root=source_root,
+        read_only=read_only or None,
     )
     uvicorn.run(app, host=host, port=port)
 

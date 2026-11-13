@@ -14,7 +14,7 @@ Opposite priorities to the training variant:
 from __future__ import annotations
 
 from argus_lens.assembly.filtering import with_trigger
-from argus_lens.assembly.token_budget import estimate_tokens
+from argus_lens.assembly.token_budget import try_add_fragment
 from argus_lens.types import (
     CategoryConfig,
     get_category_config_map,
@@ -46,8 +46,6 @@ def assemble_zeroshot_variant(
 
     plan = sorted(config_map.items(), key=lambda x: x[1].zeroshot_priority)
 
-    trigger_tokens = estimate_tokens(trigger_word, target_backend)
-    used_tokens = trigger_tokens
     kept: list[str] = []
     removed: list[str] = []
 
@@ -58,12 +56,9 @@ def assemble_zeroshot_variant(
             removed.extend(fragments[cap:])
             fragments = fragments[:cap]
         for fragment in fragments:
-            frag_tokens = estimate_tokens(fragment, target_backend)
-            separator_cost = 1 if kept else 0
-            if len(kept) >= max_segments or used_tokens + frag_tokens + separator_cost > clip_token_budget:
+            if not try_add_fragment(
+                fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
+            ):
                 removed.append(fragment)
-                continue
-            kept.append(fragment)
-            used_tokens += frag_tokens + separator_cost
 
     return with_trigger(trigger_word, ", ".join(kept)), removed

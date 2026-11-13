@@ -32,6 +32,10 @@ def estimate_t5_tokens(text: str) -> int:
 T5_BACKENDS: frozenset[str] = frozenset({"flux", "sd3", "kolors", "pixart"})
 
 
+# CLIP (SDXL, SD1.5) reads ~75 tokens: sentence-form captions for it stay at two sentences.
+MAX_CLIP_SENTENCES = 2
+
+
 def is_t5_backend(backend: str | None) -> bool:
     """True when *backend* encodes prompts with T5-XXL rather than CLIP."""
     return (backend or "").lower().strip() in T5_BACKENDS
@@ -47,21 +51,54 @@ def estimate_tokens(text: str, backend: str | None = None) -> int:
     return estimate_clip_tokens(text)
 
 
+def caption_tokens(
+    parts: list[str],
+    backend: str | None = None,
+    *,
+    trigger_word: str = "",
+    joiner: str = ", ",
+) -> int:
+    """Estimate the tokens of the caption *parts* assemble into, trigger word included.
+
+    Packing and every later check (refine, coherence, ``token_budget_adherence``,
+    Studio's counter) must agree, so this measures the joined text exactly as it is
+    emitted (``with_trigger(trigger_word, joiner.join(parts))``), never a sum of
+    per-fragment estimates: those floor each fragment's word cost separately and
+    under-count tag-heavy captions (30 one-word tags: 59 summed vs 68 whole, #80).
+    """
+    from argus_lens.assembly.filtering import with_trigger  # filtering is heavier; keep this module leaf-light
+
+    return estimate_tokens(with_trigger(trigger_word, joiner.join(parts)), backend)
+
+
+def fits_budget(
+    fragment: str,
+    kept: list[str],
+    token_budget: int,
+    backend: str | None = None,
+    *,
+    trigger_word: str = "",
+    joiner: str = ", ",
+) -> bool:
+    """True when appending *fragment* to *kept* keeps the whole caption within *token_budget*."""
+    return caption_tokens([*kept, fragment], backend, trigger_word=trigger_word, joiner=joiner) <= token_budget
+
+
 def try_add_fragment(
     fragment: str,
     kept: list[str],
-    used_tokens: int,
     max_segments: int,
     token_budget: int,
     backend: str | None = None,
-) -> tuple[bool, int]:
-    """Try to append *fragment* to *kept* without exceeding budget.
+    *,
+    trigger_word: str = "",
+) -> bool:
+    """Append *fragment* to *kept* (joined with ", ") if it fits the segment cap and budget.
 
-    Returns ``(added, new_used_tokens)``.
+    The budget is checked against the whole caption so far (see :func:`caption_tokens`).
+    Returns whether the fragment was added.
     """
-    frag_tokens = estimate_tokens(fragment, backend)
-    separator_cost = 1 if kept else 0
-    if len(kept) >= max_segments or used_tokens + frag_tokens + separator_cost > token_budget:
-        return False, used_tokens
+    if len(kept) >= max_segments or not fits_budget(fragment, kept, token_budget, backend, trigger_word=trigger_word):
+        return False
     kept.append(fragment)
-    return True, used_tokens + frag_tokens + separator_cost
+    return True

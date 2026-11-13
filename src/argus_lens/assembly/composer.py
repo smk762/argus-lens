@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from argus_lens.assembly.classifier import classify_fragment, classify_fragment_detailed
+from argus_lens.assembly.classifier import (
+    NOUN_SENSE_TAGS,
+    classify_fragment,
+    classify_fragment_detailed,
+    split_lighting_clauses,
+)
 from argus_lens.assembly.coherence import clean_prose, repair_caption, repair_fragment
 from argus_lens.assembly.filtering import (
     dedupe_fragments,
@@ -19,6 +24,7 @@ from argus_lens.assembly.noise import (
 )
 from argus_lens.assembly.prose_training import assemble_prose_training_variant
 from argus_lens.assembly.subjects import count_subjects, is_subject_count_tag
+from argus_lens.assembly.tag_reconcile import reconcile_tags
 from argus_lens.assembly.training import assemble_training_variant
 from argus_lens.assembly.variants import assemble_variant
 from argus_lens.assembly.zeroshot import assemble_zeroshot_variant
@@ -40,6 +46,7 @@ def compose_caption_result(
     categories: tuple[CategoryConfig, ...] | None = None,
     backend_name: str = "",
     prose_enrichment: bool = True,
+    monochrome: bool = False,
 ) -> CaptionResult:
     """Build a structured ``CaptionResult`` from raw model outputs.
 
@@ -52,6 +59,11 @@ def compose_caption_result(
     ``"unclassified"`` key for fragments no hint matched) and the headcount
     estimate (``subjects``) — the inputs a search index needs, before the
     per-variant truncation.
+
+    Tags are first reconciled against the prose and *monochrome* (see
+    :func:`~argus_lens.assembly.tag_reconcile.reconcile_tags`); ``metadata``
+    records the outcome under ``tag_reconcile`` and the reconciled tag string
+    under ``reconciled_tags``. ``raw_tags`` stays the tagger's output.
     """
     raw_prose = prose
     prose, prose_notes = clean_prose(prose) if prose else ("", [])
@@ -77,6 +89,15 @@ def compose_caption_result(
             continue
         raw_tag_fragments.append(cleaned)
 
+    # Settle tags that contradict each other, the prose, or the pixels
+    # (woman+girl, beard vs a described moustache, black/white on a B&W photo).
+    reconciliation = reconcile_tags(raw_tag_fragments, prose, monochrome=monochrome)
+    raw_tag_fragments = reconciliation.tags
+    if reconciliation.notes:
+        removed_phrases.extend(reconciliation.dropped)
+        compaction_notes.append(f"Reconciled tags: {'; '.join(reconciliation.notes)}.")
+    reconciled_tags = ", ".join(raw_tag_fragments)
+
     noise_kept, noise_removed = filter_training_noise(raw_tag_fragments, strip_identity=False)
     removed_phrases.extend(noise_removed)
     if noise_removed:
@@ -89,13 +110,15 @@ def compose_caption_result(
         if fragment in subject_tags:
             continue
         cat, matched = classify_fragment_detailed(fragment, categories)
+        if cat == "action" and fragment.lower().replace("_", " ") in NOUN_SENSE_TAGS:
+            cat, matched = "identity", False  # RAM++ "writing" = text on an object, not someone writing
         buckets[cat].append(fragment)
         tag_buckets[cat].append(fragment)
         index_buckets["tags"][cat if matched else "unclassified"].append(fragment)
 
     # --- Process prose-based input (e.g. Florence, BLIP, OpenAI) ---
     kept_clauses, redundant = filter_redundant_clauses_detailed(
-        prose, tags, threshold=target_profile.redundancy_threshold
+        prose, reconciled_tags, threshold=target_profile.redundancy_threshold
     )
     removed_phrases.extend([f.lower() for f in redundant])
     if redundant:
@@ -107,14 +130,16 @@ def compose_caption_result(
     for clause in kept_clauses:
         cleaned, removed = normalise_fragment(clause)
         removed_phrases.extend(removed)
-        cleaned = repair_fragment(cleaned)
-        if not cleaned:
-            continue
-        cat, matched = classify_fragment_detailed(cleaned, categories)
-        if cat != "identity":
-            enrichment_clauses.append(cleaned)
-        buckets[cat].append(cleaned)
-        index_buckets["prose"][cat if matched else "unclassified"].append(cleaned)
+        # "..., and the lighting highlights ..." is classified apart from the subject before it.
+        for part in split_lighting_clauses(cleaned):
+            part = repair_fragment(part)
+            if not part:
+                continue
+            cat, matched = classify_fragment_detailed(part, categories)
+            if cat != "identity":
+                enrichment_clauses.append(part)
+            buckets[cat].append(part)
+            index_buckets["prose"][cat if matched else "unclassified"].append(part)
 
     for name in cat_names:
         buckets[name] = dedupe_fragments(buckets[name])
@@ -138,6 +163,8 @@ def compose_caption_result(
 
     if truncated_any:
         compaction_notes.append("Trimmed lower-priority fragments to keep captions compact.")
+    # Categories with nothing of their own: their variants borrow from the others (#89).
+    empty_categories = [name for name in cat_names if not buckets[name]]
 
     # --- Build training variant (tags + prose enrichment) ---
     training_buckets: dict[str, list[str]] = {}
@@ -157,7 +184,7 @@ def compose_caption_result(
     ]
     if prose_enrichment and enrichment_clauses:
         # Filler-stripped clauses, so "the image shows ..." can't leak "shows".
-        existing_tag_words = wd14_word_set(tags)
+        existing_tag_words = wd14_word_set(reconciled_tags)
         enrichment_tokens += extract_prose_tokens(enrichment_clauses, existing_tag_words)
 
     training_caption, training_truncated = assemble_training_variant(
@@ -228,10 +255,14 @@ def compose_caption_result(
         raw_prose=raw_prose,
         backend_name=backend_name,
         metadata={
+            "empty_categories": empty_categories,
             "buckets": {
                 source: {name: dedupe_fragments(frags) for name, frags in by_cat.items()}
                 for source, by_cat in index_buckets.items()
             },
             "subjects": count_subjects(raw_tag_fragments, prose).to_dict(),
+            "monochrome": monochrome,
+            "reconciled_tags": reconciled_tags,
+            "tag_reconcile": reconciliation.to_dict(),
         },
     )
