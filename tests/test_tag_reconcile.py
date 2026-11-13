@@ -116,10 +116,18 @@ def test_beard_kept_when_prose_confirms_it() -> None:
     assert "beard" in rec.tags
 
 
-def test_unconfirmed_beard_becomes_facial_hair() -> None:
-    """``d145da92b2a4756c`` (Einstein 1921): the prose never mentions facial hair."""
+def test_beard_kept_when_prose_is_silent() -> None:
+    """``d145da92b2a4756c`` (Einstein 1921): prose silent on facial hair, so the tag is trusted."""
     rec = reconcile_tags(_tags("man, suit, beard"), "A portrait of a man standing before a chalkboard.")
-    assert "facial hair" in rec.tags and "beard" not in rec.tags
+    assert "beard" in rec.tags
+    assert "facial hair" not in rec.tags and "mustache" not in rec.tags
+    assert rec.dropped == [] and rec.added == []
+
+
+def test_beard_kept_when_prose_names_both() -> None:
+    """A full beard and moustache: the beard is confirmed, nothing is replaced."""
+    rec = reconcile_tags(_tags("man, beard"), "An old man with a long beard and a drooping mustache.")
+    assert "beard" in rec.tags and "mustache" not in rec.tags
 
 
 # --- monochrome (#83) ---

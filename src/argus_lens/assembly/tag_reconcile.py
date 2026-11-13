@@ -8,7 +8,8 @@ conflicting or coarse tags that downstream steps then treat as facts:
   The prose's subject noun settles it.
 * **Facial hair** (#84): RAM++'s vocabulary has ``beard`` but no word for a
   moustache, so every moustache is tagged ``beard``. The prose usually names
-  it correctly.
+  it correctly. When the prose is silent the tag is trusted: a beard is
+  assumed.
 * **Monochrome** (#83): a black-and-white photo is tagged with the bare
   colour words ``black`` and ``white``, which later steps attach to nouns
   ("black beard", "white dress"). A cheap pixel check
@@ -41,7 +42,6 @@ _FEMALE_WORDS = frozenset({"woman", "women", "lady", "ladies", "she", "her", "he
 _MALE_WORDS = frozenset({"man", "men", "gentleman", "gentlemen", "he", "him", "his", "himself", "boy", "boys"})
 _MUSTACHE_WORDS = frozenset({"mustache", "moustache", "mustaches", "moustaches", "mustached", "moustached"})
 _BEARD_WORDS = frozenset({"beard", "beards", "bearded", "goatee", "stubble"})
-_FACIAL_HAIR_MENTION = re.compile(r"\bfacial hair\b|\bwhiskers\b|\bsideburns\b")
 # Bare colour tags a monochrome image produces; folded into ``monochrome``.
 _MONOCHROME_COLOUR_TAGS = frozenset({"black", "white", "grey", "gray", "black and white", "black_and_white"})
 MONOCHROME_TAG = "monochrome"
@@ -137,7 +137,7 @@ class TagReconciliation:
         tags: The reconciled tag fragments, in their original order.
         dropped: Tags removed or replaced (a rewrite should not reintroduce
             them unless the prose names them).
-        added: Tags introduced (``mustache``, ``facial hair``, ``monochrome``).
+        added: Tags introduced (``mustache``, ``monochrome``).
         notes: One human-readable line per change.
     """
 
@@ -167,7 +167,7 @@ def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False
     * ``man`` and ``woman`` together: when the prose refers to only one sex,
       the other noun is dropped.
     * ``beard`` becomes ``mustache`` when the prose names a moustache and no
-      beard, or ``facial hair`` when the prose mentions neither.
+      beard; a prose silent on facial hair keeps ``beard``.
     * *monochrome*: bare ``black``/``white``/``grey`` tags are folded into a
       single ``monochrome`` tag (added even when the tagger gave no colour).
     """
@@ -208,11 +208,9 @@ def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False
             drop("woman", "dropped 'woman': also tagged 'man' and the prose describes only a man")
 
     # --- facial hair (#84) ---
-    if prose and "beard" in keys and not words & _BEARD_WORDS:
-        if words & _MUSTACHE_WORDS:
-            replace("beard", "mustache", "'beard' -> 'mustache': the prose names a moustache, not a beard")
-        elif not _FACIAL_HAIR_MENTION.search(prose.lower()):
-            replace("beard", "facial hair", "'beard' -> 'facial hair': the prose does not confirm a beard")
+    # Only an explicit moustache overrides the tag; silence keeps ``beard``.
+    if "beard" in keys and words & _MUSTACHE_WORDS and not words & _BEARD_WORDS:
+        replace("beard", "mustache", "'beard' -> 'mustache': the prose names a moustache, not a beard")
 
     # --- monochrome (#83) ---
     if monochrome:
