@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from argus_lens.assembly.classifier import category_scores, classify_fragment, classify_fragment_detailed
-from argus_lens.assembly.coherence import check_caption, clean_prose, repair_caption, repair_fragment
+from argus_lens.assembly.coherence import (
+    check_caption,
+    clean_prose,
+    repair_caption,
+    repair_fragment,
+    split_sentences,
+)
 from argus_lens.assembly.composer import compose_caption_result
 from argus_lens.assembly.filtering import extract_prose_tokens
 from argus_lens.assembly.prose_training import assemble_prose_training_variant
@@ -220,6 +226,98 @@ def test_prose_training_respects_budget() -> None:
     prose = "A woman stands in a kitchen. " * 20
     caption, removed = assemble_prose_training_variant("sks", prose, token_budget=20, target_backend="flux")
     assert caption.count(".") < 20 and removed
+
+
+# #88: raw qwen3-vl prose from the lightbox tape whose training_prose was cut mid-phrase.
+@pytest.mark.parametrize(
+    ("prose", "expected"),
+    [
+        (
+            "A black-and-white portrait of a woman with light-colored, wavy hair pulled back from her face.",
+            "A black-and-white portrait of a woman.",
+        ),
+        (
+            "A black and white photographic portrait of an elderly man with a full, wavy white hair and a "
+            "prominent, thick mustache.",
+            "A black and white photographic portrait of an elderly man.",
+        ),
+        (
+            "A portrait of a man in a military uniform. He has a thick, well-groomed beard and curly hair, "
+            "with a serious expression.",
+            "A portrait of a man in a military uniform.",
+        ),
+        (
+            "His voluminous, wild white hair cascades over his forehead and clings to his ears, and he wears "
+            "a textured, buttoned coat.",
+            "He wears a textured, buttoned coat.",
+        ),
+        (
+            "A black and white portrait captures a man with a voluminous, curly white hairstyle and a thick "
+            "mustache, looking to the side.",
+            "A black and white portrait captures a man, looking to the side.",
+        ),
+        (
+            "A studio portrait of Marie Curie, a woman with dark, tightly curled hair pulled back from her face.",
+            "A studio portrait of Marie Curie, a woman.",
+        ),
+        (
+            "A woodblock print of a woman in a kimono. Her hair is styled in an intricate updo, and her face "
+            "is rendered with subtle, calm features.",
+            "A woodblock print of a woman in a kimono.",
+        ),
+        (
+            "A formal portrait of a man with voluminous, light-colored hair and a prominent mustache, dressed "
+            "in a dark suit and bow tie.",
+            "A formal portrait of a man, dressed in a dark suit and bow tie.",
+        ),
+    ],
+)
+def test_prose_training_excises_whole_identity_phrase(prose: str, expected: str) -> None:
+    """Coordinated adjectives go with their identity noun; no stub or orphan is left (#88)."""
+    caption, _ = assemble_prose_training_variant("", prose, token_budget=200, target_backend="flux")
+    assert caption == expected
+
+
+def test_prose_training_keeps_short_sentence_without_identity() -> None:
+    """Only identity removal makes a short remainder an orphan; filler removal does not."""
+    caption, _ = assemble_prose_training_variant("", "The image shows a dog.", token_budget=200)
+    assert caption == "A dog."
+
+
+def test_prose_training_keeps_quoted_abbreviation_whole() -> None:
+    """``"J.T. GUARDS."`` is neither split nor given a second full stop (#88)."""
+    prose = 'He holds a small banner with the text "J.T. GUARDS." The photograph is set within a gold frame.'
+    caption, _ = assemble_prose_training_variant("", prose, token_budget=200, target_backend="flux")
+    assert caption == prose
+    result = _compose({"tags": "man, banner", "prose": prose}, "flux")
+    assert '"J.T. GUARDS." The photograph' in result.caption_variants["training_prose"]
+
+
+def test_prose_training_caps_sentences_for_clip() -> None:
+    """A CLIP target keeps two sentences; T5 keeps them all (#88)."""
+    prose = "A woman stands in a park. She wears a red coat. A dog sits at her feet. Trees line the path."
+    clip, removed = assemble_prose_training_variant("", prose, token_budget=200, target_backend="sdxl")
+    assert clip == "A woman stands in a park. She wears a red coat."
+    assert "A dog sits at her feet." in removed
+    t5, _ = assemble_prose_training_variant("", prose, token_budget=200, target_backend="flux")
+    assert t5 == prose
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            'He holds a banner with the text "J.T. GUARDS." The photograph is set.',
+            ['He holds a banner with the text "J.T. GUARDS."', "The photograph is set."],
+        ),
+        ("Dr. Smith waves. She smiles!", ["Dr. Smith waves.", "She smiles!"]),
+        ('It reads "Stop. Go." Then a car', ['It reads "Stop. Go."', "Then a car"]),
+        ("One; two.\nThree", ["One; two.", "Three"]),
+    ],
+)
+def test_split_sentences(text: str, expected: list[str]) -> None:
+    """Initials, titles and quotations do not end a sentence; a closing quote can."""
+    assert split_sentences(text) == expected
 
 
 # --- enrichment ---

@@ -8,7 +8,8 @@ keeps the prose as prose and applies the same intent as the tag variant:
   dropped; the LoRA learns identity visually.
 * **Filler removal** — "The image shows ..." style openers are stripped.
 * **Token budget** — whole sentences are kept, in order, until the target
-  encoder's budget is spent.
+  encoder's budget is spent. CLIP targets also keep at most
+  :data:`~argus_lens.assembly.token_budget.MAX_CLIP_SENTENCES` sentences.
 """
 
 from __future__ import annotations
@@ -16,23 +17,52 @@ from __future__ import annotations
 import re
 
 from argus_lens.assembly.classifier import category_scores
+from argus_lens.assembly.coherence import end_sentence, split_sentences
 from argus_lens.assembly.filtering import strip_filler_prefixes, with_trigger
-from argus_lens.assembly.token_budget import estimate_tokens
+from argus_lens.assembly.token_budget import MAX_CLIP_SENTENCES, estimate_tokens, is_t5_backend
 from argus_lens.types import CategoryConfig
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+|\n+")
 # "with long wavy brown hair" / "has blue eyes and" — excised in place so the
 # rest of the clause ("a woman ... is wearing a red dress") survives.
-_IDENTITY_NOUNS = r"(?:hair|eyes|freckles|beard|skin|complexion|lips|eyebrows|eyelashes|bangs|ponytail|braids?)"
+_IDENTITY_NOUNS = (
+    r"(?:hair|hairstyle|eyes|freckles|beard|mustache|moustache|goatee|sideburns|stubble|skin|complexion|lips"
+    r"|eyebrows|eyelashes|bangs|ponytail|braids?)"
+)
+# A participle phrase describing the hair, excised with it so "a woman with dark
+# hair pulled back from her face" does not leave "a woman pulled back from her face".
+_ID_TAIL = (
+    r"(?:\s+(?:pulled|tied|swept|slicked|combed|parted|styled|gathered|piled|braided|cropped|cut|worn)"
+    r"(?:\s+(?!(?:and|or|but|while|with|as|wearing|holding)\b|[\w-]+ing\b)[\w-]+){0,5})?"
+)
 # One identity noun phrase ("long wavy brown hair"), optionally coordinated
 # with more ("freckles and bright green eyes", "red hair, green eyes").
-_ID_NP = rf"(?:[\w-]+\s+){{0,4}}?{_IDENTITY_NOUNS}"
+_ID_NP = rf"(?:[\w-]+\s+){{0,4}}?{_IDENTITY_NOUNS}{_ID_TAIL}"
 _ID_LIST = rf"{_ID_NP}(?:\s*(?:,\s*(?:and\s+)?|\s+and\s+){_ID_NP})*"
 _IDENTITY_PHRASE = re.compile(
     rf",?\s*\b(?:has|have|having)\s+{_ID_LIST}\s+and(?=\s)"
     rf"|,?\s*\b(?:with|has|have|having)\s+{_ID_LIST}\b",
     re.IGNORECASE,
 )
+# A comma between coordinated adjectives of an identity noun: "with light-colored,
+# wavy hair", "He has a thick, well-groomed beard", "His voluminous, wild white hair".
+# Splitting clauses there strands the first adjective ("a woman with light-colored."),
+# so the comma is removed before excision and clause splitting (#88).
+_ADJECTIVE_COMMA = re.compile(
+    r"\b((?:with|has|have|had|a|an|the|his|her|their|its)\s+(?:[\w-]+\s+)?[\w-]+),\s+"
+    r"(?=(?!(?:and|or|but|her|his|their|its|the|a|an|she|he|they|it)\b)"
+    rf"(?:[\w-]+,?\s+){{0,3}}(?:{_IDENTITY_NOUNS}|features|face|expression)\b)",
+    re.IGNORECASE,
+)
+_LEADING_CONJUNCTION = re.compile(r"^(?:and|but|while|whereas)\s+", re.IGNORECASE)
+
+
+def _join_adjective_commas(text: str) -> str:
+    """Drop commas inside coordinated adjectives of an identity noun (repeat for 3+ adjectives)."""
+    previous = None
+    while previous != text:
+        previous = text
+        text = _ADJECTIVE_COMMA.sub(r"\1 ", text)
+    return text
 
 
 def _identity_dominant(clause: str, categories: tuple[CategoryConfig, ...] | None) -> bool:
@@ -50,7 +80,11 @@ def _clean_sentence(
 
     Returns ``(cleaned_sentence, removed_clauses)``.
     """
-    text, removed = strip_filler_prefixes(sentence.strip().rstrip(".!?;"))
+    text, removed = strip_filler_prefixes(sentence.strip())
+    filler_removed = len(removed)
+    if text.rstrip("\"'\u201d\u2019)]") == text:
+        text = text.rstrip(".!?;")  # a closing quote keeps its own full stop
+    text = _join_adjective_commas(text)
     removed.extend(m.group(0).strip(" ,") for m in _IDENTITY_PHRASE.finditer(text))
     text = _IDENTITY_PHRASE.sub("", text)
     kept: list[str] = []
@@ -75,6 +109,12 @@ def _clean_sentence(
             cleaned = f"{cleaned} {clause}"
         else:
             cleaned = f"{cleaned}, {clause}"
+    # "His ... hair cascades ..., and he wears a coat" minus the hair clause.
+    cleaned = _LEADING_CONJUNCTION.sub("", cleaned)
+    if len(cleaned.split()) < 3 and len(removed) > filler_removed:
+        # An orphan left after identity removal ("Calm features").
+        removed.append(cleaned)
+        cleaned = ""
     if cleaned:
         cleaned = cleaned[0].upper() + cleaned[1:]
     return cleaned, removed
@@ -97,16 +137,15 @@ def assemble_prose_training_variant(
     removed: list[str] = []
     sentences: list[str] = []
     used = estimate_tokens(trigger_word, target_backend)
-    for raw in _SENTENCE_SPLIT.split(prose.strip()):
-        if not raw.strip():
-            continue
+    max_sentences = None if is_t5_backend(target_backend) else MAX_CLIP_SENTENCES
+    for raw in split_sentences(prose.strip(), semicolons=True):
         sentence, dropped = _clean_sentence(raw, categories)
         removed.extend(dropped)
         if not sentence:
             continue
-        sentence += "."
+        sentence = end_sentence(sentence)
         cost = estimate_tokens(sentence, target_backend)
-        if used + cost > token_budget:
+        if used + cost > token_budget or (max_sentences is not None and len(sentences) >= max_sentences):
             removed.append(sentence)
             continue
         sentences.append(sentence)

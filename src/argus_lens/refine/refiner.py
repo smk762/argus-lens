@@ -24,7 +24,7 @@ import structlog
 
 from argus_lens.assembly import tag_reconcile
 from argus_lens.assembly.coherence import check_caption, repair_caption
-from argus_lens.assembly.token_budget import is_t5_backend
+from argus_lens.assembly.token_budget import MAX_CLIP_SENTENCES, is_t5_backend
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -193,7 +193,7 @@ _NOT_IDENTITY = " Never include hair, eyes, face, skin, body or age: those belon
 # CLIP (SDXL, SD1.5) reads ~75 tokens, so prose for it stays short; T5 (Flux, SD3) takes more.
 _PROSE_LENGTH_CLIP = "one or two concise, complete, grammatical sentences, most important detail first"
 _PROSE_LENGTH_T5 = "one to four complete, grammatical sentences"
-_MAX_SENTENCES_CLIP = 2
+_MAX_SENTENCES_CLIP = MAX_CLIP_SENTENCES
 _SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
 
 
