@@ -8,6 +8,257 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A new argus-cortex rebuilds the published image.** `release.yml` also runs on
+  the `cortex-released` dispatch argus-cortex's release sends: only the image job runs,
+  rebuilding the newest final `v*` tag without cache and republishing its tags, so the
+  image picks up the cortex its pyproject range now resolves to.
+- **Lens records captions into the cortex lineage store** (`argus_lens.lineage`, `[lineage]` extra).
+  With `LENS_RECORD_LINEAGE=1` and `CORTEX_PG_URL`, every live caption from `serve` and
+  `argus-lens caption` becomes a `source_asset` (keyed on the original bytes' sha256) plus a
+  `caption` row, in one transaction, through `argus_cortex.store`. With `CORTEX_S3_*` set the
+  original bytes also go to the blob store. This is the writer for the tape that `--backend replay`,
+  argus-lightbox and argus-halo read; until now nothing in the suite wrote it.
+  - Opt-in via its own flag: a replay host sets `CORTEX_PG_URL` too and must not write to the tape it
+    serves. The flag without `CORTEX_PG_URL`, or a value that isn't true/false, is a startup error.
+  - Replayed captions, the `/v1` (Frigate) endpoints and pre-decoded PIL inputs are never recorded.
+  - A failed write is logged and the caption is still returned.
+  - `ArgusLens(recorder=...)`; `ImageAsset` carries the original bytes (`data`, not part of equality).
+  - The Docker image installs the extra; `docker-compose.yaml` passes `LENS_RECORD_LINEAGE` and
+    `CORTEX_*` through.
+
+### Changed
+- **The GPU coordinator is now the suite's shared `argus_cortex.gpu`** (`argus-cortex>=0.4.3,<0.5`).
+  `argus_lens.gpu` re-exports it and keeps lens's own per-backend footprint estimates.
+  - The `lease` lock defaults to `<tempdir>/argus-gpu.lock` (was `argus-lens-gpu.lock`), the same file
+    argus-curator takes, so the two serialise without configuration on one host. The lock is created
+    `0666` so services running as different container users can share it.
+  - The lease now honours `min_vram_mb`: after taking the lock it waits until NVML reports that much
+    free VRAM, which accounts for ComfyUI/Ollama. Lens asks for its footprint only when the model has
+    to load; a resident model takes the lock with no VRAM wait (it would otherwise wait on its own
+    weights). Without NVML the wait is skipped. `nvidia-ml-py` comes with the `local`, `torch`,
+    `wd14-gpu` and `all` extras (via `argus-cortex[gpu]`).
+  - New `ARGUS_GPU_DEVICE` selects the card the VRAM wait probes.
+  - `docker-compose.yaml` mounts the shared lock directory (`ARGUS_GPU_LOCK_DIR`, default
+    `/tmp/argus-gpu`) at `/run/argus-gpu`, matching argus-curator's compose.
+- **`--cors` now trusts only the localhost dev frontend** (`http://localhost:3000`,
+  `http://127.0.0.1:3000`), matching argus-curator; it used to allow every origin. New
+  `--cors-origin` (repeatable) / `LENS_CORS_ORIGINS` name other origins, and `--cors-any` is a
+  credential-less wildcard for reads (a `*` in the list means the same). `create_app` gains
+  `cors_allow_any`. The `server` extra adds `argus-cortex[server]`.
+
+### Removed
+- **The `gothmog` coordinator** (`GothmogCoordinator`, `GOTHMOG_URL`, `GOTHMOG_API_KEY`). The suite's
+  lease covers host-wide GPU sharing; `ARGUS_GPU_COORDINATOR=gothmog` now raises at startup.
+- `LocalLeaseCoordinator`: use `LeaseCoordinator` (cortex's).
+
+### Security
+- **Cross-site writes are refused** (`argus_cortex.server.WriteGuard`, as in argus-curator, forge and
+  proof). The caption endpoints have no auth and write sidecars, and CORS never stopped a
+  no-preflight `multipart/form-data` POST from another site. Every POST/PUT/PATCH/DELETE carrying an
+  `Origin` that is neither the request's host nor allow-listed now gets a `403`, with or without
+  `--cors`. Requests with no `Origin` (curl, argus-curator, Frigate) and same-host UIs (a reverse
+  proxy such as argus-halo's) are unaffected.
+
+## [0.10.0] - 2026-10-26
+
+### Changed
+- **LLM refinement is now on by default (opt-out)** (#72) in `argus-lens serve` and `argus-lens caption`.
+  It rewrites **every** variant (the categories as well as `training`/`training_prose`/`zeroshot`) with
+  `qwen3:8b` on local Ollama unless `ARGUS_REFINE_MODEL` / `ARGUS_REFINE_BASE_URL` say otherwise.
+  Disable it with `ARGUS_REFINE=off` or `--no-refine`. `ARGUS_REFINE_VARIANTS` / `--refine-variants`
+  still narrow the list (`all` is the default). The `Refiner` library default is unchanged (the two
+  training variants); pass `variants=None` for all.
+- An unreachable refine endpoint fails fast (5 s connect timeout) and refinement is skipped for 60 s
+  (`metadata["refine"]["skipped"] = "unavailable"`), so a missing LLM doesn't stall captioning.
+- `training_prose` rewrites for CLIP targets (SDXL, SD1.5) ask for one or two concise sentences
+  within the CLIP budget, and a rewrite with more than two sentences is rejected and retried with
+  feedback. T5 targets (Flux, SD3) still allow up to four.
+- List rewrites for photo targets ask for plain spaced phrases, and underscores are replaced with
+  spaces (the LLM copied WD14's booru tags). Anime targets keep booru-style tags.
+
+### Fixed
+- A lighting rewrite of "day, sunlight" as "daylight" was rejected as ungrounded and fell back to the
+  deterministic caption. A few lighting and placement words (`daylight`, `lit`, `sits`, `hangs`…) are
+  now allowed glue.
+
+## [0.9.0] - 2026-10-26
+
+### Added
+- **RAM++ vocabulary packs** (#62): custom tags without retraining. `argus-lens ram-vocab build`
+  writes 51 descriptions per tag with any OpenAI-compatible LLM (upstream's prompts; defaults to the
+  `ARGUS_REFINE_*` endpoint) or takes supplied descriptions, embeds them with CLIP ViT-B/16 via
+  `transformers`, and writes a pack (`manifest.json` + fp16 `embeddings.safetensors` +
+  `descriptions.json`). `RamBackend(vocab_packs=[...])` / `RAM_VOCAB_PACKS` appends pack tags to the
+  built-in 4585 (a pack tag replaces a built-in duplicate; a tag in two packs is an error);
+  `builtin_vocab=False` uses packs alone. Pack tags default to threshold 0.5 (upstream's open-set
+  value), overridable per tag, and report `source="ram:<pack>"`. `ram-vocab inspect` summarises a pack.
+  `safetensors` is now listed in the `[torch]` extra.
+- **`annotate_image()` on every backend** (#57). `CaptionBackend` now provides a default that wraps
+  `caption_image()` by output kind: taggers (`emits_tags`) get their comma string split into
+  unscored `Tag`s, everything else is returned as `prose`. WD14 overrides it to keep its real
+  per-tag probabilities (as RAM++ already did), and `hybrid` returns the tag stage's scored tags
+  plus the prose stage's prose, so scores survive into provenance in every mode.
+- `region_to_normalized()` / `region_to_mwg_area()` helpers in `backends/output.py`: convert a
+  region to 0–1 coordinates, or to the centre-based MWG area `argus_cortex.xmp.XmpRegion` uses.
+
+### Changed
+- **`Region` is now `tuple[float, float, float, float]`** (#58): `(x1, y1, x2, y2)` in absolute
+  pixels of the source image (origin top-left), unrounded, which is what Florence-2 `<OD>` and most
+  detectors emit. Normalised coordinates are derived where the image size is known. No backend
+  emitted regions yet, so nothing changes on the wire.
+
+### Fixed
+- **`unload()` now frees registry-cached models** (#63). `wd14`, `florence2`, `blip2` and `ram`
+  implemented `unload()` as a no-op, so `engine.unload()`, the idle reaper and `/admin/unload`
+  reported success while the model stayed in VRAM until the registry's own idle sweep (up to
+  `ARGUS_MODEL_IDLE_SECONDS`, default 300 s). `ModelRegistry.evict(key)` frees an unreferenced
+  model immediately; `LocalBackend.unload()` evicts the keys that backend acquired, and leaves a
+  model another caption is still using in place for the next unload.
+- **First-use weight downloads no longer hold the GPU lease** (#64). A new `prefetch()` hook
+  (WD14 model, RAM++ checkpoint, Florence-2 / BLIP-2 HF snapshot) runs once per engine *before*
+  the coordinator lease, so a multi-GB download no longer blocks other GPU tenants.
+
+## [0.8.0] - 2026-10-25
+
+### Added
+- **RAM++ photo tagger** (`ram`, #60). The RAM++ scaffold is now a working backend: an
+  inference-only, torch-only port of recognize-anything's Swin-L RAM++ (vendored under
+  `backends/_ram/` with its Apache-2.0 licence; no timm/transformers/torchvision/fairscale),
+  loading `xinyu1205/recognize-anything-plus-model` unchanged (`weights_only=True`, auto-downloaded
+  to `~/.cache/ram_plus/`, or `RAM_MODEL_DIR`). `annotate_image()` returns scored tags that clear
+  RAM++'s calibrated per-tag thresholds (or a uniform `threshold=`), highest first. Selectable as
+  `ram`, `hybrid:ram+florence2` and `hybrid:ram+openai-compat`. Reproduces upstream's published
+  demo output exactly in fp32 and fp16; ~740 MB peak VRAM, ~50 ms/image on an RTX 3090.
+- `CaptionBackend.emits_tags`: taggers set it so a standalone run feeds the assembly pipeline's
+  tag side. Previously only `style == "anime"` or the name `wd14` did, so a photo-style tagger's
+  output was treated as prose.
+
+### Changed
+- `RamBackend(threshold=)` now defaults to `None` (RAM++'s per-tag thresholds) instead of `0.35`.
+- `RamBackend(model_id=)` is now `repo_id=`, so a hybrid's `--model-id` (the prose model) no longer
+  becomes RAM++'s checkpoint repo. A non-default repo caches under `~/.cache/ram_plus/<org>--<name>/`.
+- Model downloads (WD14, RAM++) go to a unique temp file that is removed on failure.
+- The GPU lease estimate for `ram` is 1000 MB (measured), down from a 2000 MB guess.
+- `docker-compose.yaml` persists `~/.cache/ram_plus`, so containers don't re-download the 3 GB
+  RAM++ checkpoint.
+
+## [0.7.0] - 2026-10-25
+
+### Changed
+- **XMP sidecars now merge instead of replace.** The XMP writer moved to
+  `argus_cortex.xmp` (the suite's one implementation, shared with
+  argus-curator), and `argus-cortex>=0.3.0` is now a dependency. `XmpSink` and
+  the `write_xmp` endpoints replace only `dc:subject` / `dc:description` (latest
+  write wins) and preserve everything else in an existing sidecar — Lightroom
+  ratings, GPS, develop settings, curator face regions. Empty keywords / caption
+  leave the existing value alone.
+- **`xmp_overwrite` now defaults to `false` and means "discard and rewrite".**
+  `false` merges (previously: per-image error on an existing sidecar); `true`
+  discards the existing sidecar (previously the default). `XmpSink.write`
+  no longer raises `FileExistsError`; an existing sidecar that isn't valid XMP
+  raises `argus_cortex.xmp.XmpError` (a per-image error on the endpoints) and
+  is left untouched.
+
+### Fixed
+- `BackendOutput.tag_string` drops empty / whitespace-only tag labels instead
+  of emitting stray `", ,"` entries into the caption.
+- `BackendOutput.to_caption_string` falls back to the tags when `prose` is
+  whitespace-only, rather than returning a blank caption.
+- The tag score threshold is now one rule (`Tag.passes`) shared by the
+  flattened caption and the provenance `included` flag, so they can't disagree.
+
+## [0.6.0] - 2026-10-24
+
+### Added
+- **Curate-index workflow** (`workflows/curate_index.py`, documented in
+  `workflows/README.md`) — inventory → caption once → assemble per target →
+  tag index + groups + identity QA → query → kohya-style export, for libraries
+  laid out as `<name>/pics/<shoot_id>/*.jpg`. Resumable, content-hash keyed,
+  and settings-locked via `run.json`; every stage after `caption` recomputes
+  from the stored raw model output.
+- **Index metadata on every `CaptionResult`** — `metadata["buckets"]` holds the
+  un-truncated per-category fragments split by source (`tags` / `prose`), with
+  hint-less fragments in a separate `unclassified` list instead of the identity
+  fallback; `metadata["subjects"]` holds a headcount estimate from tagger
+  headcount tags (`2girls`, `multiple_boys`, `solo_focus`, `no_humans`) cross-checked
+  against the prose (`count`, `multiple`, `agree`, `evidence`).
+- **`training_prose` variant** — sentence-form training caption for T5 targets
+  (Flux, SD3): identity clauses and "with … hair/eyes" phrases excised,
+  sentences kept whole under the target's token budget.
+- **Coherence post-check** (`argus_lens.assembly.coherence`) — every variant is
+  repaired at the end of assembly (openers, markdown, hedging, dangling words,
+  orphan and subjectless sentences, duplicate/absorbed tags); `check_caption()`
+  exposes the same rules as a QA gate.
+- **LLM refinement** (`argus_lens.refine`) — `Refiner` + `OpenAICompatRewriter`
+  rewrite selected variants with any OpenAI-compatible chat model; a rewrite is
+  accepted only if it passes the post-check plus identity, budget and grounding
+  rules, with one feedback retry and a deterministic fallback. `ArgusLens(refiner=...)`,
+  CLI `--refine-model/--refine-url/--refine-variants/--refine-image`.
+- **Recursive directory captioning** — `caption_directory(recursive=True)` /
+  CLI `--recursive`; results keyed by relative path so equal filenames in
+  different folders stay distinct, and `.txt` sidecars land beside their images.
+- **openai-compat prompt presets** — `prompt=` / `ARGUS_OPENAI_COMPAT_PROMPT` /
+  CLI `--prompt` accepts `detailed`, `straightforward`, `descriptive`, `booru`,
+  `count` or literal text; optional `temperature`.
+- **Server env configuration** — `argus-lens serve` (and the Docker image)
+  enables refinement from `ARGUS_REFINE_MODEL` / `ARGUS_REFINE_BASE_URL` /
+  `ARGUS_REFINE_API_KEY` / `ARGUS_REFINE_VARIANTS` / `ARGUS_REFINE_IMAGE`, and
+  idle VRAM release from `ARGUS_IDLE_UNLOAD_S` (for hosts shared with e.g. ComfyUI).
+- **Selectable WD14 v3 tagger** — `model_repo=` / `WD14_MODEL_REPO` / CLI
+  `--wd14-repo` (e.g. `SmilingWolf/wd-eva02-large-tagger-v3`), cached per repo.
+
+### Changed
+- **Category hints match whole words.** Hints previously matched as
+  substrings, so `hair` fired inside `chair`, `hat` inside `that`, `age` inside
+  `image`, `tee` inside `street`. Plurals and underscored tags still match.
+  Category vocabularies were expanded (jewellery, swimwear, furniture, weather,
+  venues, poses, activities), so fewer tags fall back to identity.
+- **Each category variant leads with its own category** (the `setting` caption
+  opens with the setting, not with hair colour).
+- **Prose enrichment lifts only modifier+noun compounds** (`knit_sweater`,
+  `wooden_bench`) from non-identity, filler-stripped clauses. Loose words
+  (`wearing`, `next`, `shows`) and identity compounds (`red_hair`) no longer
+  leak into the training caption.
+- **Unclassified tags (objects) reach training captions** as low-priority fill
+  instead of being dropped with the identity bucket.
+- Headcount tags (`2girls`, `multiple_*`) no longer land in the identity
+  bucket; they still appear in the zero-shot variant.
+
+### Security
+- **eMudhra/emSign CA incident.** Outbound TLS now requires `certifi>=2026.10.19`,
+  which no longer trusts the compromised emSign intermediates. `uv` is required
+  at `>=0.13.5` (fixed trust store, and managed CPython builds that bundle pip
+  26.2.2). Docker images distrust emSign ECC Root CA - G3 and the Comodo AAA
+  cross-sign in the system store, then install hash-pinned pip 26.2.2 before
+  any other package. PyPI publishing uses
+  `pypa/gh-action-pypi-publish` v1.14.3, which vendors a fixed sigstore.
+  See https://discuss.python.org/t/109576.
+
+### Fixed
+- `hybrid:<tag>+<prose>` passed every engine kwarg to both stages, so
+  `hybrid:wd14+openai-compat --base-url/--model-id` crashed WD14 with a
+  `TypeError`. Backends now receive only the arguments their constructor accepts.
+- `docker-compose.yaml` did not pass `ARGUS_OPENAI_COMPAT_BASE_URL` /
+  `ARGUS_OPENAI_COMPAT_MODEL` into the container, so a containerised server
+  could not reach a remote OpenAI-compatible endpoint. The WD14 cache mount is
+  now writable so a non-default `WD14_MODEL_REPO` can download.
+
+## [0.5.0] - 2026-07-22
+
+### Added
+- **`replay` backend** — serves recorded captions straight out of the cortex
+  Postgres lineage store (`CORTEX_PG_URL`) instead of running a model, so a
+  GPU-free box (or the public argus-halo demo) can re-enact genuine captured
+  output with **no GPU and no external API** (#45). Each request is keyed by the
+  source image's sha256 — the content id cortex records on `source_asset` — so
+  the engine hashes the bytes it ingests and returns the recorded
+  `CaptionResult` **verbatim** (variants included), bypassing the assembly
+  pipeline so profile knobs can't re-mangle captured output. An asset with no
+  recorded caption is a `ReplayMiss` — HTTP 404 on the single `/caption`, and a
+  per-item error on the multi-image paths (see below) — not a silent fall back
+  to a live model. Reads the documented lineage schema directly (no `argus-cortex`
+  dependency); `psycopg` lives behind the new `argus-lens[replay]` extra. Select
+  it with `--backend replay` / `ARGUS_BACKEND=replay`.
 - **Curator manifest 2.0 support on the manifest endpoints** —
   `POST /caption/manifest` and `POST /caption/manifest/stream` accept an
   optional `export_root` form field (the directory the curator exported into —
@@ -24,6 +275,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errors, and rows declaring a `manifest_version` outside the supported
   1.x/2.x majors are rejected with 400 naming the offending line, so a future
   incompatible major fails loudly instead of being misread.
+
+### Changed
+- **Engine `_load_image` now returns an `ImageAsset`** (name + original-bytes
+  sha256 + source uri) alongside the decoded image, so the ingested content
+  identity survives to the backend (this is what the replay lookup keys on).
+  `caption_batch` / `caption_stream` gained an optional `names=` argument to set
+  result keys when the source loses its filename (e.g. raw upload bytes); the
+  server's `/caption/batch` and `/caption/stream` now pass original bytes plus
+  filenames, which also fixes uploaded-image results collapsing under a shared
+  name.
+- **Replay misses are handled per image** on the multi-image paths (#48): one
+  un-recorded asset no longer aborts the whole request. `/caption/batch` returns
+  `200` with the captions that resolved plus an `errors` `{name: reason}` map;
+  `/caption/stream` emits one error line for the miss and keeps streaming the
+  rest; `argus-lens caption <dir> --backend replay` skips missing images (no
+  sidecar), reports them, and captions the rest. The engine's `caption_batch` /
+  `caption_directory` gained an `on_miss` callback (fail-fast when omitted), and
+  `caption_stream` now yields `(name, ReplayMiss)` for a miss instead of raising.
+
+## [0.4.0] - 2026-07-09
+
+### Added
+- **GPU lifecycle + capacity coordinator** — makes argus-lens a well-behaved
+  tenant on a shared GPU; both mechanisms are opt-in and no-ops by default, so
+  existing behaviour is unchanged. (#37, #38)
+  - Lifecycle: `ArgusLens.unload()` / `unload_if_idle(ttl)` / `close()` with
+    lazy reload on the next caption, an optional idle reaper (`idle_unload_s=`),
+    and `vram_status()` (backend, loaded, coordinator, `free_vram_mb`, idle_s)
+    plus a pre-load low-VRAM warning. Server: `GET /health` gains a `gpu` block
+    and `POST /admin/unload` frees the model.
+  - Coordinator: new `argus_lens.gpu` package — `GpuCoordinator` protocol with
+    `NullCoordinator` (default), `LocalLeaseCoordinator` (POSIX `flock`, one
+    heavy job at a time), and `GothmogCoordinator` (acquire/release against a
+    `/v1/gpu/capacity` API). Selected via env (`ARGUS_GPU_COORDINATOR`,
+    `GOTHMOG_URL`, `GOTHMOG_API_KEY`, `ARGUS_GPU_LEASE_PATH`); the engine wraps
+    inference in the lease, sized by a per-backend VRAM estimate, and cloud
+    backends bypass it.
+  - Env knobs: `ARGUS_GPU_MIN_VRAM_MB` overrides the per-backend footprint the
+    lease requests; `ARGUS_GPU_LEASE_TIMEOUT_S` caps how long the lease waits
+    for a slot, raising `GpuLeaseTimeout` (a `TimeoutError` subclass) so callers
+    can distinguish "no GPU slot" and back off.
+- **VQA reconciliation cross-check** — detects attributes where Florence prose
+  contradicts WD14 tags (colour/pose hallucinations), asks a pluggable
+  `AttributeVerifier` to adjudicate, and rewrites the prose to match. Verifiers,
+  selectable via `--reconcile`: `tag-prior` (model-free, deterministic default),
+  `openai-compat` (VQA over any served vision model), `florence` (grounds the
+  subject and samples the region's pixels), and `molmo`. Verifier errors are
+  caught so a flaky verifier never breaks captioning; no verifier → inference
+  unchanged. Exposed on the `caption` and `eval` CLI commands. (#36)
+- **`argus-lens eval` — caption quality harness** — a reference-free-first
+  evaluation package (`argus_lens.eval`) so quality-affecting changes can be
+  judged by numbers. The flagship metric (tag↔prose contradiction) needs no
+  ground truth and runs on any image folder; a JSONL manifest additionally
+  unlocks tag-coverage recall and reference CLIPScore (behind the new `eval`
+  extra). Emits a plain-text scorecard + JSON, with a baseline regression gate
+  (`--baseline`, `--fail-on-regression`) for CI. (#35)
+- **User-tunable tag↔prose balance presets** — a single axis controlling how
+  much prose survives hybrid tag+prose fusion, exposed as named presets
+  (`tags`/`keywords`/`balanced`/`descriptive`/`prose`) and a continuous
+  `prose_bias` (0.0 = pure tags .. 1.0 = full prose). `balanced` reproduces the
+  prior default, so behaviour is unchanged by default. Threaded through the
+  engine, all `/caption*` server endpoints, and `--hybrid-preset` / `--prose-bias`
+  CLI flags; advertised on `/profiles` for UI pickers.
 - **`GET /health`** — service liveness/identity probe returning
   `{status, service, version, source_root}`, mirroring argus-curator's shape.
 - **`GET /profiles`** — exposes the caption taxonomy (`assembly_profiles`,
@@ -208,7 +522,14 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/smk762/argus-lens/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/smk762/argus-lens/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/smk762/argus-lens/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/smk762/argus-lens/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/smk762/argus-lens/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/smk762/argus-lens/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/smk762/argus-lens/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/smk762/argus-lens/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/smk762/argus-lens/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/smk762/argus-lens/releases/tag/v0.1.0

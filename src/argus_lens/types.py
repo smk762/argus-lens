@@ -85,6 +85,38 @@ IDENTITY_HINTS: tuple[str, ...] = (
     "age",
     "complexion",
     "skin",
+    "twenties",
+    "thirties",
+    "forties",
+    "fifties",
+    "years old",
+    "middle-aged",
+    "elderly",
+    "teenage",
+    "lips",
+    "nose",
+    "eyebrows",
+    "eyelashes",
+    "teeth",
+    "mole",
+    "tattoo",
+    "piercing",
+    "bangs",
+    "ponytail",
+    "braid",
+    "twintails",
+    "bald",
+    "mustache",
+    "stubble",
+    "muscular",
+    "slim",
+    "curvy",
+    "dark skin",
+    "pale skin",
+    "tan",
+    "blush",
+    "grin",
+    "teary",
 )
 
 WARDROBE_HINTS: tuple[str, ...] = (
@@ -116,6 +148,64 @@ WARDROBE_HINTS: tuple[str, ...] = (
     "vest",
     "socks",
     "sandals",
+    "wears",
+    "dressed",
+    "clothes",
+    "clothing",
+    "attire",
+    "formal",
+    "casual",
+    "gown",
+    "robe",
+    "tuxedo",
+    "kimono",
+    "apron",
+    "cardigan",
+    "sweatshirt",
+    "tank top",
+    "crop top",
+    "overalls",
+    "jumpsuit",
+    "bikini",
+    "swimsuit",
+    "lingerie",
+    "bra",
+    "leggings",
+    "stockings",
+    "pantyhose",
+    "thighhighs",
+    "sneakers",
+    "sundress",
+    "necklace",
+    "earrings",
+    "bracelet",
+    "jewelry",
+    "choker",
+    "sunglasses",
+    "belt",
+    "handbag",
+    "bag",
+    "backpack",
+    "veil",
+    "crown",
+    "headband",
+    "hairband",
+    "hair ornament",
+    "hair bow",
+    "hair ribbon",
+    "hair flower",
+    "hair clip",
+    "ornament",
+    "ribbon",
+    "bow",
+    "collar",
+    "sleeves",
+    "sleeveless",
+    "denim",
+    "leather",
+    "lace",
+    "silk",
+    "knit",
 )
 
 POSE_HINTS: tuple[str, ...] = (
@@ -138,6 +228,24 @@ POSE_HINTS: tuple[str, ...] = (
     "from below",
     "from side",
     "headshot",
+    "stands",
+    "sits",
+    "lying",
+    "crouching",
+    "squatting",
+    "looking at viewer",
+    "looking back",
+    "looking to the side",
+    "looking up",
+    "looking down",
+    "hands on hips",
+    "arms up",
+    "from behind",
+    "cowboy shot",
+    "wide shot",
+    "dutch angle",
+    "profile",
+    "pose",
 )
 
 SETTING_HINTS: tuple[str, ...] = (
@@ -168,6 +276,62 @@ SETTING_HINTS: tuple[str, ...] = (
     "restaurant",
     "city",
     "mountain",
+    "bench",
+    "table",
+    "desk",
+    "counter",
+    "shelf",
+    "lamp",
+    "chandelier",
+    "plant",
+    "tree",
+    "grass",
+    "field",
+    "flowers",
+    "sky",
+    "cloud",
+    "ocean",
+    "sea",
+    "lake",
+    "river",
+    "pool",
+    "snow",
+    "rain",
+    "desert",
+    "bathroom",
+    "shower",
+    "bathtub",
+    "hallway",
+    "staircase",
+    "stairs",
+    "balcony",
+    "rooftop",
+    "alley",
+    "road",
+    "sidewalk",
+    "pavement",
+    "bridge",
+    "building",
+    "door",
+    "mirror",
+    "fence",
+    "car",
+    "train",
+    "bus",
+    "motorcycle",
+    "stage",
+    "gym",
+    "library",
+    "classroom",
+    "church",
+    "ballroom",
+    "bar",
+    "hotel",
+    "wedding",
+    "party",
+    "concert",
+    "nature",
+    "mat",
 )
 
 LIGHTING_HINTS: tuple[str, ...] = (
@@ -200,6 +364,14 @@ LIGHTING_HINTS: tuple[str, ...] = (
     "twilight",
     "dawn",
     "dusk",
+    "day",
+    "night",
+    "sunset",
+    "sunrise",
+    "glow",
+    "dimly lit",
+    "bright",
+    "moody",
 )
 
 ACTION_HINTS: tuple[str, ...] = (
@@ -231,6 +403,22 @@ ACTION_HINTS: tuple[str, ...] = (
     "fighting",
     "sleeping",
     "driving",
+    "reads",
+    "holds",
+    "walks",
+    "dances",
+    "plays",
+    "chopping",
+    "cutting",
+    "smoking",
+    "kissing",
+    "shopping",
+    "exercising",
+    "workout",
+    "yoga",
+    "texting",
+    "phone",
+    "taking photo",
 )
 
 DEFAULT_CATEGORY_CONFIGS: tuple[CategoryConfig, ...] = (
@@ -335,6 +523,54 @@ class TokenBudgetConfig:
 
 
 # ---------------------------------------------------------------------------
+# Hybrid tag <-> prose balance
+# ---------------------------------------------------------------------------
+
+# The hybrid pipeline fuses tags (WD14) with prose (Florence, etc.). How much
+# prose survives is governed by the redundancy threshold in
+# ``filter_redundant_clauses_detailed``: a *lower* threshold drops more prose
+# (tag-dominant captions), a *higher* threshold keeps more prose
+# (prose-dominant captions). These named presets are stops along that axis;
+# "balanced" reproduces the historical hard-coded default of 0.5.
+HYBRID_PRESETS: dict[str, float] = {
+    "tags": 0.20,
+    "keywords": 0.35,
+    "balanced": 0.50,
+    "descriptive": 0.68,
+    "prose": 0.85,
+}
+
+DEFAULT_HYBRID_PRESET = "balanced"
+DEFAULT_REDUNDANCY_THRESHOLD = HYBRID_PRESETS[DEFAULT_HYBRID_PRESET]
+
+# Continuous ``prose_bias`` (0.0 = pure tags, 1.0 = full prose) maps linearly
+# onto this threshold range so a UI slider and the named presets share one axis.
+_PROSE_BIAS_MIN_THRESHOLD = 0.15
+_PROSE_BIAS_MAX_THRESHOLD = 0.90
+
+
+def resolve_redundancy_threshold(
+    hybrid_preset: str | None = None,
+    prose_bias: float | None = None,
+) -> float:
+    """Resolve the prose-vs-tag redundancy threshold.
+
+    Priority: explicit *prose_bias* (0.0–1.0, continuous) > named
+    *hybrid_preset* > ``DEFAULT_HYBRID_PRESET``. Unknown preset names fall
+    back to the default rather than raising, so a stale UI value is harmless.
+    """
+    if prose_bias is not None:
+        bias = min(1.0, max(0.0, prose_bias))
+        span = _PROSE_BIAS_MAX_THRESHOLD - _PROSE_BIAS_MIN_THRESHOLD
+        return _PROSE_BIAS_MIN_THRESHOLD + bias * span
+    if hybrid_preset:
+        key = hybrid_preset.strip().lower().replace("-", "_").replace(" ", "_")
+        if key in HYBRID_PRESETS:
+            return HYBRID_PRESETS[key]
+    return DEFAULT_REDUNDANCY_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
 # Target profile
 # ---------------------------------------------------------------------------
 
@@ -352,6 +588,8 @@ class CaptionTargetProfile:
         checkpoint: Optional checkpoint name — used for style inference
             (e.g. ``"ponyDiffusion"`` implies anime).
         token_budget: Resolved token budget (computed from *target_backend*).
+        redundancy_threshold: Prose-vs-tag balance for the hybrid pipeline
+            (see ``HYBRID_PRESETS`` / ``resolve_redundancy_threshold``).
     """
 
     target_style: str = "photo"
@@ -359,6 +597,7 @@ class CaptionTargetProfile:
     target_backend: str | None = "sdxl"
     checkpoint: str | None = None
     token_budget: TokenBudgetConfig = field(default_factory=lambda: TokenBudgetConfig.for_backend("sdxl"))
+    redundancy_threshold: float = DEFAULT_REDUNDANCY_THRESHOLD
 
 
 def normalise_target_style(
@@ -395,18 +634,22 @@ def resolve_target_profile(
     target_backend: str | None = "sdxl",
     checkpoint: str | None = None,
     token_budget_override: int | None = None,
+    hybrid_preset: str | None = None,
+    prose_bias: float | None = None,
     categories: tuple[CategoryConfig, ...] | None = None,
 ) -> CaptionTargetProfile:
     """Build a fully resolved target profile."""
     style = normalise_target_style(target_style, checkpoint, target_backend)
     category = normalise_target_category(target_category, categories)
     budget = TokenBudgetConfig.for_backend(target_backend, token_budget_override)
+    threshold = resolve_redundancy_threshold(hybrid_preset, prose_bias)
     return CaptionTargetProfile(
         target_style=style,
         target_category=category,
         target_backend=(target_backend or "").strip() or None,
         checkpoint=(checkpoint or "").strip() or None,
         token_budget=budget,
+        redundancy_threshold=threshold,
     )
 
 

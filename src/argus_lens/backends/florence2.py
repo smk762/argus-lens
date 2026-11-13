@@ -95,7 +95,7 @@ class Florence2Backend(LocalBackend):
         resolved = self.resolve_device(device)
         cache_key = self._cache_key(resolved)
 
-        with self._registry.acquire(cache_key, lambda: self._loader(resolved)) as (processor, model, dev):
+        with self._acquire(cache_key, lambda: self._loader(resolved)) as (processor, model, dev):
             dtype = getattr(model, "dtype", None)
             pil = image.convert("RGB")
             inputs = processor(text=self._task, images=pil, return_tensors="pt")
@@ -119,9 +119,11 @@ class Florence2Backend(LocalBackend):
             )
             return parsed.get(self._task, "").strip()
 
-    def unload(self) -> None:
-        """Do nothing; model lifetime is managed by the shared registry."""
-        pass
+    def prefetch(self) -> None:
+        """Fetch the Florence-2 weights into the HF cache, outside the GPU lease (#64)."""
+        from argus_lens.backends._download import prefetch_hf_snapshot
+
+        prefetch_hf_snapshot(self._model_id)
 
     def is_available(self) -> bool:
         """Return True if torch and transformers are importable."""

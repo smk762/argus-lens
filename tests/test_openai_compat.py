@@ -136,3 +136,39 @@ def test_list_content_parts_are_joined():
     b = OpenAICompatBackend(base_url="http://x/v1")
     _mock_client(b, lambda _r: httpx.Response(200, json={"choices": [{"message": {"content": parts}}]}))
     assert b.caption_image(_image()) == "a red square"
+
+
+def test_large_images_are_downscaled_before_sending(monkeypatch):
+    """A 3600px photo is sent at the default 1024px long edge (Ollama context overflow)."""
+    import base64
+    import io
+
+    monkeypatch.delenv("ARGUS_OPENAI_COMPAT_MAX_SIDE", raising=False)
+    backend = OpenAICompatBackend()
+    captured = _mock_client(backend, _ok_handler)
+    backend.caption_image(Image.new("RGB", (3600, 2400)))
+    url = captured["body"]["messages"][1]["content"][1]["image_url"]["url"]
+    sent = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
+    assert sent.size == (1024, 683)
+
+    full = OpenAICompatBackend(max_image_side=0)
+    captured = _mock_client(full, _ok_handler)
+    full.caption_image(Image.new("RGB", (1200, 800)))
+    url = captured["body"]["messages"][1]["content"][1]["image_url"]["url"]
+    assert Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))).size == (1200, 800)
+
+
+def test_reasoning_exhaustion_gets_actionable_error():
+    """Empty content + reasoning + finish=length names the cause and the fix."""
+    backend = OpenAICompatBackend()
+
+    def handler(_request):
+        """Reply like a thinking model that ran out of tokens."""
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "", "reasoning": "Got it, let's"}, "finish_reason": "length"}]},
+        )
+
+    _mock_client(backend, handler)
+    with pytest.raises(RuntimeError, match="instruct"):
+        backend.caption_image(_image())

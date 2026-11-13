@@ -28,13 +28,21 @@ def estimate_t5_tokens(text: str) -> int:
     return int(words * 1.1) + text.count(",")
 
 
+# Diffusion backends whose text encoder is T5-XXL; everything else uses CLIP.
+T5_BACKENDS: frozenset[str] = frozenset({"flux", "sd3", "kolors", "pixart"})
+
+
+def is_t5_backend(backend: str | None) -> bool:
+    """True when *backend* encodes prompts with T5-XXL rather than CLIP."""
+    return (backend or "").lower().strip() in T5_BACKENDS
+
+
 def estimate_tokens(text: str, backend: str | None = None) -> int:
     """Estimate token count using the appropriate method for *backend*.
 
     Flux, SD3, Kolors, and PixArt use T5-XXL; everything else uses CLIP.
     """
-    t5_backends = {"flux", "sd3", "kolors", "pixart"}
-    if (backend or "").lower().strip() in t5_backends:
+    if is_t5_backend(backend):
         return estimate_t5_tokens(text)
     return estimate_clip_tokens(text)
 

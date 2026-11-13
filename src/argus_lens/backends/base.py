@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from typing import Any
 
 from PIL import Image
 
+from argus_lens.backends.output import BackendOutput, Tag
 from argus_lens.types import BackendKind
 
 
@@ -29,6 +32,9 @@ class CaptionBackend(ABC):
     name: str = "base"
     kind: BackendKind = BackendKind.LOCAL
     style: str = "photo"
+    # True for taggers (WD14, RAM++): their output feeds the assembly pipeline's
+    # tag side rather than its prose side when run standalone.
+    emits_tags: bool = False
     requires_gpu: bool = False
 
     @abstractmethod
@@ -48,9 +54,33 @@ class CaptionBackend(ABC):
         the assembly pipeline.
         """
 
+    def annotate_image(self, image: Image.Image) -> BackendOutput:
+        """Structured output: tags (with confidence/region/source when known) and/or prose (#57).
+
+        Every backend has this. The default wraps :meth:`caption_image` according to the
+        backend's output kind: a tagger (``emits_tags``) has its comma-separated string split
+        into unscored :class:`Tag` objects; anything else (Florence-2, BLIP-2, cloud VLMs) is
+        returned as prose. Backends that know per-tag scores (WD14, RAM++) override this so the
+        scores survive into provenance.
+        """
+        raw = self.caption_image(image)
+        if self.emits_tags:
+            labels = (t.strip() for t in raw.split(","))
+            return BackendOutput(tags=[Tag(label=label, source=self.name) for label in labels if label])
+        return BackendOutput(prose=raw.strip())
+
     @abstractmethod
     def unload(self) -> None:
         """Release resources (GPU memory, HTTP connections, etc.)."""
+
+    def prefetch(self) -> None:
+        """Fetch model weights to local disk without touching the device (#64).
+
+        The engine calls this *before* taking the GPU capacity lease, so a
+        first-use download (gigabytes, possibly minutes) never holds the GPU
+        hostage from other tenants. Default: nothing to fetch.
+        """
+        return  # noqa: PLR1711 - an intentionally empty hook, not an abstract method
 
     def is_available(self) -> bool:
         """Return True if this backend can be used right now.
@@ -83,6 +113,25 @@ class LocalBackend(CaptionBackend):
     def load(self, device: str = "auto") -> None:
         """Remember the target device for subsequent (lazy) model loads."""
         self._device = device
+
+    def _acquire(self, key: str, loader: Callable[[], Any]) -> AbstractContextManager[Any]:
+        """Acquire *key* from this backend's model registry, remembering it for :meth:`unload`."""
+        self.__dict__.setdefault("_registry_keys", set()).add(key)
+        return self._registry.acquire(key, loader)
+
+    def unload(self) -> None:
+        """Evict this backend's cached models from the shared registry so VRAM is actually freed (#63).
+
+        Only keys this instance acquired are evicted. A model still in use (a
+        caption in flight on another engine sharing the cache) is left loaded and
+        retried on the next unload. Backends that don't use a registry override this.
+        """
+        registry = getattr(self, "_registry", None)
+        if registry is None:
+            return
+        for key in list(self.__dict__.get("_registry_keys", ())):
+            if registry.evict(key):
+                self._registry_keys.discard(key)
 
     def resolve_device(self, device: str | None = None) -> str:
         """Resolve ``"auto"`` to ``"cuda"`` or ``"cpu"``.

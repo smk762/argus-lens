@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import inspect
 import io
 import threading
-from collections.abc import Generator
+import time
+from collections.abc import Callable, Generator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +19,7 @@ from PIL import Image
 from argus_lens.assembly.composer import compose_caption_result
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.backends.hybrid import HybridPipeline
+from argus_lens.backends.replay import ReplayBackend, ReplayMiss
 from argus_lens.retry import clear_gpu_cache, run_with_oom_retry
 from argus_lens.types import (
     CaptionResult,
@@ -38,12 +43,14 @@ def _register_backends() -> None:
     from argus_lens.backends.nvidia_nim import NVIDIANIMBackend
     from argus_lens.backends.openai import OpenAIBackend
     from argus_lens.backends.openai_compat import OpenAICompatBackend
+    from argus_lens.backends.ram import RamBackend
     from argus_lens.backends.replicate import ReplicateBackend
     from argus_lens.backends.wd14 import WD14Backend
 
     _BACKEND_REGISTRY.update(
         {
             "wd14": WD14Backend,
+            "ram": RamBackend,
             "blip2": BLIP2Backend,
             "florence2": Florence2Backend,
             "openai": OpenAIBackend,
@@ -51,8 +58,25 @@ def _register_backends() -> None:
             "hf-inference": HFInferenceBackend,
             "replicate": ReplicateBackend,
             "nvidia-nim": NVIDIANIMBackend,
+            "replay": ReplayBackend,
         }
     )
+
+
+# Engine kwargs that are forwarded to backend constructors (when accepted).
+_BACKEND_CTOR_KWARGS: tuple[str, ...] = (
+    "api_key",
+    "model_id",
+    "system_prompt",
+    "prompt",
+    "temperature",
+    "model_dir",
+    "model_repo",
+    "florence_model_id",
+    "threshold",
+    "base_url",
+    "vocab_packs",
+)
 
 
 def _resolve_backend(
@@ -82,8 +106,9 @@ def _resolve_backend(
 
         wd14_kwargs = {}
         florence_kwargs = {}
-        if "model_dir" in kwargs:
-            wd14_kwargs["model_dir"] = kwargs["model_dir"]
+        for key in ("model_dir", "model_repo", "threshold"):
+            if key in kwargs:
+                wd14_kwargs[key] = kwargs[key]
         if "florence_model_id" in kwargs:
             florence_kwargs["model_id"] = kwargs["florence_model_id"]
         return HybridPipeline(
@@ -96,13 +121,17 @@ def _resolve_backend(
         raise ValueError(f"Unknown backend {backend!r}. Choose from: {available}")
 
     cls = _BACKEND_REGISTRY[backend]
+    # Only forward what this constructor accepts: the hybrid shorthand shares
+    # one kwargs dict between both stages, so ``hybrid:wd14+openai-compat``
+    # must not hand ``base_url``/``model_id`` to WD14.
+    params = inspect.signature(cls.__init__).parameters
+    accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
     ctor_kwargs: dict[str, Any] = {}
-    for key in ("api_key", "model_id", "system_prompt", "model_dir", "florence_model_id", "threshold", "base_url"):
+    for key in _BACKEND_CTOR_KWARGS:
         if key in kwargs:
-            mapped = key
-            if key == "florence_model_id":
-                mapped = "model_id"
-            ctor_kwargs[mapped] = kwargs[key]
+            mapped = "model_id" if key == "florence_model_id" else key
+            if accepts_any or mapped in params:
+                ctor_kwargs[mapped] = kwargs[key]
     return cls(**ctor_kwargs)
 
 
@@ -111,26 +140,49 @@ def _image_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:20]
 
 
-def _load_image(source: str | Path | bytes | Image.Image) -> tuple[str, Image.Image]:
+@dataclass(frozen=True)
+class ImageAsset:
+    """Identity of an ingested image, carried alongside the decoded pixels.
+
+    ``sha256`` is the hex digest of the **original file bytes** — the same
+    content key cortex stores on ``source_asset.sha256`` — so a replay backend
+    can look the recorded caption up (#45). It is ``None`` for a pre-decoded PIL
+    input, whose original bytes are already gone. ``uri`` points at where the
+    bytes came from (a path or ``http(s)://`` URL) and serves as a fallback key.
+    """
+
+    name: str
+    sha256: str | None = None
+    uri: str | None = None
+    # The original bytes, kept for the lineage recorder's blob write; not identity.
+    data: bytes | None = field(default=None, repr=False, compare=False)
+
+
+def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, Image.Image]:
     """Load an image from various source types.
 
     Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs.
-    Returns ``(name, pil_image)``.
+    Returns ``(asset, pil_image)`` — the asset carries the original-bytes sha256
+    when it is recoverable (everything except a pre-decoded PIL input).
     """
     if isinstance(source, Image.Image):
-        return "image", source.convert("RGB")
+        return ImageAsset(name="image"), source.convert("RGB")
     if isinstance(source, bytes):
-        return "bytes", Image.open(io.BytesIO(source)).convert("RGB")
+        asset = ImageAsset(name="bytes", sha256=hashlib.sha256(source).hexdigest(), data=source)
+        return asset, Image.open(io.BytesIO(source)).convert("RGB")
     if isinstance(source, str) and source.startswith(("http://", "https://")):
         import httpx
 
         resp = httpx.get(source, follow_redirects=True, timeout=30.0)
         resp.raise_for_status()
         name = source.rsplit("/", 1)[-1].split("?")[0] or "image"
-        return name, Image.open(io.BytesIO(resp.content)).convert("RGB")
+        asset = ImageAsset(name=name, sha256=hashlib.sha256(resp.content).hexdigest(), uri=source, data=resp.content)
+        return asset, Image.open(io.BytesIO(resp.content)).convert("RGB")
     path = Path(source)
     if path.exists():
-        return path.name, Image.open(path).convert("RGB")
+        data = path.read_bytes()
+        asset = ImageAsset(name=path.name, sha256=hashlib.sha256(data).hexdigest(), uri=str(path), data=data)
+        return asset, Image.open(io.BytesIO(data)).convert("RGB")
     raise FileNotFoundError(f"Image not found: {source}")
 
 
@@ -160,9 +212,35 @@ class ArgusLens:
         categories: tuple[CategoryConfig, ...] | None = None,
         oom_retry_max_wait_s: float = 180.0,
         oom_retry_interval_s: float = 5.0,
+        verifier: Any | None = None,
+        refiner: Any | None = None,
+        coordinator: Any | None = None,
+        idle_unload_s: float | None = None,
+        recorder: Any | None = None,
         **kwargs: Any,
     ) -> None:
-        """Resolve the backend and store configuration; models load lazily on first caption."""
+        """Resolve the backend and store configuration; models load lazily on first caption.
+
+        When *verifier* (an ``AttributeVerifier``) is supplied, a reconciliation
+        pass fixes prose colour/pose claims that contradict the tags (#36) before
+        assembly. Without one, inference is unchanged.
+
+        When *refiner* (an :class:`argus_lens.refine.Refiner`) is supplied, an
+        LLM rewrites selected caption variants after assembly; each rewrite is
+        validated by the coherence post-check and the deterministic caption is
+        kept if it fails (see :mod:`argus_lens.refine`).
+
+        *coordinator* (a ``GpuCoordinator``) gates heavy inference behind a
+        capacity lease (#38); it defaults to the environment
+        (``ARGUS_GPU_COORDINATOR``), i.e. ``none`` unless configured.
+        *idle_unload_s* enables a background reaper that unloads the model after
+        that many idle seconds (#37).
+
+        *recorder* (a :class:`argus_lens.lineage.LineageRecorder`) writes every
+        live caption into the cortex lineage store, the tape the ``replay``
+        backend, argus-lightbox and argus-halo read. Replayed captions are never
+        recorded. Without one, lens stays DB-free.
+        """
         self._backend = _resolve_backend(backend, **kwargs)
         self._device = device
         self._categories = categories
@@ -171,11 +249,131 @@ class ArgusLens:
         self._loaded = False
         self._load_lock = threading.Lock()
         self._kwargs = kwargs
+        self._last_used: float | None = None
+        self._active = 0  # in-flight inferences; guarded by _load_lock
+        # Weights are fetched once, outside the GPU lease (#64). Separate lock: a
+        # multi-minute download must not block unload() or the busy counter.
+        self._prefetched = False
+        self._prefetch_lock = threading.Lock()
+
+        self._reconciler = None
+        if verifier is not None:
+            from argus_lens.reconcile import Reconciler  # noqa: PLC0415 - optional feature
+
+            self._reconciler = Reconciler(verifier)
+        self._refiner = refiner
+        self._recorder = recorder
+
+        if coordinator is not None:
+            self._coordinator = coordinator
+        else:
+            from argus_lens.gpu import coordinator_from_env  # noqa: PLC0415
+
+            self._coordinator = coordinator_from_env()
+
+        self._idle_unload_s = idle_unload_s
+        self._reaper_stop: threading.Event | None = None
+        self._reaper_thread: threading.Thread | None = None
+        if idle_unload_s and idle_unload_s > 0:
+            self._start_idle_reaper(idle_unload_s)
 
     @property
     def backend(self) -> CaptionBackend:
         """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
+
+    def unload(self) -> bool:
+        """Release the backend's model/resources and free the CUDA cache (#37).
+
+        Returns ``True`` if it unloaded. Refuses (returns ``False``) while an
+        inference is in flight — freeing the model mid-caption would crash the
+        running request. Idempotent and thread-safe; reloads lazily next caption.
+        """
+        with self._load_lock:
+            if self._active > 0:
+                logger.info("unload_skipped_active", active=self._active)
+                return False
+            if not self._loaded:
+                return False
+            try:
+                self._backend.unload()
+            finally:
+                self._loaded = False
+        clear_gpu_cache()
+        return True
+
+    def unload_if_idle(self, idle_ttl_s: float) -> bool:
+        """Unload the model when it has been idle at least *idle_ttl_s* seconds.
+
+        Returns ``True`` if it unloaded. Skips while a caption is in flight, and
+        measures idleness from the last inference *boundary* (start or end), so a
+        long-running caption is never mistaken for idle.
+        """
+        if not self._loaded or self._last_used is None or self._active > 0:
+            return False
+        if (time.monotonic() - self._last_used) >= idle_ttl_s:
+            return self.unload()
+        return False
+
+    def vram_status(self) -> dict[str, Any]:
+        """Report residency, backend, coordinator, free VRAM, and idle time (#37)."""
+        from argus_lens.gpu import free_vram_mb  # noqa: PLC0415
+
+        return {
+            "backend": self._backend.name,
+            "loaded": self._loaded,
+            "coordinator": getattr(self._coordinator, "name", "none"),
+            "free_vram_mb": free_vram_mb(),
+            "idle_s": (time.monotonic() - self._last_used) if self._last_used is not None else None,
+        }
+
+    def close(self) -> None:
+        """Stop the idle reaper (if running) and unload the model."""
+        if self._reaper_stop is not None:
+            self._reaper_stop.set()
+        self.unload()
+        if self._recorder is not None:
+            self._recorder.close()
+
+    def _start_idle_reaper(self, idle_unload_s: float) -> None:
+        """Start a daemon thread that unloads the model after idle periods (#37).
+
+        The loop holds only a *weakref* to the engine, so a dropped (un-``close``d)
+        engine is still garbage-collected — the reaper then observes ``None`` and
+        exits instead of pinning the engine and its VRAM forever.
+        """
+        import weakref  # noqa: PLC0415
+
+        self._reaper_stop = threading.Event()
+        stop = self._reaper_stop
+        interval = min(idle_unload_s, 30.0)
+        ref = weakref.ref(self)
+
+        def _loop() -> None:
+            """Poll for idleness until stopped or the engine is collected."""
+            while not stop.wait(interval):
+                engine = ref()
+                if engine is None:
+                    return
+                try:
+                    engine.unload_if_idle(idle_unload_s)
+                except Exception as exc:  # noqa: BLE001 - a reaper hiccup must not crash the app
+                    logger.warning("idle_reaper_error", error=str(exc))
+                del engine  # don't hold the ref across the wait
+
+        self._reaper_thread = threading.Thread(target=_loop, name="argus-idle-reaper", daemon=True)
+        self._reaper_thread.start()
+
+    def _warn_if_low_vram(self) -> None:
+        """Log a warning when free VRAM looks too small for the backend to load."""
+        if not getattr(self._backend, "requires_gpu", False):
+            return
+        from argus_lens.gpu import estimate_footprint_mb, free_vram_mb  # noqa: PLC0415
+
+        free = free_vram_mb()
+        needed = estimate_footprint_mb(self._backend.name)
+        if free is not None and needed and free < needed:
+            logger.warning("low_vram_before_load", backend=self._backend.name, free_mb=free, needed_mb=needed)
 
     def _ensure_loaded(self) -> None:
         """Configure the backend device once, lazily, before first inference.
@@ -193,15 +391,58 @@ class ArgusLens:
             return
         with self._load_lock:
             if not self._loaded:
+                self._warn_if_low_vram()
                 self._backend.load(self._device)
                 self._loaded = True
 
-    def _infer(self, pil: Image.Image) -> tuple[str, str]:
-        """Run backend inference, returning ``(tags, prose)``.
+    def _ensure_prefetched(self) -> None:
+        """Download the backend's weights once, before any GPU lease is taken (#64).
 
-        Retries on CUDA OOM with cache cleanup (#9). The OOM wait budget is
-        bounded by ``oom_retry_max_wait_s``; set it to ``0`` to fail fast.
+        Concurrent first callers wait for the one download rather than starting
+        their own. A failed download leaves the flag unset, so the next caption retries.
         """
+        if self._prefetched:
+            return
+        with self._prefetch_lock:
+            if not self._prefetched:
+                self._backend.prefetch()
+                self._prefetched = True
+
+    def _infer(self, pil: Image.Image) -> tuple[str, str]:
+        """Run backend inference behind the GPU capacity lease (#38).
+
+        Marks the engine busy (so the idle reaper / ``unload`` won't free the
+        model mid-inference) and stamps idleness at both boundaries. The lease
+        serialises heavy GPU work against other tenants; cloud backends (no GPU
+        footprint) bypass it.
+        """
+        from argus_lens.gpu import resolve_min_vram_mb  # noqa: PLC0415
+
+        self._ensure_prefetched()  # network-bound: never under the GPU lease
+        footprint = resolve_min_vram_mb(self._backend.name)
+        use_lease = getattr(self._backend, "requires_gpu", False) and footprint > 0
+        # The lease waits for min_vram_mb *free*, and a resident model is already
+        # counted as used: asking for the footprint again would wait on our own
+        # weights. Only a load needs room; a resident model just takes the lock.
+        min_vram_mb = 0 if self._loaded else footprint
+        lease = (
+            self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb)
+            if use_lease
+            else contextlib.nullcontext()
+        )
+        with self._load_lock:
+            self._active += 1
+            self._last_used = time.monotonic()
+        try:
+            with lease:
+                return self._infer_locked(pil)
+        finally:
+            with self._load_lock:
+                self._active -= 1
+                self._last_used = time.monotonic()
+
+    def _infer_locked(self, pil: Image.Image) -> tuple[str, str]:
+        """Load (if needed) and run inference; retries on CUDA OOM (#9)."""
         self._ensure_loaded()
 
         def _call() -> tuple[str, str]:
@@ -209,7 +450,8 @@ class ArgusLens:
             if isinstance(self._backend, HybridPipeline):
                 return self._backend.caption_image_split(pil)
             raw = self._backend.caption_image(pil)
-            if self._backend.style == "anime" or self._backend.name == "wd14":
+            # Taggers feed the tag side; anime-style custom backends are treated as taggers too.
+            if getattr(self._backend, "emits_tags", False) or self._backend.style == "anime":
                 return raw, ""
             return "", raw
 
@@ -229,7 +471,38 @@ class ArgusLens:
             on_oom=_on_oom,
             on_retry=_on_retry,
         )
+
+        # Reconcile prose colour/pose claims that contradict the tags (#36).
+        if self._reconciler is not None and tags and prose:
+            outcome = self._reconciler.reconcile(pil, tags, prose)
+            if outcome.changes:
+                logger.info("reconciled_prose", changes=[c.__dict__ for c in outcome.changes])
+            if outcome.errors:
+                # A GPU verifier may have OOM'd; free the cache before the next image.
+                clear_gpu_cache()
+            prose = outcome.prose
+
         return tags, prose
+
+    def _replay_lookup(self, asset: ImageAsset, name: str | None = None) -> CaptionResult:
+        """Return the recorded caption for *asset* from the cortex lineage store (#45).
+
+        Replay short-circuits the assembly pipeline: the recorded
+        ``CaptionResult`` is returned verbatim (profile knobs like *target_style*
+        or the token budget must not re-mangle captured output). A missing
+        recording raises :class:`ReplayMiss` — every demo image is on the tape, so
+        a miss is a real error, not a cue to fall back to a live model.
+
+        *name* is the caller's display name for the image (e.g. an upload's
+        filename passed via ``names=``); it labels the :class:`ReplayMiss` so a
+        streamed/reported miss ties back to the file the caller sent, rather than
+        the ingest name (``"bytes"``) a raw-bytes source carries.
+        """
+        self._ensure_loaded()
+        result = self._backend.lookup(sha256=asset.sha256, uri=asset.uri)  # type: ignore[attr-defined]
+        if result is None:
+            raise ReplayMiss(sha256=asset.sha256, uri=asset.uri, name=name or asset.name)
+        return result
 
     def caption(
         self,
@@ -241,6 +514,8 @@ class ArgusLens:
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
+        hybrid_preset: str | None = None,
+        prose_bias: float | None = None,
         prose_enrichment: bool = True,
     ) -> CaptionResult:
         """Caption a single image.
@@ -250,20 +525,29 @@ class ArgusLens:
         When *prose_enrichment* is enabled (default), novel scene tokens
         extracted from prose output (e.g. Florence-2) are appended to the
         training variant at lowest priority.
+
+        *hybrid_preset* (e.g. ``"keywords"``, ``"balanced"``, ``"descriptive"``)
+        or a continuous *prose_bias* (0.0 = pure tags, 1.0 = full prose) tunes
+        how much prose survives the tag/prose fusion.
         """
-        name, pil = _load_image(image)
+        asset, pil = _load_image(image)
+        if isinstance(self._backend, ReplayBackend):
+            return self._replay_lookup(asset)
+
         profile = resolve_target_profile(
             target_style=target_style,
             target_category=target_category,
             target_backend=target_backend,
             checkpoint=checkpoint,
             token_budget_override=token_budget_override,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             categories=self._categories,
         )
 
         tags, prose = self._infer(pil)
 
-        return compose_caption_result(
+        result = compose_caption_result(
             trigger_word=trigger_word,
             tags=tags,
             prose=prose,
@@ -272,30 +556,73 @@ class ArgusLens:
             categories=self._categories,
             backend_name=self._backend.name,
         )
+        return self._finish(result, profile, trigger_word, pil, asset, asset.name)
+
+    def _refine(self, result: CaptionResult, profile: Any, trigger_word: str, pil: Image.Image) -> CaptionResult:
+        """Apply the optional LLM refiner (validated, falls back to *result*)."""
+        if self._refiner is None:
+            return result
+        return self._refiner.refine(result, profile, trigger_word=trigger_word, image=pil)
+
+    def _finish(
+        self,
+        result: CaptionResult,
+        profile: Any,
+        trigger_word: str,
+        pil: Image.Image,
+        asset: ImageAsset,
+        name: str,
+    ) -> CaptionResult:
+        """Refine a live caption, then record it in the lineage store when a recorder is set."""
+        result = self._refine(result, profile, trigger_word, pil)
+        if self._recorder is not None:
+            self._recorder.record(asset, result, name=name, profile=profile, params={"trigger_word": trigger_word})
+        return result
 
     def caption_batch(
         self,
         images: list[str | Path | bytes | Image.Image],
         *,
+        names: list[str] | None = None,
         trigger_word: str = "",
         target_style: str = "photo",
         target_category: str = "identity",
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
+        hybrid_preset: str | None = None,
+        prose_bias: float | None = None,
         progress: Any | None = None,
+        on_miss: Callable[[str, ReplayMiss], None] | None = None,
     ) -> dict[str, CaptionResult]:
         """Caption multiple images, returning ``{name: CaptionResult}``.
 
-        Identical images are deduplicated by hash.
+        Identical images are deduplicated by hash. *names* overrides the result
+        keys (one per image) — pass it when the source union loses the filename
+        (e.g. raw upload bytes), so results don't collapse under a shared name.
+
+        *on_miss* controls a replay :class:`ReplayMiss` (an image with no recorded
+        caption): with no handler a miss raises and aborts the batch (fail-fast);
+        pass a ``on_miss(name, exc)`` callback to instead skip that image (it is
+        left out of the returned dict) and keep captioning the rest, so one
+        un-recorded image can't discard the whole batch (#48).
         """
-        profile = resolve_target_profile(
-            target_style=target_style,
-            target_category=target_category,
-            target_backend=target_backend,
-            checkpoint=checkpoint,
-            token_budget_override=token_budget_override,
-            categories=self._categories,
+        # Replay returns recordings verbatim and never touches the profile or
+        # the dedup cache, so skip resolving them on that path (mirrors caption()).
+        replay = isinstance(self._backend, ReplayBackend)
+        profile = (
+            None
+            if replay
+            else resolve_target_profile(
+                target_style=target_style,
+                target_category=target_category,
+                target_backend=target_backend,
+                checkpoint=checkpoint,
+                token_budget_override=token_budget_override,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+                categories=self._categories,
+            )
         )
 
         loaded = [_load_image(img) for img in images]
@@ -303,24 +630,36 @@ class ArgusLens:
         results: dict[str, CaptionResult] = {}
         caption_cache: dict[str, tuple[str, str]] = {}
 
-        for idx, (name, pil) in enumerate(loaded):
-            buf = io.BytesIO()
-            pil.save(buf, format="PNG")
-            h = _image_hash(buf.getvalue())
+        for idx, (asset, pil) in enumerate(loaded):
+            name = names[idx] if names and idx < len(names) else asset.name
 
-            if h not in caption_cache:
-                caption_cache[h] = self._infer(pil)
+            if replay:
+                try:
+                    results[name] = self._replay_lookup(asset, name)
+                except ReplayMiss as miss:
+                    if on_miss is None:
+                        raise
+                    on_miss(name, miss)
+                    continue  # skip this image (and its progress tick); keep going
+            else:
+                buf = io.BytesIO()
+                pil.save(buf, format="PNG")
+                h = _image_hash(buf.getvalue())
 
-            cached_tags, cached_prose = caption_cache[h]
-            results[name] = compose_caption_result(
-                trigger_word=trigger_word,
-                tags=cached_tags,
-                prose=cached_prose,
-                target_profile=profile,
-                image_index=idx,
-                categories=self._categories,
-                backend_name=self._backend.name,
-            )
+                if h not in caption_cache:
+                    caption_cache[h] = self._infer(pil)
+
+                cached_tags, cached_prose = caption_cache[h]
+                composed = compose_caption_result(
+                    trigger_word=trigger_word,
+                    tags=cached_tags,
+                    prose=cached_prose,
+                    target_profile=profile,
+                    image_index=idx,
+                    categories=self._categories,
+                    backend_name=self._backend.name,
+                )
+                results[name] = self._finish(composed, profile, trigger_word, pil, asset, name)
 
             if progress is not None:
                 progress(idx + 1, total, name, results[name])
@@ -331,27 +670,54 @@ class ArgusLens:
         self,
         images: list[str | Path | bytes | Image.Image],
         *,
+        names: list[str] | None = None,
         trigger_word: str = "",
         target_style: str = "photo",
         target_category: str = "identity",
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
-    ) -> Generator[tuple[str, CaptionResult], None, None]:
-        """Yield ``(name, CaptionResult)`` as each image is processed."""
-        profile = resolve_target_profile(
-            target_style=target_style,
-            target_category=target_category,
-            target_backend=target_backend,
-            checkpoint=checkpoint,
-            token_budget_override=token_budget_override,
-            categories=self._categories,
+        hybrid_preset: str | None = None,
+        prose_bias: float | None = None,
+    ) -> Generator[tuple[str, CaptionResult | ReplayMiss], None, None]:
+        """Yield ``(name, CaptionResult)`` as each image is processed.
+
+        *names* overrides the yielded name per image — pass it when the source
+        loses the filename (e.g. raw upload bytes).
+
+        A replay image with no recorded caption is yielded as ``(name,
+        ReplayMiss)`` rather than raising: a generator can't resume past a raise,
+        so surfacing the miss as a per-item value keeps the stream going for the
+        images after it (#48). Callers should branch on the item type.
+        """
+        replay = isinstance(self._backend, ReplayBackend)
+        profile = (
+            None
+            if replay
+            else resolve_target_profile(
+                target_style=target_style,
+                target_category=target_category,
+                target_backend=target_backend,
+                checkpoint=checkpoint,
+                token_budget_override=token_budget_override,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+                categories=self._categories,
+            )
         )
 
         for idx, source in enumerate(images):
-            name, pil = _load_image(source)
-            tags, prose = self._infer(pil)
+            asset, pil = _load_image(source)
+            name = names[idx] if names and idx < len(names) else asset.name
 
+            if replay:
+                try:
+                    yield name, self._replay_lookup(asset, name)
+                except ReplayMiss as miss:
+                    yield name, miss
+                continue
+
+            tags, prose = self._infer(pil)
             result = compose_caption_result(
                 trigger_word=trigger_word,
                 tags=tags,
@@ -361,27 +727,40 @@ class ArgusLens:
                 categories=self._categories,
                 backend_name=self._backend.name,
             )
-            yield name, result
+            yield name, self._finish(result, profile, trigger_word, pil, asset, name)
 
     def caption_directory(
         self,
         path: str | Path,
         *,
         glob: str = "*.{png,jpg,jpeg,webp}",
+        recursive: bool = False,
         trigger_word: str = "",
         target_style: str = "photo",
         target_category: str = "identity",
         target_backend: str | None = "sdxl",
         checkpoint: str | None = None,
         token_budget_override: int | None = None,
+        hybrid_preset: str | None = None,
+        prose_bias: float | None = None,
         output_format: str = "txt",
         overwrite: bool = False,
         progress: Any | None = None,
+        on_miss: Callable[[str, ReplayMiss], None] | None = None,
     ) -> dict[str, CaptionResult]:
         """Caption all images in a directory and export results.
 
         Supported output formats: ``"txt"`` (sidecar files), ``"json"``,
         ``"jsonl"``, ``"csv"``.
+
+        With *recursive*, sub-directories are walked too. Results are keyed by
+        the image's POSIX path relative to *path* (just the filename for a
+        flat walk), so ``a/IMG_1.jpg`` and ``b/IMG_1.jpg`` stay distinct and
+        ``.txt`` sidecars land next to their images.
+
+        *on_miss* is forwarded to :meth:`caption_batch`: with a handler a replay
+        miss skips that image (no sidecar) and captioning continues, instead of
+        one un-recorded image aborting the whole directory (#48).
         """
         directory = Path(path)
         if not directory.is_dir():
@@ -391,9 +770,10 @@ class ArgusLens:
         for pattern in glob.replace("{", "").replace("}", "").split(","):
             pattern = pattern.strip()
             if pattern:
-                image_paths.extend(directory.glob(f"*.{pattern}" if not pattern.startswith("*") else pattern))
+                pattern = f"*.{pattern}" if not pattern.startswith("*") else pattern
+                image_paths.extend(directory.rglob(pattern) if recursive else directory.glob(pattern))
 
-        image_paths = sorted(set(image_paths))
+        image_paths = sorted({p for p in image_paths if p.is_file()})
 
         if not overwrite and output_format == "txt":
             image_paths = [p for p in image_paths if not p.with_suffix(".txt").exists()]
@@ -403,13 +783,17 @@ class ArgusLens:
 
         results = self.caption_batch(
             images=image_paths,
+            names=[p.relative_to(directory).as_posix() for p in image_paths],
             trigger_word=trigger_word,
             target_style=target_style,
             target_category=target_category,
             target_backend=target_backend,
             checkpoint=checkpoint,
             token_budget_override=token_budget_override,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             progress=progress,
+            on_miss=on_miss,
         )
 
         from argus_lens.exporters import export_results

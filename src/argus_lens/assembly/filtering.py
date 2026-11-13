@@ -203,14 +203,73 @@ _PROSE_STOPWORDS: frozenset[str] = frozenset(
     }
 )
 
+# "<modifier> <noun>" compounds worth lifting from prose into tag form.
+# Identity nouns (hair, eyes, smile) are deliberately absent: enrichment
+# feeds the training variant, which suppresses identity.
 _COMPOUND_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\b(\w+)\s+(shirt|dress|jacket|sweater|coat|skirt|pants|jeans|shorts|top|blouse|vest)\b", re.I),
-    re.compile(r"\b(\w+)\s+(hair|eyes|skin)\b", re.I),
-    re.compile(r"\b(\w+)\s+(light|lighting|glow|shadow|shadows)\b", re.I),
-    re.compile(r"\b(\w+)\s+(door|wall|window|floor|ceiling|mirror|table|chair|couch|sofa|bed)\b", re.I),
-    re.compile(r"\b(\w+)\s+(background|foreground)\b", re.I),
-    re.compile(r"\b(\w+)\s+(pattern|texture|fabric|material)\b", re.I),
-    re.compile(r"\b(\w+)\s+(expression|smile|grin|frown)\b", re.I),
+    re.compile(
+        r"\b([\w-]+)\s+(shirt|t-shirt|dress|gown|robe|jacket|sweater|coat|skirt|pants|jeans|shorts|top|blouse|"
+        r"vest|suit|tuxedo|uniform|hat|boots|shoes|heels|sneakers|necklace|scarf|leggings)\b",
+        re.I,
+    ),
+    re.compile(r"\b([\w-]+)\s+(light|lighting|glow|shadows?|neon)\b", re.I),
+    re.compile(
+        r"\b([\w-]+)\s+(door|wall|window|floor|ceiling|mirror|table|chair|couch|sofa|bed|bench|desk|counter|"
+        r"lamp|rug|curtains|street|garden|room|kitchen|beach|park)\b",
+        re.I,
+    ),
+    re.compile(r"\b([\w-]+)\s+(background|foreground)\b", re.I),
+    re.compile(r"\b([\w-]+)\s+(pattern|texture|fabric|material)\b", re.I),
+)
+# Nouns too generic to stand alone as an enrichment tag.
+_GENERIC_NOUNS: frozenset[str] = frozenset(
+    {
+        "background",
+        "foreground",
+        "wall",
+        "floor",
+        "ceiling",
+        "room",
+        "light",
+        "lighting",
+        "glow",
+        "shadow",
+        "shadows",
+        "pattern",
+        "texture",
+        "fabric",
+        "material",
+        "top",
+        "street",
+    }
+)
+# Modifiers that make a compound meaningless ("her dress", "two chairs", "is wearing").
+_BAD_MODIFIERS: frozenset[str] = frozenset(
+    {
+        "her",
+        "his",
+        "their",
+        "its",
+        "my",
+        "your",
+        "one",
+        "two",
+        "three",
+        "four",
+        "few",
+        "many",
+        "several",
+        "some",
+        "each",
+        "every",
+        "other",
+        "another",
+        "same",
+        "wearing",
+        "wears",
+        "dressed",
+        "holding",
+    }
 )
 
 
@@ -222,8 +281,9 @@ def extract_prose_tokens(
     """Extract tag-style tokens from novel prose clauses.
 
     Pulls compound noun phrases (e.g. "gray sweater", "lace pattern",
-    "wooden door") and standalone content nouns that don't overlap with
-    existing WD14 tags. Returns at most *max_tokens* results.
+    "wooden door") that don't overlap with existing WD14 tags. Standalone
+    words are not extracted: on their own they read as disjointed noise
+    ("wearing", "next", "cream"). Returns at most *max_tokens* results.
     """
     seen: set[str] = set()
     tokens: list[str] = []
@@ -234,7 +294,14 @@ def extract_prose_tokens(
         for pattern in _COMPOUND_PATTERNS:
             for match in pattern.finditer(lowered):
                 modifier, noun = match.group(1), match.group(2)
-                tag = noun if modifier in _PROSE_STOPWORDS else f"{modifier}_{noun}"
+                if modifier in _BAD_MODIFIERS:
+                    continue
+                if modifier in _PROSE_STOPWORDS:
+                    if noun in _GENERIC_NOUNS:
+                        continue  # "the background" alone says nothing
+                    tag = noun
+                else:
+                    tag = f"{modifier}_{noun}"
 
                 if tag in seen or tag in existing_tag_words:
                     continue
@@ -243,17 +310,6 @@ def extract_prose_tokens(
                     continue
                 seen.add(tag)
                 tokens.append(tag)
-
-        for word in lowered.split():
-            cleaned = word.strip(".,!?;:'\"()[]")
-            if (
-                len(cleaned) > 3
-                and cleaned not in _PROSE_STOPWORDS
-                and cleaned not in existing_tag_words
-                and cleaned not in seen
-            ):
-                seen.add(cleaned)
-                tokens.append(cleaned)
 
     return tokens[:max_tokens]
 

@@ -10,13 +10,47 @@ services:
       - REPLICATE_API_TOKEN=${REPLICATE_API_TOKEN:-}
       - HF_TOKEN=${HF_TOKEN:-}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - ARGUS_OPENAI_COMPAT_BASE_URL=${ARGUS_OPENAI_COMPAT_BASE_URL:-}
+      - ARGUS_OPENAI_COMPAT_MODEL=${ARGUS_OPENAI_COMPAT_MODEL:-}
       - ARGUS_OPENAI_COMPAT_API_KEY=${ARGUS_OPENAI_COMPAT_API_KEY:-}
+      - ARGUS_OPENAI_COMPAT_PROMPT=${ARGUS_OPENAI_COMPAT_PROMPT:-}
+      - WD14_MODEL_REPO=${WD14_MODEL_REPO:-}
+      # LLM refinement of assembled captions (unset ARGUS_REFINE_MODEL = off).
+      - ARGUS_REFINE_MODEL=${ARGUS_REFINE_MODEL:-}
+      - ARGUS_REFINE_BASE_URL=${ARGUS_REFINE_BASE_URL:-}
+      - ARGUS_REFINE_API_KEY=${ARGUS_REFINE_API_KEY:-}
+      - ARGUS_REFINE_VARIANTS=${ARGUS_REFINE_VARIANTS:-}
+      # Share the GPU politely with ComfyUI etc. on the same host. With `lease`,
+      # every argus GPU service (argus-curator too) must name the same lock file
+      # on the same host directory, mounted below.
+      - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR:-none}
+      - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
+      - ARGUS_IDLE_UNLOAD_S=${ARGUS_IDLE_UNLOAD_S:-}
+      # Record live captions into the cortex lineage store (the replay tape).
+      - LENS_RECORD_LINEAGE=${LENS_RECORD_LINEAGE:-}
+      - CORTEX_PG_URL=${CORTEX_PG_URL:-}
+      - CORTEX_S3_ENDPOINT=${CORTEX_S3_ENDPOINT:-}
+      - CORTEX_S3_BUCKET=${CORTEX_S3_BUCKET:-}
+      - CORTEX_S3_ACCESS_KEY=${CORTEX_S3_ACCESS_KEY:-}
+      - CORTEX_S3_SECRET_KEY=${CORTEX_S3_SECRET_KEY:-}
       - WD14_MODEL_DIR=/root/.cache/wd14_tagger
       - HF_HOME=/root/.cache/huggingface
       - HF_TRUST_REMOTE_CODE=${HF_TRUST_REMOTE_CODE:-false}
+      # Folder browsing / folder captioning root inside the container (fixed);
+      # the host side is LENS_SOURCE_PATH, mounted below.
+      - LENS_SOURCE_PATH=/data/images
     volumes:
-      - ~/.cache/wd14_tagger:/root/.cache/wd14_tagger:ro
+      # Image library for GET /folders and POST /caption/folder. Read-write:
+      # .txt (and optional .xmp) sidecars are written next to the images.
+      - ${LENS_SOURCE_PATH:-/data/images}:/data/images
+      # Writable so a new WD14_MODEL_REPO can download into its own subdir.
+      - ~/.cache/wd14_tagger:/root/.cache/wd14_tagger
       - ~/.cache/huggingface:/root/.cache/huggingface
+      # RAM++ checkpoint (~3 GB) for ARGUS_BACKEND=ram / hybrid:ram+*; persisted so a
+      # fresh container doesn't re-download it.
+      - ~/.cache/ram_plus:/root/.cache/ram_plus
+      # The host-wide GPU lease's lock directory, shared by every argus service.
+      - ${ARGUS_GPU_LOCK_DIR:-/tmp/argus-gpu}:/run/argus-gpu
     deploy:
       resources:
         reservations:

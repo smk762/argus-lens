@@ -4,9 +4,17 @@ import io
 from xml.dom import minidom
 
 import pytest
+from argus_cortex.xmp import XmpData, XmpError, read_xmp
 from PIL import Image
 
 from argus_lens.connectors import AssetRef, FilesystemSource, Sink, Source, XmpSink
+
+_LR_SIDECAR = (
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+    '<rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="4">'
+    '<dc:subject xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Bag><rdf:li>old</rdf:li></rdf:Bag></dc:subject>'
+    "</rdf:Description></rdf:RDF></x:xmpmeta>"
+)
 
 
 def _make_png(path):
@@ -64,22 +72,33 @@ def test_xmp_sink_writes_sidecar(tmp_path):
     assert "<rdf:li>cat</rdf:li>" in sidecar.read_text()
 
 
-def test_xmp_sink_does_not_clobber_existing_sidecar(tmp_path):
-    """An existing sidecar raises FileExistsError by default; overwrite=True replaces it."""
+def test_xmp_sink_merges_into_existing_sidecar(tmp_path):
+    """An existing sidecar is merged: keywords replaced, foreign properties kept; overwrite=True discards it."""
     img_path = tmp_path / "photo.jpg"
     _make_png(img_path)
     sidecar = tmp_path / "photo.jpg.xmp"
-    sidecar.write_text("<existing>rating + GPS</existing>", encoding="utf-8")
-
+    sidecar.write_text(_LR_SIDECAR, encoding="utf-8")
     ref = AssetRef(id="photo.jpg", path=str(img_path))
-    # By default an existing sidecar is preserved, not overwritten.
-    with pytest.raises(FileExistsError):
-        XmpSink().write(ref, keywords=["cat"])
-    assert sidecar.read_text() == "<existing>rating + GPS</existing>"
 
-    # overwrite=True replaces it.
-    XmpSink().write(ref, keywords=["cat"], overwrite=True)
-    assert "<rdf:li>cat</rdf:li>" in sidecar.read_text()
+    XmpSink().write(ref, keywords=["cat"], description="a cat")
+    assert read_xmp(img_path) == XmpData(keywords=["cat"], description="a cat", rating=4)
+
+    XmpSink().write(ref, keywords=["dog"], overwrite=True)
+    assert read_xmp(img_path) == XmpData(keywords=["dog"])
+
+    # Nothing to say about keywords: the existing ones are left, not cleared.
+    XmpSink().write(ref, keywords=[], description="a dog")
+    assert read_xmp(img_path) == XmpData(keywords=["dog"], description="a dog")
+
+
+def test_xmp_sink_leaves_unreadable_sidecar_untouched(tmp_path):
+    """A sidecar that isn't valid XMP raises XmpError rather than being clobbered."""
+    img_path = tmp_path / "photo.jpg"
+    sidecar = tmp_path / "photo.jpg.xmp"
+    sidecar.write_text("<existing>rating + GPS", encoding="utf-8")
+    with pytest.raises(XmpError):
+        XmpSink().write(AssetRef(id="photo.jpg", path=str(img_path)), keywords=["cat"])
+    assert sidecar.read_text() == "<existing>rating + GPS"
 
 
 def test_xmp_write_requires_local_path():

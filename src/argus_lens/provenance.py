@@ -39,7 +39,7 @@ def build_provenance(
             "score": tag.score,
             "source": tag.source or backend_name,
             "region": list(tag.region) if tag.region is not None else None,
-            "included": min_score is None or tag.score is None or tag.score >= min_score,
+            "included": tag.passes(min_score),
         }
         for tag in output.tags
     ]

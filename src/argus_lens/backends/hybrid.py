@@ -6,6 +6,7 @@ from PIL import Image
 
 from argus_lens.assembly.filtering import filter_redundant_clauses
 from argus_lens.backends.base import CaptionBackend
+from argus_lens.backends.output import BackendOutput
 
 
 class HybridPipeline(CaptionBackend):
@@ -46,6 +47,16 @@ class HybridPipeline(CaptionBackend):
         parts = [p for p in [tags, filtered] if p]
         return ", ".join(parts)
 
+    def annotate_image(self, image: Image.Image) -> BackendOutput:
+        """Tags from the tag stage (scores kept, e.g. RAM++/WD14) plus the prose stage's prose (#57)."""
+        tagged = self._tag.annotate_image(image)
+        described = self._prose.annotate_image(image)
+        return BackendOutput(
+            tags=tagged.tags,
+            prose=described.prose or described.to_caption_string(),
+            raw={"tag_backend": self._tag.name, "prose_backend": self._prose.name},
+        )
+
     def caption_image_split(self, image: Image.Image) -> tuple[str, str]:
         """Return ``(tags, prose)`` separately for structured assembly.
 
@@ -55,6 +66,11 @@ class HybridPipeline(CaptionBackend):
         tags = self._tag.caption_image(image)
         prose = self._prose.caption_image(image)
         return tags, prose
+
+    def prefetch(self) -> None:
+        """Fetch both sub-backends' weights, outside the GPU lease (#64)."""
+        self._tag.prefetch()
+        self._prose.prefetch()
 
     def unload(self) -> None:
         """Unload both sub-backends."""

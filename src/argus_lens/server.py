@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+    from argus_cortex.server import WriteGuard, cross_site_refuse
+    from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
     from fastapi.responses import StreamingResponse
     from pydantic import BaseModel
 except ImportError as exc:
@@ -19,10 +20,12 @@ except ImportError as exc:
 
 import httpx
 import structlog
+from argus_cortex.xmp import XmpError
 from PIL import Image
 
 from argus_lens._version import __version__
 from argus_lens.assembly.profiles import available_profiles
+from argus_lens.backends.replay import ReplayMiss
 from argus_lens.connectors.base import AssetRef
 from argus_lens.connectors.filesystem import IMAGE_SUFFIXES
 from argus_lens.connectors.immich import ImmichSink, ImmichSource
@@ -32,6 +35,8 @@ from argus_lens.openai_compat import create_openai_router
 from argus_lens.types import (
     BACKEND_TOKEN_BUDGETS,
     CAPTION_TARGET_STYLES,
+    DEFAULT_HYBRID_PRESET,
+    HYBRID_PRESETS,
     CaptionResult,
     get_category_names,
 )
@@ -43,6 +48,8 @@ SUPPORTED_EXTS = IMAGE_SUFFIXES
 _XMP_SINK = XmpSink()  # stateless; shared by every endpoint that writes XMP sidecars
 _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing snappy)
 _PULL_CONCURRENCY = 4  # parallel Immich downloads per /immich/pull request
+# The dev frontend (argus-studio) that bare --cors trusts, matching argus-curator.
+_LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
 class CaptionURLRequest(BaseModel):
@@ -53,6 +60,8 @@ class CaptionURLRequest(BaseModel):
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
+    hybrid_preset: str | None = None
+    prose_bias: float | None = None
     prose_enrichment: bool = True
 
 
@@ -63,12 +72,14 @@ class CaptionFolderRequest(BaseModel):
     recursive: bool = False
     write_sidecar: bool = True
     write_xmp: bool = False
-    xmp_overwrite: bool = True
+    xmp_overwrite: bool = False
     trigger_word: str = ""
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
     checkpoint: str | None = None
+    hybrid_preset: str | None = None
+    prose_bias: float | None = None
     prose_enrichment: bool = True
 
 
@@ -90,6 +101,8 @@ class ImmichCaptionRequest(BaseModel):
     target_category: str = "identity"
     target_backend: str = "sdxl"
     checkpoint: str | None = None
+    hybrid_preset: str | None = None
+    prose_bias: float | None = None
     prose_enrichment: bool = True
     write_back: bool = False
     write_xmp: bool = False
@@ -261,6 +274,8 @@ def _caption_and_write(
     write_xmp: bool,
     xmp_overwrite: bool,
     written: set[Path],
+    hybrid_preset: str | None = None,
+    prose_bias: float | None = None,
 ) -> dict[str, Any]:
     """Caption one image and (optionally) write its ``.txt``/``.xmp`` sidecars.
 
@@ -272,10 +287,10 @@ def _caption_and_write(
     batch, resolved so two spellings of one target still collide: same-stem
     images (``cat.jpg`` + ``cat.png``) map to the same ``cat.txt``, and the
     collision is reported as an error instead of silently overwriting the
-    first caption. With ``xmp_overwrite`` (the default) an existing ``.xmp``
-    on disk is replaced like the ``.txt`` sidecars; without it a pre-existing
-    sidecar (e.g. written by Lightroom/digiKam, whose metadata is not merged)
-    is a per-image error instead.
+    first caption. An existing ``.xmp`` on disk is merged by default (lens's
+    keywords/description replace those properties; Lightroom/digiKam/curator
+    metadata is kept); ``xmp_overwrite`` discards it and writes a fresh one. An
+    unparseable existing ``.xmp`` is a per-image error, never clobbered.
     """
     try:
         result = engine.caption(
@@ -285,6 +300,8 @@ def _caption_and_write(
             target_category=target_category,
             target_backend=target_backend,
             checkpoint=checkpoint,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
             prose_enrichment=prose_enrichment,
         )
     except Exception as exc:  # noqa: BLE001 - report per-image, keep going
@@ -322,14 +339,13 @@ def _caption_and_write(
             }
         keywords = _parse_keywords(result.raw_tags)
         try:
-            # xmp_overwrite=True mirrors the .txt sidecar semantics above (a
-            # pre-existing file on disk is replaced); False protects sidecars
-            # other tools already populated, since XmpSink never merges.
+            # Merge by default so metadata other tools stored survives;
+            # xmp_overwrite=True discards the existing sidecar instead.
             _XMP_SINK.write(ref, keywords=keywords, description=result.final_caption, overwrite=xmp_overwrite)
-        except FileExistsError:
+        except XmpError as exc:
             return {
                 "rel_path": rel_path,
-                "error": f"xmp sidecar already exists: {xmp_path.name} (xmp_overwrite is false){txt_note}",
+                "error": f"xmp sidecar unreadable, left untouched: {xmp_path.name} ({exc}){txt_note}",
             }
         except OSError as exc:
             return {"rel_path": rel_path, "error": f"xmp write failed: {exc}{txt_note}"}
@@ -461,14 +477,34 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
     }
 
 
+def _require_admin_token(authorization: str | None) -> None:
+    """Enforce ``Authorization: Bearer <ARGUS_ADMIN_TOKEN>`` when the env var is set.
+
+    When ``ARGUS_ADMIN_TOKEN`` is unset the admin endpoints stay open (dev
+    default); setting it locks them down for a networked deployment.
+    """
+    token = os.environ.get("ARGUS_ADMIN_TOKEN")
+    if token and authorization != f"Bearer {token}":
+        raise HTTPException(status_code=401, detail="admin token required")
+
+
 def create_app(
     default_backend: str = "hybrid",
     cors: bool = False,
     cors_origins: list[str] | None = None,
     source_root: str | None = None,
+    cors_allow_any: bool = False,
     **kwargs: Any,
 ) -> FastAPI:
-    """Create a FastAPI application for image captioning."""
+    """Create a FastAPI application for image captioning.
+
+    *cors* allows the localhost dev frontend (:3000); *cors_origins* (or
+    ``LENS_CORS_ORIGINS``, comma-separated) allow-lists other origins, and
+    *cors_allow_any* is a credential-less wildcard. Whatever CORS allows, a
+    cross-site write (POST from a browser page on another origin) is refused
+    unless that origin is named: the caption endpoints write sidecars and have
+    no auth.
+    """
 
     app = FastAPI(
         title="Argus Lens",
@@ -476,22 +512,53 @@ def create_app(
         version="0.1.0",
     )
 
-    if cors:
+    if cors_origins is None and (env_origins := os.environ.get("LENS_CORS_ORIGINS")):
+        cors_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+
+    # A "*" in the allow-list means --cors-any: anonymous reads from anywhere,
+    # never credentials (with credentials Starlette reflects any Origin back,
+    # silently granting every site credentialed access).
+    wildcard = cors_allow_any or bool(cors_origins and "*" in cors_origins)
+    # Origins the operator named are the only ones trusted to write cross-site;
+    # the wildcard grants reads, not writes. A "*" co-listed with a real origin
+    # still lets that origin write.
+    named = [o for o in (cors_origins or []) if o != "*"]
+    trusted_origins = named or ([] if wildcard else (_LOCALHOST_ORIGINS if cors else []))
+
+    # CORS is not a write boundary: a multipart POST needs no preflight, so any
+    # page a user visits could drive /caption/folder into the source root. The
+    # guard refuses unsafe methods from an untrusted Origin; same-host (a UI
+    # proxied onto this host) and Origin-less (curl, curator, Frigate) callers
+    # pass. Added before CORS so CORS is the outer layer and annotates a 403.
+    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins))
+
+    if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
 
-        origins = cors_origins or ["*"]
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=origins,
-            # Credentials with a wildcard origin is invalid per the CORS spec
-            # (Starlette would echo the caller's origin, silently granting any
-            # site credentialed access) — only allow it for explicit origins.
-            allow_credentials="*" not in origins,
+            allow_origins=["*"] if wildcard else (cors_origins or _LOCALHOST_ORIGINS),
+            allow_credentials=not wildcard,
             allow_methods=["*"],
             allow_headers=["*"],
         )
 
-    engine = ArgusLens(backend=default_backend, **kwargs)
+    if "refiner" not in kwargs:
+        from argus_lens.refine import refiner_from_env
+
+        kwargs["refiner"] = refiner_from_env()  # on by default; ARGUS_REFINE=off disables
+    idle = os.environ.get("ARGUS_IDLE_UNLOAD_S", "").strip()
+    if idle and "idle_unload_s" not in kwargs:
+        # Free VRAM after this many idle seconds (e.g. when sharing a GPU with ComfyUI).
+        kwargs["idle_unload_s"] = float(idle)
+    # Only the captioning engine records lineage, not the /v1 router's engines:
+    # Frigate's camera snapshots don't belong in the training tape.
+    recorder = kwargs.pop("recorder", None)
+    if recorder is None:
+        from argus_lens.lineage import recorder_from_env
+
+        recorder = recorder_from_env()  # off unless LENS_RECORD_LINEAGE=1 (+ CORTEX_PG_URL)
+    engine = ArgusLens(backend=default_backend, recorder=recorder, **kwargs)
     # Root for GET /folders browsing + relative folder captioning (UI folder picker).
     default_source = source_root or os.environ.get("LENS_SOURCE_PATH")
 
@@ -502,13 +569,31 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        """Service liveness/identity probe (mirrors argus-curator's /health shape)."""
+        """Service liveness/identity probe (mirrors argus-curator's /health shape).
+
+        Includes GPU residency + free VRAM so an external scheduler can
+        attribute and reclaim this backend's memory (#37). The VRAM probe runs
+        off the event loop (its first CUDA call can trigger context init).
+        """
         return {
             "status": "ok",
             "service": "argus-lens",
             "version": __version__,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
+            "gpu": await asyncio.to_thread(engine.vram_status),
         }
+
+    @app.post("/admin/unload")
+    async def admin_unload(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Unload the model to free VRAM for a co-resident GPU tenant (#37).
+
+        The model reloads lazily on the next caption. Set ``ARGUS_ADMIN_TOKEN``
+        to require ``Authorization: Bearer <token>`` (otherwise the endpoint is open —
+        keep it off untrusted networks to avoid unload/reload-thrash abuse).
+        """
+        _require_admin_token(authorization)
+        unloaded = await asyncio.to_thread(engine.unload)
+        return {"unloaded": unloaded, "gpu": await asyncio.to_thread(engine.vram_status)}
 
     @app.get("/profiles")
     async def profiles() -> dict[str, Any]:
@@ -524,6 +609,8 @@ def create_app(
             "target_categories": list(get_category_names()),
             "target_backends": list(BACKEND_TOKEN_BUDGETS),
             "token_budgets": dict(BACKEND_TOKEN_BUDGETS),
+            "hybrid_presets": dict(HYBRID_PRESETS),
+            "default_hybrid_preset": DEFAULT_HYBRID_PRESET,
         }
 
     @app.get("/backends")
@@ -538,22 +625,31 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        hybrid_preset: str | None = Form(None),
+        prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
         """Caption a single uploaded image and return the structured result."""
         data = await file.read()
         try:
-            pil = Image.open(io.BytesIO(data)).convert("RGB")
+            Image.open(io.BytesIO(data)).convert("RGB")
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid image: {exc}") from exc
 
-        result = await asyncio.to_thread(
-            engine.caption,
-            pil,
-            trigger_word=trigger_word,
-            target_style=target_style,
-            target_category=target_category,
-            target_backend=target_backend,
-        )
+        # Pass the original bytes (not a decoded PIL) so the engine can key a
+        # replay lookup on the file's sha256 — the content id cortex records.
+        try:
+            result = await asyncio.to_thread(
+                engine.caption,
+                data,
+                trigger_word=trigger_word,
+                target_style=target_style,
+                target_category=target_category,
+                target_backend=target_backend,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
+            )
+        except ReplayMiss as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _result_to_dict(result)
 
     @app.post("/caption/url")
@@ -567,8 +663,12 @@ def create_app(
                 target_style=req.target_style,
                 target_category=req.target_category,
                 target_backend=req.target_backend,
+                hybrid_preset=req.hybrid_preset,
+                prose_bias=req.prose_bias,
                 prose_enrichment=req.prose_enrichment,
             )
+        except ReplayMiss as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _result_to_dict(result)
@@ -580,26 +680,50 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        hybrid_preset: str | None = Form(None),
+        prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
-        """Caption multiple uploaded images in one request; unreadable files are skipped."""
-        images: list[tuple[str, Image.Image]] = []
+        """Caption multiple uploaded images in one request; unreadable files are skipped.
+
+        A replay image with no recorded caption is reported under ``errors``
+        (``{name: reason}``) rather than failing the whole request, so one
+        un-recorded image doesn't discard the captions that did resolve (#48).
+        """
+        payloads: list[bytes] = []
+        names: list[str] = []
         for f in files:
             data = await f.read()
             try:
-                pil = Image.open(io.BytesIO(data)).convert("RGB")
-                images.append((f.filename or "image", pil))
+                Image.open(io.BytesIO(data)).convert("RGB")
             except Exception:
                 continue
+            payloads.append(data)
+            names.append(f.filename or "image")
 
+        errors: dict[str, str] = {}
+
+        def _record_miss(name: str, exc: ReplayMiss) -> None:
+            """Collect a replay miss as a per-image error instead of aborting the batch."""
+            errors[name] = str(exc)
+
+        # Original bytes (not decoded PILs) so replay can key on each file's
+        # sha256; explicit names keep results from collapsing under one key.
         results = await asyncio.to_thread(
             engine.caption_batch,
-            [img for _, img in images],
+            payloads,
+            names=names,
+            on_miss=_record_miss,
             trigger_word=trigger_word,
             target_style=target_style,
             target_category=target_category,
             target_backend=target_backend,
+            hybrid_preset=hybrid_preset,
+            prose_bias=prose_bias,
         )
-        return {"results": {k: _result_to_dict(v) for k, v in results.items()}}
+        return {
+            "results": {k: _result_to_dict(v) for k, v in results.items()},
+            "errors": errors,
+        }
 
     @app.post("/caption/stream")
     async def caption_stream(
@@ -608,25 +732,33 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        hybrid_preset: str | None = Form(None),
+        prose_bias: float | None = Form(None),
     ) -> StreamingResponse:
         """Caption uploaded images, streaming one NDJSON result line per image."""
-        images: list[Image.Image] = []
+        payloads: list[bytes] = []
+        names: list[str] = []
         for f in files:
             data = await f.read()
             try:
-                pil = Image.open(io.BytesIO(data)).convert("RGB")
-                images.append(pil)
+                Image.open(io.BytesIO(data)).convert("RGB")
             except Exception:
                 continue
+            payloads.append(data)
+            names.append(f.filename or "image")
 
         async def _ndjson():
             """Yield one JSON line per captioned image, running inference off the event loop."""
+            # Original bytes so replay can key on each file's sha256.
             stream = engine.caption_stream(
-                images,
+                payloads,
+                names=names,
                 trigger_word=trigger_word,
                 target_style=target_style,
                 target_category=target_category,
                 target_backend=target_backend,
+                hybrid_preset=hybrid_preset,
+                prose_bias=prose_bias,
             )
             sentinel = object()
             while True:
@@ -637,7 +769,11 @@ def create_app(
                 if item is sentinel:
                     break
                 name, result = item
-                yield json.dumps({"name": name, **_result_to_dict(result)}) + "\n"
+                if isinstance(result, ReplayMiss):
+                    # A replay miss is a per-line error; keep streaming the rest.
+                    yield json.dumps({"name": name, "error": str(result)}) + "\n"
+                else:
+                    yield json.dumps({"name": name, **_result_to_dict(result)}) + "\n"
 
         return StreamingResponse(_ndjson(), media_type="application/x-ndjson")
 
@@ -647,7 +783,7 @@ def create_app(
         trigger_word: str = Form(""),
         write_sidecar: bool = Form(True),
         write_xmp: bool = Form(False),
-        xmp_overwrite: bool = Form(True),
+        xmp_overwrite: bool = Form(False),
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
     ) -> dict[str, Any]:
@@ -658,9 +794,9 @@ def create_app(
         sidecar is written next to each image. ``write_xmp`` also writes an
         ``<image>.xmp`` sidecar (dc:subject keywords + dc:description caption)
         that Lightroom/digiKam/Immich ingest natively; it is independent of
-        ``write_sidecar``, and ``xmp_overwrite: false`` turns a pre-existing
-        ``.xmp`` (e.g. one another tool populated) into a per-image error
-        instead of replacing it.
+        ``write_sidecar``. A pre-existing ``.xmp`` (e.g. one Lightroom or
+        curator populated) is merged — only those two properties are replaced —
+        unless ``xmp_overwrite: true``, which discards it.
 
         Image locations: manifest 2.0 rows carry ``exported_path`` (relative
         to the curator's export root — the manifest itself sits at
@@ -709,7 +845,7 @@ def create_app(
         trigger_word: str = Form(""),
         write_sidecar: bool = Form(True),
         write_xmp: bool = Form(False),
-        xmp_overwrite: bool = Form(True),
+        xmp_overwrite: bool = Form(False),
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
     ) -> StreamingResponse:
@@ -796,8 +932,8 @@ def create_app(
         profile, and — by default — writes a ``.txt`` sidecar next to each
         image. ``write_xmp`` additionally (and independently) writes an
         ``<image>.xmp`` sidecar for Lightroom/digiKam/Immich ingestion;
-        ``xmp_overwrite: false`` makes a pre-existing ``.xmp`` a per-image
-        error instead of replacing it. Returns the same shape as
+        a pre-existing ``.xmp`` is merged unless ``xmp_overwrite: true``,
+        which discards it. Returns the same shape as
         ``/caption/manifest``.
         """
         root = _confine_folder(default_source, req.folder)
@@ -821,6 +957,8 @@ def create_app(
                     target_category=req.target_category,
                     target_backend=req.target_backend,
                     checkpoint=req.checkpoint,
+                    hybrid_preset=req.hybrid_preset,
+                    prose_bias=req.prose_bias,
                     prose_enrichment=req.prose_enrichment,
                     write_sidecar=req.write_sidecar,
                     write_xmp=req.write_xmp,
@@ -1051,14 +1189,21 @@ def create_app(
             """
             ref = AssetRef(id=asset["id"])
             try:
-                pil = source.fetch_image(ref)
+                # Pass the original bytes (not a decoded PIL) so the engine can
+                # key a replay lookup on the file's sha256 — the content id
+                # cortex records on source_asset. fetch_image() is just
+                # fetch_original() + a decode, so this is identical for every
+                # other backend but keeps the replay backend reachable here (#47).
+                data = source.fetch_original(ref)
                 result = engine.caption(
-                    pil,
+                    data,
                     trigger_word=req.trigger_word,
                     target_style=req.target_style,
                     target_category=req.target_category,
                     target_backend=req.target_backend,
                     checkpoint=req.checkpoint,
+                    hybrid_preset=req.hybrid_preset,
+                    prose_bias=req.prose_bias,
                     prose_enrichment=req.prose_enrichment,
                 )
             except Exception as exc:  # noqa: BLE001 - report per-asset, keep going

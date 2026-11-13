@@ -6,22 +6,25 @@ import os
 from pathlib import Path
 from typing import Any
 
-import structlog
 from PIL import Image
 
 from argus_lens.backends.base import LocalBackend
+from argus_lens.backends.output import BackendOutput, Tag
 from argus_lens.registry import ModelRegistry, get_default_registry
 
-logger = structlog.get_logger()
-
 _HF_REPO = "SmilingWolf/wd-vit-tagger-v3"
-_HF_BASE_URL = f"https://huggingface.co/{_HF_REPO}/resolve/main"
 _MODEL_FILENAME = "wd-vit-tagger-v3.onnx"
 _TAGS_FILENAME = "selected_tags.csv"
-_REMOTE_FILES = {
-    _MODEL_FILENAME: f"{_HF_BASE_URL}/model.onnx",
-    _TAGS_FILENAME: f"{_HF_BASE_URL}/selected_tags.csv",
-}
+# Other SmilingWolf v3 taggers share the model.onnx + selected_tags.csv layout
+# and can be selected with ``model_repo`` / ``WD14_MODEL_REPO``. EVA02-Large
+# is the most accurate of the family (and the slowest).
+WD14_V3_REPOS: tuple[str, ...] = (
+    "SmilingWolf/wd-vit-tagger-v3",
+    "SmilingWolf/wd-swinv2-tagger-v3",
+    "SmilingWolf/wd-convnext-tagger-v3",
+    "SmilingWolf/wd-vit-large-tagger-v3",
+    "SmilingWolf/wd-eva02-large-tagger-v3",
+)
 _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "wd14_tagger"
 
 # In selected_tags.csv, rating tags (general/sensitive/questionable/explicit)
@@ -31,48 +34,47 @@ _RATING_CATEGORY = 9
 _DEFAULT_IMAGE_SIZE = 448
 
 
-def _download_model(dest_dir: Path) -> None:
-    """Download WD14 model files from HuggingFace if not present."""
-    import httpx
+def _model_filename(repo: str) -> str:
+    """Local ONNX filename for *repo* (``wd-vit-tagger-v3.onnx`` for the default)."""
+    return f"{repo.rstrip('/').rsplit('/', 1)[-1]}.onnx"
+
+
+def _download_model(dest_dir: Path, repo: str = _HF_REPO) -> None:
+    """Download WD14 model files for *repo* from HuggingFace if not present."""
+    from argus_lens.backends._download import stream_download
 
     dest_dir.mkdir(parents=True, exist_ok=True)
+    base_url = f"https://huggingface.co/{repo}/resolve/main"
+    remote_files = {
+        _model_filename(repo): f"{base_url}/model.onnx",
+        _TAGS_FILENAME: f"{base_url}/selected_tags.csv",
+    }
 
-    for filename, url in _REMOTE_FILES.items():
+    for filename, url in remote_files.items():
         dest = dest_dir / filename
-        if dest.exists():
-            continue
-
-        logger.info("wd14.download", file=filename, dest=str(dest))
-        tmp = dest.with_suffix(".part")
-        with httpx.stream("GET", url, follow_redirects=True, timeout=300.0) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            downloaded = 0
-            with tmp.open("wb") as fh:
-                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                    fh.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded * 100 // total
-                        logger.debug("wd14.download.progress", file=filename, pct=pct)
-        tmp.rename(dest)
-        logger.info("wd14.download.done", file=filename, size_mb=round(dest.stat().st_size / 1024 / 1024, 1))
+        if not dest.exists():
+            stream_download(url, dest, event="wd14.download")
 
 
 class WD14Backend(LocalBackend):
-    """WD14 ViT-v3 tagger producing comma-separated booru tags.
+    """WD14 v3 tagger producing comma-separated booru tags.
 
-    Model files (``wd-vit-tagger-v3.onnx`` + ``selected_tags.csv``) are
+    Model files (``<repo-name>.onnx`` + ``selected_tags.csv``) are
     auto-downloaded from HuggingFace on first use if not found locally.
+    *model_repo* (or ``WD14_MODEL_REPO``) picks the tagger; the default is
+    ``SmilingWolf/wd-vit-tagger-v3`` (see ``WD14_V3_REPOS``).
 
     Search order for model directory:
     1. *model_dir* constructor argument
     2. ``WD14_MODEL_DIR`` environment variable
-    3. ``~/.cache/wd14_tagger/`` (auto-downloads here if needed)
+    3. ``~/.cache/wd14_tagger/`` for the default model, or
+       ``~/.cache/wd14_tagger/<repo-name>/`` for any other (auto-downloads
+       here if needed; separate dirs keep each model's tag CSV paired)
     """
 
     name = "wd14"
     style = "anime"
+    emits_tags = True
     requires_gpu = False
 
     def __init__(
@@ -80,9 +82,12 @@ class WD14Backend(LocalBackend):
         model_dir: str | Path | None = None,
         threshold: float = 0.35,
         registry: ModelRegistry | None = None,
+        model_repo: str | None = None,
     ) -> None:
-        """Configure the model directory, tag confidence threshold, and model registry."""
+        """Configure the model directory, tag confidence threshold, model repo, and model registry."""
         self._model_dir = Path(model_dir) if model_dir else None
+        self._repo = model_repo or os.environ.get("WD14_MODEL_REPO") or _HF_REPO
+        self._model_filename = _model_filename(self._repo)
         self.threshold = threshold
         self._registry = registry or get_default_registry()
 
@@ -94,14 +99,20 @@ class WD14Backend(LocalBackend):
         env_dir = os.environ.get("WD14_MODEL_DIR")
         if env_dir:
             dirs.append(Path(env_dir))
-        dirs.append(_DEFAULT_CACHE_DIR)
+        dirs.append(self._default_cache_dir())
         return dirs
+
+    def _default_cache_dir(self) -> Path:
+        """Auto-download location: the shared cache root, or a per-repo subdir."""
+        if self._repo == _HF_REPO:
+            return _DEFAULT_CACHE_DIR
+        return _DEFAULT_CACHE_DIR / self._model_filename.removesuffix(".onnx")
 
     def _find_model(self) -> Path | None:
         """Return the first existing model file among the search dirs, or None."""
         for d in self._search_dirs():
-            if (d / _MODEL_FILENAME).exists():
-                return d / _MODEL_FILENAME
+            if (d / self._model_filename).exists():
+                return d / self._model_filename
         return None
 
     def _ensure_model(self) -> Path:
@@ -110,16 +121,16 @@ class WD14Backend(LocalBackend):
         if model_path is not None:
             return model_path
 
-        target_dir = self._model_dir or _DEFAULT_CACHE_DIR
+        target_dir = self._model_dir or self._default_cache_dir()
         # The model and tag CSV must stay a matched pair: when the model is
         # missing (fresh install or a version bump renamed it), drop any CSV
         # left over from a previous model so both are re-downloaded together.
         stale_csv = target_dir / _TAGS_FILENAME
         if stale_csv.exists():
             stale_csv.unlink()
-        _download_model(target_dir)
+        _download_model(target_dir, self._repo)
 
-        model_path = target_dir / _MODEL_FILENAME
+        model_path = target_dir / self._model_filename
         if not model_path.exists():
             raise RuntimeError(f"WD14 download failed: {model_path} not found after download")
         return model_path
@@ -181,6 +192,8 @@ class WD14Backend(LocalBackend):
         one cached session.
         """
         model_key = str(self._model_dir) if self._model_dir else os.environ.get("WD14_MODEL_DIR") or "default"
+        if self._repo != _HF_REPO:
+            model_key = f"{model_key}:{self._repo}"
         return f"wd14:{self._device_key(device)}:{model_key}"
 
     def _loader(self, device: str) -> tuple[Any, list[tuple[str, int]], str]:
@@ -227,11 +240,20 @@ class WD14Backend(LocalBackend):
         arr = np.asarray(canvas, dtype=np.float32)[:, :, ::-1]  # RGB -> BGR
         return np.ascontiguousarray(np.expand_dims(arr, 0))
 
+    def annotate_image(self, image: Image.Image) -> BackendOutput:
+        """Return the tags above the threshold with their scores, excluding rating tags (#57)."""
+        tags = [Tag(label=name, score=round(score, 4), source=self.name) for name, score in self._scored_tags(image)]
+        return BackendOutput(tags=tags)
+
     def caption_image(self, image: Image.Image) -> str:
         """Return comma-separated booru tags above the threshold, excluding rating tags."""
+        return ", ".join(name for name, _score in self._scored_tags(image))
+
+    def _scored_tags(self, image: Image.Image) -> list[tuple[str, float]]:
+        """Run the tagger: ``(tag, probability)`` above the threshold, rating tags excluded, in vocab order."""
         device = self._device
         cache_key = self._cache_key(device)
-        with self._registry.acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
+        with self._acquire(cache_key, lambda: self._loader(device)) as (session, tags, input_name):
             img_np = self._preprocess(image, self._input_size(session))
             probs = session.run(None, {input_name: img_np})[0][0]
             if len(probs) != len(tags):
@@ -239,12 +261,12 @@ class WD14Backend(LocalBackend):
                     f"WD14 model output ({len(probs)}) does not match tag count ({len(tags)}); "
                     "the model and selected_tags.csv are out of sync"
                 )
-            return ", ".join(
-                name
+            return [
+                (name, float(prob))
                 for (name, category), prob in zip(tags, probs, strict=True)
                 if prob > self.threshold and category != _RATING_CATEGORY
-            )
+            ]
 
-    def unload(self) -> None:
-        """Do nothing; session lifetime is managed by the shared registry."""
-        pass
+    def prefetch(self) -> None:
+        """Download the ONNX model + tag CSV if missing, outside the GPU lease (#64)."""
+        self._ensure_model()
