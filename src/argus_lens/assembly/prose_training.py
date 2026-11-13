@@ -19,7 +19,7 @@ import re
 from argus_lens.assembly.classifier import category_scores
 from argus_lens.assembly.coherence import end_sentence, split_sentences
 from argus_lens.assembly.filtering import strip_filler_prefixes, with_trigger
-from argus_lens.assembly.token_budget import MAX_CLIP_SENTENCES, estimate_tokens, is_t5_backend
+from argus_lens.assembly.token_budget import MAX_CLIP_SENTENCES, fits_budget, is_t5_backend
 from argus_lens.types import CategoryConfig
 
 # "with long wavy brown hair" / "has blue eyes and" — excised in place so the
@@ -136,7 +136,6 @@ def assemble_prose_training_variant(
     """
     removed: list[str] = []
     sentences: list[str] = []
-    used = estimate_tokens(trigger_word, target_backend)
     max_sentences = None if is_t5_backend(target_backend) else MAX_CLIP_SENTENCES
     for raw in split_sentences(prose.strip(), semicolons=True):
         sentence, dropped = _clean_sentence(raw, categories)
@@ -144,12 +143,12 @@ def assemble_prose_training_variant(
         if not sentence:
             continue
         sentence = end_sentence(sentence)
-        cost = estimate_tokens(sentence, target_backend)
-        if used + cost > token_budget or (max_sentences is not None and len(sentences) >= max_sentences):
+        if (max_sentences is not None and len(sentences) >= max_sentences) or not fits_budget(
+            sentence, sentences, token_budget, target_backend, trigger_word=trigger_word, joiner=" "
+        ):
             removed.append(sentence)
             continue
         sentences.append(sentence)
-        used += cost
     if not sentences:
         return "", removed
     return with_trigger(trigger_word, " ".join(sentences)), removed

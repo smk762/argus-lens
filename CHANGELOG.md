@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The Docker image installs the extra; `docker-compose.yaml` passes `LENS_RECORD_LINEAGE` and
     `CORTEX_*` through.
 
+### Fixed
+- **Packed captions no longer read as over budget** (#80). Assembly (`training`,
+  `zeroshot`, `training_prose`) now checks each fragment against the whole caption so
+  far, trigger word included, using the same `estimate_tokens` that refine,
+  `token_budget_adherence` and Studio use. It used to add up per-fragment estimates,
+  which rounded down each fragment and skipped the comma after the trigger, so 30
+  one-word tags packed at 59 tokens measured 68. Tag-heavy variants may now keep a
+  fragment or two fewer.
+
 ### Changed
 - **The GPU coordinator is now the suite's shared `argus_cortex.gpu`** (`argus-cortex>=0.4.3,<0.5`).
   `argus_lens.gpu` re-exports it and keeps lens's own per-backend footprint estimates.
