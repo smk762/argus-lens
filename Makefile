@@ -2,7 +2,7 @@
 DIST := dist
 UV := uv
 
-.PHONY: help install dev lint fmt test build clean smoke check
+.PHONY: help install dev lint fmt test build clean smoke check docs-cli
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -43,6 +43,9 @@ smoke: build  ## Build wheel, install in throwaway venv, smoke-test import
 	$(TMPVENV)/venv/bin/python -c \
 		"from argus_lens import ArgusLens, __version__; print(f'argus-lens {__version__} OK')"
 	rm -rf $(TMPVENV)
+
+docs-cli:  ## Regenerate docs/cli.md with the locked Typer (its output format varies by version)
+	$(UV) run --frozen --extra cli typer argus_lens.cli utils docs --name argus-lens --output docs/cli.md
 
 check: lint test build  ## Full local CI: lint + test + build
 	@echo ""
