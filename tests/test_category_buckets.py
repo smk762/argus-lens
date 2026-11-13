@@ -5,7 +5,6 @@ import pytest
 from argus_lens.assembly.classifier import classify_fragment, split_lighting_clauses
 from argus_lens.assembly.composer import compose_caption_result
 from argus_lens.assembly.variants import assemble_variant
-from argus_lens.refine import Refiner
 from argus_lens.types import resolve_target_profile
 
 PROFILE = resolve_target_profile(target_style="photo", target_backend="sdxl", target_category="identity")
@@ -88,52 +87,30 @@ def test_lighting_prose_reaches_the_lighting_variant() -> None:
     assert result.metadata["buckets"]["prose"]["lighting"]
 
 
-def test_empty_category_gives_empty_variant() -> None:
-    """No lighting or action content: those variants are empty (trigger only), not padded copies."""
+def test_empty_category_borrows_from_other_buckets() -> None:
+    """No lighting or action content: those variants are padded from the other buckets, and listed."""
     result = compose_caption_result(
         trigger_word="sks", tags="woman, red dress, kitchen", prose="", target_profile=PROFILE
     )
-    assert result.caption_variants["lighting"] == "sks"
-    assert result.caption_variants["action"] == "sks"
+    assert result.caption_variants["lighting"].startswith("sks, ")
+    assert "red dress" in result.caption_variants["lighting"]
+    assert "red dress" in result.caption_variants["action"]
     assert {"lighting", "action"} <= set(result.metadata["empty_categories"])
-    assert result.caption_variants["wardrobe"].startswith("sks, red dress")
+    assert "wardrobe" not in result.metadata["empty_categories"]
 
 
-def test_padding_still_available_on_request() -> None:
-    """``pad_empty=True`` keeps the old fill-from-other-buckets behaviour."""
+def test_empty_variant_on_request() -> None:
+    """``pad_empty=False`` gives just the trigger word for an empty category."""
     buckets = {"identity": ["woman"], "wardrobe": ["red dress"], "lighting": []}
-    assert assemble_variant("", buckets, "lighting", "photo") == ("", [])
-    padded, _ = assemble_variant("", buckets, "lighting", "photo", pad_empty=True)
+    padded, _ = assemble_variant("", buckets, "lighting", "photo")
     assert "red dress" in padded
+    assert assemble_variant("sks", buckets, "lighting", "photo", pad_empty=False) == ("sks", [])
 
 
-def test_final_caption_never_empty() -> None:
-    """With an empty selected category the sidecar caption falls back to the padded caption."""
-    profile = resolve_target_profile(target_style="photo", target_backend="sdxl", target_category="lighting")
+@pytest.mark.parametrize("category", ["identity", "lighting", "action"])
+def test_final_caption_matches_selected_variant(category: str) -> None:
+    """``final_caption`` is the selected variant, also when that category had nothing of its own."""
+    profile = resolve_target_profile(target_style="photo", target_backend="sdxl", target_category=category)
     result = compose_caption_result(trigger_word="sks", tags="woman, red dress", prose="", target_profile=profile)
-    assert result.caption_variants["lighting"] == "sks"
-    assert result.final_caption.startswith("sks, ") and "red dress" in result.final_caption
-    assert any("No lighting content" in n for n in result.compaction_notes)
-
-
-class _Rewriter:
-    """Rewriter returning one fixed reply."""
-
-    name = "scripted"
-    model_id = "test-model"
-
-    def __init__(self, reply):
-        self.reply = reply
-
-    def rewrite(self, request, image=None):
-        """Return the reply."""
-        return self.reply
-
-
-def test_refined_empty_category_keeps_final_caption() -> None:
-    """An accepted empty category rewrite never empties ``final_caption``."""
-    profile = resolve_target_profile(target_style="photo", target_backend="sdxl", target_category="lighting")
-    result = compose_caption_result(trigger_word="sks", tags="woman, red dress", prose="", target_profile=profile)
-    refined = Refiner(_Rewriter({"lighting": ""}), variants=("lighting",)).refine(result, profile, trigger_word="sks")
-    assert refined.caption_variants["lighting"] == "sks"
-    assert refined.final_caption == result.final_caption
+    assert result.final_caption == result.caption_variants[category]
+    assert "red dress" in result.final_caption

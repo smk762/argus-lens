@@ -34,12 +34,9 @@ def test_corpus_variants_pass_post_check(case: dict, target_backend: str) -> Non
     """No assembled variant contains fragments, markdown, hedging, or a missing trigger."""
     result = _compose(case, target_backend)
     for name, caption in result.caption_variants.items():
-        if name in result.metadata["empty_categories"]:
-            assert caption == "sks", (name, caption)  # nothing of this category: empty, not padded (#89)
-            continue
         kind = "prose" if name == "training_prose" and case["prose"] else "list"
         assert check_caption(caption, kind, trigger_word="sks") == [], (name, caption)
-    assert check_caption(result.final_caption, "list", trigger_word="sks") == []
+    assert result.final_caption == result.caption_variants[result.selected_category]
 
 
 @pytest.mark.parametrize("case", CORPUS, ids=[c["id"] for c in CORPUS])

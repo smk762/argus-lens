@@ -147,6 +147,7 @@ def compose_caption_result(
 
     if truncated_any:
         compaction_notes.append("Trimmed lower-priority fragments to keep captions compact.")
+    # Categories with nothing of their own: their variants borrow from the others (#89).
     empty_categories = [name for name in cat_names if not buckets[name]]
 
     # --- Build training variant (tags + prose enrichment) ---
@@ -228,19 +229,8 @@ def compose_caption_result(
         compaction_notes.append("Repaired disjointed fragments in assembled captions.")
 
     selected_category = target_profile.target_category
-    final_caption = caption_variants.get(selected_category, "")
-    if selected_category in empty_categories:
-        # The sidecar .txt must never come out empty: the selected category
-        # falls back to the padded caption (other categories' fragments).
-        padded, _ = assemble_variant(
-            trigger_word, buckets, selected_category, target_profile.target_style, categories, pad_empty=True
-        )
-        final_caption, _ = repair_caption(padded, "list", trigger_word=trigger_word)
-        compaction_notes.append(
-            f"No {selected_category} content: final caption filled from other categories (variant left empty)."
-        )
     return CaptionResult(
-        final_caption=final_caption,
+        final_caption=caption_variants.get(selected_category, ""),
         caption_variants=caption_variants,
         selected_category=selected_category,
         removed_phrases=dedupe_fragments(removed_phrases),
