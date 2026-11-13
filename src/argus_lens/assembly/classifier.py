@@ -72,16 +72,23 @@ _STOPWORDS: frozenset[str] = frozenset(
 )
 
 
+# "light" as the light itself ("the light falls ...", "light from a window"), not the
+# adjective ("light brown hair", "a light jacket").
+_LIGHT_NOUN = (
+    r"light(?=\s+(?:falls?|is|was|comes?|streams?|hits?|from|of|casts?|creates?|highlights?|illuminates?"
+    r"|pours?|filters?|shines?|catches|bathes|accentuates|emphasi[sz]es|enters|spills|softly|gently)\b|\s*[,.;]|\s*$)"
+)
 # A clause about the light leads with it: "the lighting is even ...", "softly lit ...".
 _LIGHTING_LEAD = re.compile(
     r"^(?:the\s+|a\s+|soft\s+|even\s+|natural\s+|harsh\s+|warm\s+|cool\s+|dramatic\s+|bright\s+)*"
-    r"(?:lighting|light(?!-)|lit|illuminat\w*|backlit|backlighting|softly\s+lit|evenly\s+lit|brightly\s+lit)\b",
+    rf"(?:lighting|{_LIGHT_NOUN}|lit|illuminat\w*|backlit|backlighting|softly\s+lit|evenly\s+lit|brightly\s+lit)\b",
     re.I,
 )
 # Where a VLM sentence turns from the subject to the light: "..., with the lighting
 # focused on her", "..., and the lighting highlights ...", "...; the light falls ...".
+# A bare space is a turn only with a conjunction: "stands in the light" stays whole.
 _LIGHTING_TURN = re.compile(
-    r"(?:,\s*|\s+)(?:(?:with|and|while|as)\s+)?(?=the\s+(?:lighting|light(?!-))\b)"
+    rf"(?:,\s*(?:(?:with|and|while|as)\s+)?|\s+(?:with|and|while|as)\s+)(?=the\s+(?:lighting\b|{_LIGHT_NOUN}))"
     r"|,\s*(?=(?:softly|evenly|brightly|dimly)\s+lit\b)",
     re.I,
 )

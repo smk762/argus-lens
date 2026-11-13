@@ -408,7 +408,9 @@ class Refiner:
         reconciled_away = frozenset(
             t
             for t in result.metadata.get("tag_reconcile", {}).get("dropped", [])
-            if not set(_WORD.findall(t)) <= prose_words
+            # Bare black/white on a B&W photo: "black and white photo" is fine, and
+            # "black beard" is policed by the hue-grounding check instead.
+            if t not in tag_reconcile.MONOCHROME_COLOUR_TAGS and not set(_WORD.findall(t)) <= prose_words
         )
         request = RefineRequest(
             trigger_word=trigger_word,

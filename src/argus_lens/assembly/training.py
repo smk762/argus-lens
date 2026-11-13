@@ -264,50 +264,17 @@ def assemble_training_variant(
     # Each fragment is checked against the whole caption so far (trigger included).
     kept: list[str] = []
 
-    for fragment in tier1:
-        if not try_add_fragment(
-            fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
-        ):
-            removed.append(fragment)
-
-    for fragment in tier2:
-        if not try_add_fragment(
-            fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
-        ):
-            removed.append(fragment)
-
-    for fragment in pose_rest:
-        if not try_add_fragment(
-            fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
-        ):
-            removed.append(fragment)
-
-    for fragment in action_all:
-        if not try_add_fragment(
-            fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
-        ):
-            removed.append(fragment)
-
-    for fragment in wardrobe_all:
-        if not try_add_fragment(
-            fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
-        ):
-            removed.append(fragment)
-
-    for fragment in lighting_all:
-        if not try_add_fragment(
-            fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
-        ):
-            removed.append(fragment)
-
-    for fragment in setting_all:
-        if not try_add_fragment(
-            fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
-        ):
-            removed.append(fragment)
-
-    # Phase 5: prose enrichment (lowest priority, budget permitting)
-    for fragment in enrichment or []:
+    # Phase 5 (enrichment) is lowest priority, budget permitting.
+    for fragment in (
+        *tier1,
+        *tier2,
+        *pose_rest,
+        *action_all,
+        *wardrobe_all,
+        *lighting_all,
+        *setting_all,
+        *(enrichment or []),
+    ):
         if not try_add_fragment(
             fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
         ):

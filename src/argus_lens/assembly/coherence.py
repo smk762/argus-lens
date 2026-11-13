@@ -183,8 +183,11 @@ def split_sentences(text: str, *, semicolons: bool = False) -> list[str]:
             chunk = text[start : match.end()]
             if mark[0] == "." and _ABBREVIATION.search(text[start : match.start() + 1]):
                 continue
-            if chunk.count('"') % 2 or chunk.count("\u201c") > chunk.count("\u201d"):
-                continue  # inside a quotation
+            rest = text[match.end() :]
+            if (chunk.count('"') % 2 and '"' in rest) or (
+                chunk.count("\u201c") > chunk.count("\u201d") and "\u201d" in rest
+            ):
+                continue  # inside a quotation (one that closes: a stray 12" inch mark is not)
         piece = text[start : match.end()].strip()
         if piece:
             sentences.append(piece)

@@ -25,10 +25,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from PIL import Image
+from PIL import Image
 
 _WORD = re.compile(r"[a-z]+")
 
@@ -43,7 +41,8 @@ _MALE_WORDS = frozenset({"man", "men", "gentleman", "gentlemen", "he", "him", "h
 _MUSTACHE_WORDS = frozenset({"mustache", "moustache", "mustaches", "moustaches", "mustached", "moustached"})
 _BEARD_WORDS = frozenset({"beard", "beards", "bearded", "goatee", "stubble"})
 # Bare colour tags a monochrome image produces; folded into ``monochrome``.
-_MONOCHROME_COLOUR_TAGS = frozenset({"black", "white", "grey", "gray", "black and white", "black_and_white"})
+# Compared against :func:`_key`, which already turns ``black_and_white`` into ``black and white``.
+MONOCHROME_COLOUR_TAGS = frozenset({"black", "white", "grey", "gray", "black and white"})
 MONOCHROME_TAG = "monochrome"
 
 # Hue words a rewrite of a monochrome image may not attach to a noun unless an
@@ -96,17 +95,21 @@ def is_monochrome(image: Image.Image) -> bool:
     """
     if image.mode in ("1", "L", "LA", "I", "I;16", "F"):
         return True
-    small = image.convert("RGB")
-    small.thumbnail((_MONOCHROME_SAMPLE_SIDE, _MONOCHROME_SAMPLE_SIDE))
+    # Downscale first (as thumbnail() would): converting the full-size image copies it for nothing.
+    scale = min(1.0, _MONOCHROME_SAMPLE_SIDE / max(1, *image.size))
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    small = image if image.mode in ("RGB", "RGBA") else image.convert("RGB")
+    small = small.resize(size, Image.Resampling.BICUBIC, reducing_gap=2.0)
     _, cb, cr = small.convert("YCbCr").split()
     cb_hist, cr_hist = cb.histogram(), cr.histogram()
     total = sum(cb_hist)
     if not total:
         return False
-    return all(
-        abs(_median(hist, total) - 128) <= _MONOCHROME_MAX_TINT and _spread(hist, total) <= _MONOCHROME_P99_CHROMA
-        for hist in (cb_hist, cr_hist)
-    )
+    for hist in (cb_hist, cr_hist):
+        median = _median(hist, total)
+        if abs(median - 128) > _MONOCHROME_MAX_TINT or _spread(hist, total, median) > _MONOCHROME_P99_CHROMA:
+            return False
+    return True
 
 
 def _median(hist: list[int], total: int) -> int:
@@ -119,9 +122,8 @@ def _median(hist: list[int], total: int) -> int:
     return 255
 
 
-def _spread(hist: list[int], total: int) -> int:
-    """Smallest radius around the median level that holds 99 % of the pixels."""
-    median = _median(hist, total)
+def _spread(hist: list[int], total: int, median: int) -> int:
+    """Smallest radius around the *median* level that holds 99 % of the pixels."""
     need = total * 0.99
     for radius in range(256):
         if sum(hist[max(0, median - radius) : median + radius + 1]) >= need:
@@ -185,7 +187,9 @@ def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False
         if new in keys:
             drop(key, note)
             return
-        result.tags = [new if _key(t) == key else t for t in result.tags]
+        # Several spellings of *key* ("Black", "black") collapse into one *new*.
+        replaced = [new if _key(t) == key else t for t in result.tags]
+        result.tags = [t for i, t in enumerate(replaced) if t != new or new not in replaced[:i]]
         keys.discard(key)
         keys.add(new)
         result.dropped.append(key)
@@ -214,7 +218,7 @@ def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False
 
     # --- monochrome (#83) ---
     if monochrome:
-        colour_tags = [k for k in keys if k in _MONOCHROME_COLOUR_TAGS]
+        colour_tags = [k for k in keys if k in MONOCHROME_COLOUR_TAGS]
         for key in colour_tags:
             if MONOCHROME_TAG in keys:
                 drop(key, f"dropped {key!r}: the image is monochrome, so it is the medium, not a colour")

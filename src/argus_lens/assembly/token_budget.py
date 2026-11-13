@@ -66,10 +66,9 @@ def caption_tokens(
     per-fragment estimates: those floor each fragment's word cost separately and
     under-count tag-heavy captions (30 one-word tags: 59 summed vs 68 whole, #80).
     """
-    body = joiner.join(parts).strip()
-    tw = trigger_word.strip()
-    text = f"{tw}, {body}" if tw and body else (tw or body)
-    return estimate_tokens(text, backend)
+    from argus_lens.assembly.filtering import with_trigger  # filtering is heavier; keep this module leaf-light
+
+    return estimate_tokens(with_trigger(trigger_word, joiner.join(parts)), backend)
 
 
 def fits_budget(

@@ -311,3 +311,19 @@ def test_engine_detects_monochrome_on_every_path(tmp_path) -> None:
     assert batch["colour.png"].metadata["reconciled_tags"] == "man, black, white"
     ((_, streamed),) = list(engine.caption_stream([grey]))
     assert streamed.metadata["monochrome"] is True
+
+
+def test_monochrome_folds_case_variants_into_one_tag() -> None:
+    """``Black`` and ``black`` both fold into a single ``monochrome``, not two."""
+    assert reconcile_tags(["Black", "black", "white", "man"], "", monochrome=True).tags == ["monochrome", "man"]
+
+
+def test_refine_allows_black_and_white_medium_after_folding_colour_tags() -> None:
+    """Folded ``black``/``white`` tags don't forbid naming the medium ("black and white photo")."""
+    _, refined, _ = _refine(
+        "man, black, white, suit",
+        "A monochrome portrait of a man in a suit.",
+        "man, suit, black and white photo",
+        monochrome=True,
+    )
+    assert "suppressed terms" not in " ".join(refined.metadata["refine"].get("rejected", {}).get("identity", []))

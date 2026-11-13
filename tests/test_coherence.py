@@ -367,3 +367,12 @@ def test_enrichment_yields_compounds_not_loose_words() -> None:
     """Only modifier+noun compounds are lifted; verbs and pronoun-led nouns are not."""
     tokens = extract_prose_tokens(["she wears a cream knit sweater next to her lamp", "two chairs"], frozenset())
     assert tokens == ["knit_sweater"]
+
+
+def test_split_sentences_ignores_an_unclosed_inch_mark() -> None:
+    """A stray ``"`` (12" ruler) is not an open quotation swallowing the rest of the text."""
+    assert split_sentences('A man holds a 12" ruler. He smiles. The room is dark.') == [
+        'A man holds a 12" ruler.',
+        "He smiles.",
+        "The room is dark.",
+    ]

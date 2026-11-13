@@ -114,3 +114,18 @@ def test_final_caption_matches_selected_variant(category: str) -> None:
     result = compose_caption_result(trigger_word="sks", tags="woman, red dress", prose="", target_profile=profile)
     assert result.final_caption == result.caption_variants[category]
     assert "red dress" in result.final_caption
+
+
+@pytest.mark.parametrize("fragment", ["light brown hair", "a light jacket", "light blue shirt"])
+def test_light_as_adjective_is_not_lighting(fragment: str) -> None:
+    """``light`` the shade, not the light, does not lead a fragment into the lighting bucket."""
+    assert classify_fragment(fragment) != "lighting"
+
+
+@pytest.mark.parametrize(
+    "clause",
+    ["A man walking toward the light", "She stands in the light of a window", "a woman with the light brown hair"],
+)
+def test_no_lighting_split_without_a_turn(clause: str) -> None:
+    """``the light`` mid-phrase (no comma or conjunction turn, or the shade) keeps the clause whole."""
+    assert split_lighting_clauses(clause) == [clause]
