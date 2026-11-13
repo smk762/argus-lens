@@ -62,6 +62,10 @@ Run a single test: `uv run --no-sync pytest tests/test_assembly.py::test_name -q
 - **Versioning is git-tag-derived** (`hatch-vcs`); `src/argus_lens/_version.py` is generated and gitignored. Never hand-edit a version — tag `vX.Y.Z` to release.
 - `structlog` for logging; Ruff line-length 120 (`E`/`F`/`W`/`I`/`UP`/`B`/`SIM`); `interrogate` gates docstring coverage at 80% in CI. Python ≥ 3.11.
 
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev` so the merge commit is not left on `main` alone.
+
 ## CI / release
 
 CI runs via the shared [`argus-ci`](https://github.com/smk762/argus-ci) reusable workflow (`python-ci.yml@v1`, ruff 0.15.16, `dev` extras, `interrogate` post-test). Release (`release.yml`) publishes to PyPI + GHCR on `v*` tags.
