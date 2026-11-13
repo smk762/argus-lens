@@ -32,6 +32,10 @@ def estimate_t5_tokens(text: str) -> int:
 T5_BACKENDS: frozenset[str] = frozenset({"flux", "sd3", "kolors", "pixart"})
 
 
+# CLIP (SDXL, SD1.5) reads ~75 tokens: sentence-form captions for it stay at two sentences.
+MAX_CLIP_SENTENCES = 2
+
+
 def is_t5_backend(backend: str | None) -> bool:
     """True when *backend* encodes prompts with T5-XXL rather than CLIP."""
     return (backend or "").lower().strip() in T5_BACKENDS
