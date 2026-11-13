@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from argus_lens.assembly.classifier import classify_fragment, classify_fragment_detailed
+from argus_lens.assembly.classifier import (
+    NOUN_SENSE_TAGS,
+    classify_fragment,
+    classify_fragment_detailed,
+    split_lighting_clauses,
+)
 from argus_lens.assembly.coherence import clean_prose, repair_caption, repair_fragment
 from argus_lens.assembly.filtering import (
     dedupe_fragments,
@@ -89,6 +94,8 @@ def compose_caption_result(
         if fragment in subject_tags:
             continue
         cat, matched = classify_fragment_detailed(fragment, categories)
+        if cat == "action" and fragment.lower().replace("_", " ") in NOUN_SENSE_TAGS:
+            cat, matched = "identity", False  # RAM++ "writing" = text on an object, not someone writing
         buckets[cat].append(fragment)
         tag_buckets[cat].append(fragment)
         index_buckets["tags"][cat if matched else "unclassified"].append(fragment)
@@ -107,14 +114,16 @@ def compose_caption_result(
     for clause in kept_clauses:
         cleaned, removed = normalise_fragment(clause)
         removed_phrases.extend(removed)
-        cleaned = repair_fragment(cleaned)
-        if not cleaned:
-            continue
-        cat, matched = classify_fragment_detailed(cleaned, categories)
-        if cat != "identity":
-            enrichment_clauses.append(cleaned)
-        buckets[cat].append(cleaned)
-        index_buckets["prose"][cat if matched else "unclassified"].append(cleaned)
+        # "..., and the lighting highlights ..." is classified apart from the subject before it.
+        for part in split_lighting_clauses(cleaned):
+            part = repair_fragment(part)
+            if not part:
+                continue
+            cat, matched = classify_fragment_detailed(part, categories)
+            if cat != "identity":
+                enrichment_clauses.append(part)
+            buckets[cat].append(part)
+            index_buckets["prose"][cat if matched else "unclassified"].append(part)
 
     for name in cat_names:
         buckets[name] = dedupe_fragments(buckets[name])
@@ -138,6 +147,7 @@ def compose_caption_result(
 
     if truncated_any:
         compaction_notes.append("Trimmed lower-priority fragments to keep captions compact.")
+    empty_categories = [name for name in cat_names if not buckets[name]]
 
     # --- Build training variant (tags + prose enrichment) ---
     training_buckets: dict[str, list[str]] = {}
@@ -218,8 +228,19 @@ def compose_caption_result(
         compaction_notes.append("Repaired disjointed fragments in assembled captions.")
 
     selected_category = target_profile.target_category
+    final_caption = caption_variants.get(selected_category, "")
+    if selected_category in empty_categories:
+        # The sidecar .txt must never come out empty: the selected category
+        # falls back to the padded caption (other categories' fragments).
+        padded, _ = assemble_variant(
+            trigger_word, buckets, selected_category, target_profile.target_style, categories, pad_empty=True
+        )
+        final_caption, _ = repair_caption(padded, "list", trigger_word=trigger_word)
+        compaction_notes.append(
+            f"No {selected_category} content: final caption filled from other categories (variant left empty)."
+        )
     return CaptionResult(
-        final_caption=caption_variants.get(selected_category, ""),
+        final_caption=final_caption,
         caption_variants=caption_variants,
         selected_category=selected_category,
         removed_phrases=dedupe_fragments(removed_phrases),
@@ -233,5 +254,6 @@ def compose_caption_result(
                 for source, by_cat in index_buckets.items()
             },
             "subjects": count_subjects(raw_tag_fragments, prose).to_dict(),
+            "empty_categories": empty_categories,
         },
     )

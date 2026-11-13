@@ -389,6 +389,9 @@ class Refiner:
             )
 
         variants = {**result.caption_variants, **accepted}
+        selected = variants.get(result.selected_category, "")
+        # An empty category answer never empties the final caption (the .txt sidecar).
+        final_caption = selected if selected.strip() not in ("", trigger_word.strip()) else result.final_caption
         record: dict[str, Any] = {
             "rewriter": self.rewriter.name,
             "model": self.rewriter.model_id,
@@ -406,7 +409,7 @@ class Refiner:
         return dataclasses.replace(
             result,
             caption_variants=variants,
-            final_caption=variants.get(result.selected_category, result.final_caption),
+            final_caption=final_caption,
             compaction_notes=notes,
             metadata={**result.metadata, "refine": record},
         )

@@ -372,6 +372,22 @@ LIGHTING_HINTS: tuple[str, ...] = (
     "dimly lit",
     "bright",
     "moody",
+    # The bare words a VLM writes about light (#89). Bare "light" is left out:
+    # it would also match "light-colored" and "light blue".
+    "lighting",
+    "lit",
+    "backlit",
+    "illuminated",
+    "illuminating",
+    "illuminates",
+    "illumination",
+    "contrast",
+    "diffused",
+    "diffuse",
+    "daylight",
+    "light source",
+    "window light",
+    "chiaroscuro",
 )
 
 ACTION_HINTS: tuple[str, ...] = (
@@ -419,6 +435,24 @@ ACTION_HINTS: tuple[str, ...] = (
     "texting",
     "phone",
     "taking photo",
+    # Posed and historic subjects (#89).
+    "sticking out",
+    "sticks out",
+    "tongue out",
+    "tongue extended",
+    "leaning",
+    "leans",
+    "riding",
+    "rides",
+    "on horseback",
+    "mounted",
+    "saluting",
+    "salutes",
+    "marching",
+    "aiming",
+    "praying",
+    "gesturing",
+    "pouring",
 )
 
 DEFAULT_CATEGORY_CONFIGS: tuple[CategoryConfig, ...] = (

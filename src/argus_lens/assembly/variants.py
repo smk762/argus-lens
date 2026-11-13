@@ -65,11 +65,19 @@ def assemble_variant(
     category: str,
     target_style: str,
     categories: tuple[CategoryConfig, ...] | None = None,
+    *,
+    pad_empty: bool = False,
 ) -> tuple[str, list[str]]:
     """Assemble a caption variant for the given *category*.
 
-    Returns ``(caption, removed_fragments)``.
+    Returns ``(caption, removed_fragments)``. When the category's own bucket
+    is empty the caption is empty too (just the trigger word): padding it
+    from the other buckets would read like real lighting or action content
+    (#89). *pad_empty* restores the padding, for callers that need some
+    caption regardless (the ``final_caption`` fallback).
     """
+    if not pad_empty and not buckets.get(normalise_target_category(category, categories)):
+        return with_trigger(trigger_word, ""), []
     max_segments, max_words = _variant_limits(target_style, category)
     kept: list[str] = []
     removed: list[str] = []

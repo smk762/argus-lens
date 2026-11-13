@@ -72,6 +72,35 @@ _STOPWORDS: frozenset[str] = frozenset(
 )
 
 
+# A clause about the light leads with it: "the lighting is even ...", "softly lit ...".
+_LIGHTING_LEAD = re.compile(
+    r"^(?:the\s+|a\s+|soft\s+|even\s+|natural\s+|harsh\s+|warm\s+|cool\s+|dramatic\s+|bright\s+)*"
+    r"(?:lighting|light(?!-)|lit|illuminat\w*|backlit|backlighting|softly\s+lit|evenly\s+lit|brightly\s+lit)\b",
+    re.I,
+)
+# Where a VLM sentence turns from the subject to the light: "..., with the lighting
+# focused on her", "..., and the lighting highlights ...", "...; the light falls ...".
+_LIGHTING_TURN = re.compile(
+    r"(?:,\s*|\s+)(?:(?:with|and|while|as)\s+)?(?=the\s+(?:lighting|light(?!-))\b)"
+    r"|,\s*(?=(?:softly|evenly|brightly|dimly)\s+lit\b)",
+    re.I,
+)
+# Single-word tags that name a thing, not an activity: RAM++ "writing" is text on
+# an object, "painting" an artwork. As tags they are never an action (#89).
+NOUN_SENSE_TAGS: frozenset[str] = frozenset({"writing", "painting", "drawing", "carving"})
+
+
+def split_lighting_clauses(clause: str) -> list[str]:
+    """Split *clause* where it turns to the lighting, so each part is classified alone.
+
+    ``"He wears a suit, and the lighting highlights the folds"`` ->
+    ``["He wears a suit", "the lighting highlights the folds"]``. A clause
+    with no such turn comes back unchanged (as a one-item list).
+    """
+    parts = [p.strip(" ,") for p in _LIGHTING_TURN.split(clause)]
+    return [p for p in parts if p] or [clause]
+
+
 def classify_fragment(
     fragment: str,
     categories: tuple[CategoryConfig, ...] | None = None,
@@ -117,6 +146,8 @@ def classify_fragment_detailed(
     ``phone``) out of the identity bucket.
     """
     scores = category_scores(fragment, categories)
+    if "lighting" in scores and _LIGHTING_LEAD.match(fragment.strip()):
+        return "lighting", True  # "the lighting highlights his hair and clothing" is about the light
     best = max(scores, key=lambda k: scores[k])
     if scores[best] > 0:
         return best, True
