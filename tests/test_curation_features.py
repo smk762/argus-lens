@@ -114,3 +114,13 @@ def test_wd14_model_repo_selects_file_and_cache(monkeypatch, tmp_path) -> None:
     assert WD14Backend()._search_dirs()[-1] == tmp_path  # default unchanged
     monkeypatch.setenv("WD14_MODEL_REPO", "SmilingWolf/wd-swinv2-tagger-v3")
     assert WD14Backend()._model_filename == "wd-swinv2-tagger-v3.onnx"
+
+
+def test_grounded_preset_for_small_vlms() -> None:
+    """``grounded`` keeps the straightforward shape but hedges counts, text, affiliation and B&W colour (#83, #87)."""
+    grounded = PROMPT_PRESETS["grounded"]
+    assert "confident, definite" not in grounded
+    assert "confident, definite" in PROMPT_PRESETS["straightforward"]  # JoyCaption's trained wording untouched
+    for phrase in ("black and white", "count", "quote text", "army"):
+        assert phrase in grounded
+    assert OpenAICompatBackend(prompt="grounded").user_prompt == grounded

@@ -29,7 +29,10 @@ _DEFAULT_MODEL = "llava"
 
 # Named user prompts. ``prompt`` may be one of these names or literal text.
 # "straightforward", "descriptive" and "booru" follow JoyCaption Beta One's
-# trained prompt modes but work with any instruction-tuned VLM.
+# trained prompt modes but work with any instruction-tuned VLM; keep their
+# wording as trained. "grounded" is "straightforward" adjusted for small
+# general VLMs (e.g. qwen3-vl:2b), which state guessed counts, misread text
+# and affiliations, and colours of a black-and-white photo as fact (#83, #87).
 PROMPT_PRESETS: dict[str, str] = {
     "detailed": "Describe this image in detail.",
     "straightforward": (
@@ -37,6 +40,18 @@ PROMPT_PRESETS: dict[str, str] = {
         "Mention pivotal elements (people, objects, scenery) using confident, definite language. "
         "Focus on concrete details like color, shape, texture, and spatial relationships. "
         "Show how elements interact. Omit mood and speculative wording. "
+        "Never mention what's absent, resolution, or unobservable details. "
+        'Keep the description concise, without starting with "This image is" or similar phrasing.'
+    ),
+    "grounded": (
+        "Write a straightforward caption for this image. Begin with the main subject and medium; "
+        "if the image is black and white or sepia, say so and do not name the colours of things in it. "
+        "Mention pivotal elements (people, objects, scenery) plainly and directly. "
+        "Focus on concrete details like shape, texture, colour and spatial relationships. "
+        "Show how elements interact. Omit mood and speculative wording. "
+        "Give a number only for things you can count one by one, and quote text only when you can read "
+        "every letter; otherwise describe them without the number or the words. "
+        "Do not name a person's army, side, organisation or rank unless it is written in the image. "
         "Never mention what's absent, resolution, or unobservable details. "
         'Keep the description concise, without starting with "This image is" or similar phrasing.'
     ),
