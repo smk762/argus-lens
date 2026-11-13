@@ -180,3 +180,9 @@ def test_manifest_rows_include_buckets_when_asked(tmp_path: Path, route: str) ->
     assert resp.status_code == 200, resp.text
     row = json.loads(resp.text.splitlines()[0]) if route.endswith("/stream") else resp.json()["results"][0]
     assert "buckets" in row["metadata"]
+
+
+def test_read_only_unrecognised_value_stays_off(tmp_path: Path, monkeypatch) -> None:
+    """A typo in LENS_READ_ONLY leaves the server writable (env_flag warns in the log)."""
+    monkeypatch.setenv("LENS_READ_ONLY", "enabled")
+    assert _app(tmp_path).get("/health").json()["read_only"] is False

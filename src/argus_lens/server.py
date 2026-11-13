@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from argus_cortex.server import WriteGuard, cross_site_refuse
+    from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
     from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
     from fastapi.responses import StreamingResponse
     from pydantic import BaseModel
@@ -50,7 +50,6 @@ _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing sn
 _PULL_CONCURRENCY = 4  # parallel Immich downloads per /immich/pull request
 # The dev frontend (argus-studio) that bare --cors trusts, matching argus-curator.
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
-_TRUTHY = frozenset({"1", "true", "yes", "on"})  # accepted spellings of an on-flag env var
 
 
 class CaptionURLRequest(BaseModel):
@@ -577,7 +576,7 @@ def create_app(
     # Root for GET /folders browsing + relative folder captioning (UI folder picker).
     default_source = source_root or os.environ.get("LENS_SOURCE_PATH")
     if read_only is None:
-        read_only = os.environ.get("LENS_READ_ONLY", "").strip().lower() in _TRUTHY
+        read_only = env_flag("LENS_READ_ONLY")  # a mistyped value warns and stays off
 
     def _refuse_if_read_only(writes: bool, what: str) -> None:
         """Raise 403 when *writes* is requested on a read-only server."""
