@@ -11,6 +11,7 @@ from argus_lens.assembly.tag_reconcile import is_monochrome, reconcile_tags
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.backends.hybrid import HybridPipeline
 from argus_lens.refine import Refiner
+from argus_lens.refine.refiner import _ungrounded_hue_pairs
 from argus_lens.types import resolve_target_profile
 
 
@@ -247,6 +248,33 @@ def test_refine_rejects_invented_colours_on_monochrome(reply: str, accepted: boo
     )
     assert rewriter.requests[0].monochrome is True
     assert ("identity" in refined.metadata["refine"]["accepted"]) is accepted, refined.metadata["refine"]
+
+
+def test_refine_accepts_a_hue_the_prose_states_with_modifiers_between() -> None:
+    """``d7a0818312de1e9e``: prose "wild, white, curly hair" grounds ``white hair`` (was rejected)."""
+    _, refined, _ = _refine(
+        "hair, man, photo, smile, portrait, sweater",
+        "A black and white portrait of Albert Einstein. He has a full head of wild, white, curly hair.",
+        "man, white hair, sweater",
+        monochrome=True,
+    )
+    assert "identity" in refined.metadata["refine"]["accepted"], refined.metadata["refine"]
+
+
+@pytest.mark.parametrize(
+    ("text", "tags", "prose", "ungrounded"),
+    [
+        ("man, white hair", "man, hair", "a man with wild, white, curly hair.", []),
+        ("man, white hair", "man, white hair", "", []),
+        ("man, black beard", "white, black, photo, beard", "", ["black beard"]),  # tags never span a comma
+        ("man, black hair", "man", "a white shirt and black trousers. his hair is short.", ["black hair"]),
+        ("man, white hair", "man", "a man in a white shirt and black hair band.", ["white hair"]),
+        ("man, white", "man, white", "", []),
+    ],
+)
+def test_ungrounded_hue_pairs(text: str, tags: str, prose: str, ungrounded: list[str]) -> None:
+    """A hue+noun pair is grounded by a tag holding both, or a prose sentence with the noun just after the hue."""
+    assert _ungrounded_hue_pairs(text, tags, prose) == ungrounded
 
 
 # --- engine wiring ---

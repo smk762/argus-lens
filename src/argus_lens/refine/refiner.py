@@ -259,22 +259,47 @@ _MEDIUM_WORDS: frozenset[str] = frozenset(
 )
 
 
-def _ungrounded_hue_pairs(text: str, *sources: str) -> list[str]:
-    """``"black beard"``-style colour+noun pairs in *text* that no source contains (#83).
+# How far a source noun may follow its hue word ("white, curly hair" -> white hair).
+_HUE_NOUN_WINDOW = 3
+
+
+def _ungrounded_hue_pairs(text: str, tags: str, prose: str) -> list[str]:
+    """``"black beard"``-style colour+noun pairs in *text* that the inputs don't state (#83).
 
     Used for monochrome images, where every hue word in a rewrite must come
-    attached to the same noun in the tags or the description.
+    attached to the same noun in the inputs: inside one tag (``white hair``),
+    or in a prose sentence where the noun follows the hue word after at most
+    a few other modifiers ("wild, white, curly hair" grounds ``white hair``).
     """
-    haystack = " " + " ".join(" ".join(_WORD.findall(s.lower().replace("_", " "))) for s in sources) + " "
+    tag_pairs = {" ".join(_WORD.findall(t.lower().replace("_", " "))) for t in tags.split(",")}
+    tag_words = {w for t in tag_pairs for w in t.split()}
+    sentences = [_WORD.findall(s) for s in re.split(r"[.;:!?]", prose.lower())]
     words = _WORD.findall(text.lower().replace("_", " "))
     pairs = [
-        f"{w} {nxt}"
+        (w, nxt)
         for w, nxt in zip(words, words[1:], strict=False)
         if w in tag_reconcile.HUE_WORDS and nxt not in tag_reconcile.HUE_WORDS and nxt not in _MEDIUM_WORDS
     ]
     if words and words[-1] in tag_reconcile.HUE_WORDS:
-        pairs.append(words[-1])
-    return [p for p in dict.fromkeys(pairs) if f" {p} " not in haystack]
+        pairs.append((words[-1], ""))
+
+    def grounded(hue: str, noun: str) -> bool:
+        if not noun:  # a bare trailing hue word: any mention of it will do
+            return hue in tag_words or any(hue in toks for toks in sentences)
+        if any(f"{hue} {noun}" in f" {t} " for t in tag_pairs):
+            return True
+        for toks in sentences:
+            for i, tok in enumerate(toks):
+                if tok != hue:
+                    continue
+                for nxt in toks[i + 1 : i + 1 + _HUE_NOUN_WINDOW]:
+                    if nxt == noun:
+                        return True
+                    if nxt in tag_reconcile.HUE_WORDS:
+                        break  # "a white shirt and black hair": the next hue word claims the noun
+        return False
+
+    return [f"{h} {n}".strip() for h, n in dict.fromkeys(pairs) if not grounded(h, n)]
 
 
 def _vocabulary(*texts: str) -> frozenset[str]:
