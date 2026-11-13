@@ -249,11 +249,11 @@ def compose_caption_result(
         raw_prose=raw_prose,
         backend_name=backend_name,
         metadata={
+            "empty_categories": empty_categories,
             "buckets": {
                 source: {name: dedupe_fragments(frags) for name, frags in by_cat.items()}
                 for source, by_cat in index_buckets.items()
             },
             "subjects": count_subjects(raw_tag_fragments, prose).to_dict(),
-            "empty_categories": empty_categories,
         },
     )
