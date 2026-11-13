@@ -36,6 +36,7 @@ def test_corpus_variants_pass_post_check(case: dict, target_backend: str) -> Non
     for name, caption in result.caption_variants.items():
         kind = "prose" if name == "training_prose" and case["prose"] else "list"
         assert check_caption(caption, kind, trigger_word="sks") == [], (name, caption)
+    assert result.final_caption == result.caption_variants[result.selected_category]
 
 
 @pytest.mark.parametrize("case", CORPUS, ids=[c["id"] for c in CORPUS])

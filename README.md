@@ -58,7 +58,7 @@ The model is just an input source. The real value is what happens after inferenc
 ## Features
 
 - **Multi-model backends**: WD14, RAM++, Florence-2, BLIP-2 (local GPU/CPU) + OpenAI, HuggingFace, Replicate, NVIDIA NIM, and any OpenAI-compatible server — Ollama, vLLM, LM Studio (cloud or self-hosted API)
-- **Structured captions**: Category-bucketed variants (identity, wardrobe, pose, setting, lighting, action)
+- **Structured captions**: Category-bucketed variants (identity, wardrobe, pose, setting, lighting, action). A category with nothing in its bucket borrows fragments from the others; `metadata["empty_categories"]` lists which categories did
 - **Training-optimised**: Tiered tag protection, omission cycles, CLIP/T5 token budgets, identity suppression
 - **Zero-shot variant**: Identity-first, prose-preferred captions for generation without LoRA
 - **Hybrid pipelines**: Mix local + cloud backends (e.g. WD14 tags + GPT-4o prose)

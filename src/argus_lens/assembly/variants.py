@@ -65,11 +65,19 @@ def assemble_variant(
     category: str,
     target_style: str,
     categories: tuple[CategoryConfig, ...] | None = None,
+    *,
+    pad_empty: bool = True,
 ) -> tuple[str, list[str]]:
     """Assemble a caption variant for the given *category*.
 
-    Returns ``(caption, removed_fragments)``.
+    Returns ``(caption, removed_fragments)``. When the category's own bucket
+    is empty the caption borrows fragments from the other buckets, so every
+    variant reads as a caption (the composer lists such categories in
+    ``metadata["empty_categories"]``). ``pad_empty=False`` returns just the
+    trigger word instead, for callers that want an empty category to look empty.
     """
+    if not pad_empty and not buckets.get(normalise_target_category(category, categories)):
+        return with_trigger(trigger_word, ""), []
     max_segments, max_words = _variant_limits(target_style, category)
     kept: list[str] = []
     removed: list[str] = []

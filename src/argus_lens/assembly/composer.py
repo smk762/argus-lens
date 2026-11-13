@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from argus_lens.assembly.classifier import classify_fragment, classify_fragment_detailed
+from argus_lens.assembly.classifier import (
+    NOUN_SENSE_TAGS,
+    classify_fragment,
+    classify_fragment_detailed,
+    split_lighting_clauses,
+)
 from argus_lens.assembly.coherence import clean_prose, repair_caption, repair_fragment
 from argus_lens.assembly.filtering import (
     dedupe_fragments,
@@ -89,6 +94,8 @@ def compose_caption_result(
         if fragment in subject_tags:
             continue
         cat, matched = classify_fragment_detailed(fragment, categories)
+        if cat == "action" and fragment.lower().replace("_", " ") in NOUN_SENSE_TAGS:
+            cat, matched = "identity", False  # RAM++ "writing" = text on an object, not someone writing
         buckets[cat].append(fragment)
         tag_buckets[cat].append(fragment)
         index_buckets["tags"][cat if matched else "unclassified"].append(fragment)
@@ -107,14 +114,16 @@ def compose_caption_result(
     for clause in kept_clauses:
         cleaned, removed = normalise_fragment(clause)
         removed_phrases.extend(removed)
-        cleaned = repair_fragment(cleaned)
-        if not cleaned:
-            continue
-        cat, matched = classify_fragment_detailed(cleaned, categories)
-        if cat != "identity":
-            enrichment_clauses.append(cleaned)
-        buckets[cat].append(cleaned)
-        index_buckets["prose"][cat if matched else "unclassified"].append(cleaned)
+        # "..., and the lighting highlights ..." is classified apart from the subject before it.
+        for part in split_lighting_clauses(cleaned):
+            part = repair_fragment(part)
+            if not part:
+                continue
+            cat, matched = classify_fragment_detailed(part, categories)
+            if cat != "identity":
+                enrichment_clauses.append(part)
+            buckets[cat].append(part)
+            index_buckets["prose"][cat if matched else "unclassified"].append(part)
 
     for name in cat_names:
         buckets[name] = dedupe_fragments(buckets[name])
@@ -138,6 +147,8 @@ def compose_caption_result(
 
     if truncated_any:
         compaction_notes.append("Trimmed lower-priority fragments to keep captions compact.")
+    # Categories with nothing of their own: their variants borrow from the others (#89).
+    empty_categories = [name for name in cat_names if not buckets[name]]
 
     # --- Build training variant (tags + prose enrichment) ---
     training_buckets: dict[str, list[str]] = {}
@@ -228,6 +239,7 @@ def compose_caption_result(
         raw_prose=raw_prose,
         backend_name=backend_name,
         metadata={
+            "empty_categories": empty_categories,
             "buckets": {
                 source: {name: dedupe_fragments(frags) for name, frags in by_cat.items()}
                 for source, by_cat in index_buckets.items()
