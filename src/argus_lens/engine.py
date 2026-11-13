@@ -17,6 +17,7 @@ import structlog
 from PIL import Image
 
 from argus_lens.assembly.composer import compose_caption_result
+from argus_lens.assembly.tag_reconcile import is_monochrome
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.backends.hybrid import HybridPipeline
 from argus_lens.backends.replay import ReplayBackend, ReplayMiss
@@ -555,6 +556,7 @@ class ArgusLens:
             prose_enrichment=prose_enrichment,
             categories=self._categories,
             backend_name=self._backend.name,
+            monochrome=is_monochrome(pil),
         )
         return self._finish(result, profile, trigger_word, pil, asset, asset.name)
 
@@ -658,6 +660,7 @@ class ArgusLens:
                     image_index=idx,
                     categories=self._categories,
                     backend_name=self._backend.name,
+                    monochrome=is_monochrome(pil),
                 )
                 results[name] = self._finish(composed, profile, trigger_word, pil, asset, name)
 
@@ -726,6 +729,7 @@ class ArgusLens:
                 image_index=idx,
                 categories=self._categories,
                 backend_name=self._backend.name,
+                monochrome=is_monochrome(pil),
             )
             yield name, self._finish(result, profile, trigger_word, pil, asset, name)
 

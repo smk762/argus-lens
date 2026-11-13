@@ -23,6 +23,7 @@ import httpx
 import structlog
 
 from argus_lens.assembly.coherence import check_caption, repair_caption
+from argus_lens.assembly.tag_reconcile import HUE_WORDS
 from argus_lens.assembly.token_budget import is_t5_backend
 
 if TYPE_CHECKING:
@@ -39,6 +40,11 @@ IDENTITY_FORBIDDEN: frozenset[str] = frozenset(
         "eyes",
         "freckles",
         "beard",
+        "mustache",
+        "moustache",
+        "goatee",
+        "sideburns",
+        "stubble",
         "complexion",
         "blonde",
         "brunette",
@@ -76,8 +82,6 @@ _GLUE_WORDS: frozenset[str] = frozenset(
         "women",
         "men",
         "people",
-        "girl",
-        "boy",
         "shot",
         "view",
         "photo",
@@ -231,6 +235,7 @@ class RefineRequest:
     token_budget: int
     target_backend: str | None
     feedback: dict[str, list[str]] = field(default_factory=dict)
+    monochrome: bool = False
 
 
 @runtime_checkable
@@ -246,6 +251,30 @@ class CaptionRewriter(Protocol):
 
 
 _WORD = re.compile(r"[a-z0-9][a-z0-9'+-]*")
+
+
+# "black and white photo": a hue word naming the medium, not an object's colour.
+_MEDIUM_WORDS: frozenset[str] = frozenset(
+    {"and", "or", "photo", "photograph", "photography", "portrait", "image", "picture", "print", "film", "shot"}
+)
+
+
+def _ungrounded_hue_pairs(text: str, *sources: str) -> list[str]:
+    """``"black beard"``-style colour+noun pairs in *text* that no source contains (#83).
+
+    Used for monochrome images, where every hue word in a rewrite must come
+    attached to the same noun in the tags or the description.
+    """
+    haystack = " " + " ".join(" ".join(_WORD.findall(s.lower().replace("_", " "))) for s in sources) + " "
+    words = _WORD.findall(text.lower().replace("_", " "))
+    pairs = [
+        f"{w} {nxt}"
+        for w, nxt in zip(words, words[1:], strict=False)
+        if w in HUE_WORDS and nxt not in HUE_WORDS and nxt not in _MEDIUM_WORDS
+    ]
+    if words and words[-1] in HUE_WORDS:
+        pairs.append(words[-1])
+    return [p for p in dict.fromkeys(pairs) if f" {p} " not in haystack]
 
 
 def _vocabulary(*texts: str) -> frozenset[str]:
@@ -291,14 +320,28 @@ class Refiner:
         self.unavailable_cooldown_s = unavailable_cooldown_s
         self._unavailable_until = 0.0
 
-    def _problems(self, name: str, text: str, request: RefineRequest, vocab: frozenset[str]) -> list[str]:
-        """Validate one rewrite against its spec."""
+    def _problems(
+        self,
+        name: str,
+        text: str,
+        request: RefineRequest,
+        vocab: frozenset[str],
+        reconciled_away: frozenset[str] = frozenset(),
+    ) -> list[str]:
+        """Validate one rewrite against its spec.
+
+        *reconciled_away* are tags tag reconciliation dropped (``girl`` beside
+        ``woman``, ``beard`` on a moustache) that the description does not
+        name: a rewrite may not put them back.
+        """
         spec = variant_spec(name)
         problems = check_caption(
             text,
             spec.kind,
             trigger_word=request.trigger_word,
-            forbidden_words=(IDENTITY_FORBIDDEN if spec.suppress_identity else frozenset()) | spec.forbidden,
+            forbidden_words=(IDENTITY_FORBIDDEN if spec.suppress_identity else frozenset())
+            | spec.forbidden
+            | reconciled_away,
             token_budget=request.token_budget,
             target_backend=request.target_backend if spec.kind == "prose" else None,
             allowed_vocabulary=vocab,
@@ -308,6 +351,8 @@ class Refiner:
             sentences = len(_SENTENCE_END.findall(text.strip()))
             if sentences > _MAX_SENTENCES_CLIP:
                 problems.append(f"too many sentences for a CLIP target ({sentences} > {_MAX_SENTENCES_CLIP})")
+        if request.monochrome and (pairs := _ungrounded_hue_pairs(text, request.tags, request.prose)):
+            problems.append(f"black-and-white image: colour not stated in the inputs: {', '.join(pairs[:5])}")
         return problems
 
     def refine(
@@ -331,9 +376,18 @@ class Refiner:
             # Endpoint was unreachable moments ago: don't stall every image on it.
             record = {"rewriter": self.rewriter.name, "model": self.rewriter.model_id, "skipped": "unavailable"}
             return dataclasses.replace(result, metadata={**result.metadata, "refine": record})
+        # Reconciled tags (no "girl" beside "woman", no bare "black"/"white" on a
+        # B&W photo): the rewriter must not see, or be grounded in, what assembly settled.
+        tags = result.metadata.get("reconciled_tags", result.raw_tags)
+        prose_words = set(_WORD.findall(result.raw_prose.lower()))
+        reconciled_away = frozenset(
+            t
+            for t in result.metadata.get("tag_reconcile", {}).get("dropped", [])
+            if not set(_WORD.findall(t)) <= prose_words
+        )
         request = RefineRequest(
             trigger_word=trigger_word,
-            tags=result.raw_tags,
+            tags=tags,
             prose=result.raw_prose,
             buckets=result.metadata.get("buckets", {}),
             subjects=result.metadata.get("subjects", {}),
@@ -344,8 +398,9 @@ class Refiner:
             },
             token_budget=profile.token_budget.budget,
             target_backend=profile.target_backend,
+            monochrome=bool(result.metadata.get("monochrome")),
         )
-        vocab = _vocabulary(result.raw_tags, result.raw_prose, trigger_word)
+        vocab = _vocabulary(tags, result.raw_prose, trigger_word)
         accepted: dict[str, str] = {}
         rejected: dict[str, list[str]] = {}
         pending = list(names)
@@ -374,7 +429,9 @@ class Refiner:
                 if spec.allow_empty and name in out and text.strip() in ("", trigger_word.strip()):
                     accepted[name] = trigger_word.strip()  # "nothing of this category" is an answer
                     continue
-                problems = self._problems(name, text, request, vocab) if text else ["missing from response"]
+                problems = (
+                    self._problems(name, text, request, vocab, reconciled_away) if text else ["missing from response"]
+                )
                 if problems:
                     feedback[name] = problems
                 else:
