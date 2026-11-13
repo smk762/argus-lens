@@ -24,6 +24,7 @@ from argus_lens.assembly.noise import (
 )
 from argus_lens.assembly.prose_training import assemble_prose_training_variant
 from argus_lens.assembly.subjects import count_subjects, is_subject_count_tag
+from argus_lens.assembly.tag_reconcile import reconcile_tags
 from argus_lens.assembly.training import assemble_training_variant
 from argus_lens.assembly.variants import assemble_variant
 from argus_lens.assembly.zeroshot import assemble_zeroshot_variant
@@ -45,6 +46,7 @@ def compose_caption_result(
     categories: tuple[CategoryConfig, ...] | None = None,
     backend_name: str = "",
     prose_enrichment: bool = True,
+    monochrome: bool = False,
 ) -> CaptionResult:
     """Build a structured ``CaptionResult`` from raw model outputs.
 
@@ -57,6 +59,11 @@ def compose_caption_result(
     ``"unclassified"`` key for fragments no hint matched) and the headcount
     estimate (``subjects``) — the inputs a search index needs, before the
     per-variant truncation.
+
+    Tags are first reconciled against the prose and *monochrome* (see
+    :func:`~argus_lens.assembly.tag_reconcile.reconcile_tags`); ``metadata``
+    records the outcome under ``tag_reconcile`` and the reconciled tag string
+    under ``reconciled_tags``. ``raw_tags`` stays the tagger's output.
     """
     raw_prose = prose
     prose, prose_notes = clean_prose(prose) if prose else ("", [])
@@ -82,6 +89,15 @@ def compose_caption_result(
             continue
         raw_tag_fragments.append(cleaned)
 
+    # Settle tags that contradict each other, the prose, or the pixels
+    # (woman+girl, beard vs a described moustache, black/white on a B&W photo).
+    reconciliation = reconcile_tags(raw_tag_fragments, prose, monochrome=monochrome)
+    raw_tag_fragments = reconciliation.tags
+    if reconciliation.notes:
+        removed_phrases.extend(reconciliation.dropped)
+        compaction_notes.append(f"Reconciled tags: {'; '.join(reconciliation.notes)}.")
+    reconciled_tags = ", ".join(raw_tag_fragments)
+
     noise_kept, noise_removed = filter_training_noise(raw_tag_fragments, strip_identity=False)
     removed_phrases.extend(noise_removed)
     if noise_removed:
@@ -102,7 +118,7 @@ def compose_caption_result(
 
     # --- Process prose-based input (e.g. Florence, BLIP, OpenAI) ---
     kept_clauses, redundant = filter_redundant_clauses_detailed(
-        prose, tags, threshold=target_profile.redundancy_threshold
+        prose, reconciled_tags, threshold=target_profile.redundancy_threshold
     )
     removed_phrases.extend([f.lower() for f in redundant])
     if redundant:
@@ -168,7 +184,7 @@ def compose_caption_result(
     ]
     if prose_enrichment and enrichment_clauses:
         # Filler-stripped clauses, so "the image shows ..." can't leak "shows".
-        existing_tag_words = wd14_word_set(tags)
+        existing_tag_words = wd14_word_set(reconciled_tags)
         enrichment_tokens += extract_prose_tokens(enrichment_clauses, existing_tag_words)
 
     training_caption, training_truncated = assemble_training_variant(
@@ -245,5 +261,8 @@ def compose_caption_result(
                 for source, by_cat in index_buckets.items()
             },
             "subjects": count_subjects(raw_tag_fragments, prose).to_dict(),
+            "monochrome": monochrome,
+            "reconciled_tags": reconciled_tags,
+            "tag_reconcile": reconciliation.to_dict(),
         },
     )

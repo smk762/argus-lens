@@ -239,6 +239,8 @@ argus-lens caption ./images/ --recursive --refine-model qwen3:14b   # refine is 
 
 `result.metadata["refine"]` records what was accepted or rejected, and why.
 
+**Tag reconciliation.** Before tags are bucketed, assembly settles tagger output that contradicts itself, the prose or the pixels: `girl`/`boy` next to `woman`/`man` is dropped unless the prose names a child, and `man`+`woman` on a portrait the prose describes as one sex keeps only that one. `beard` becomes `mustache` when the prose names a moustache and no beard (RAM++ has no moustache tag); when the prose says nothing about facial hair, `beard` is kept. On a black-and-white or toned image (a cheap Cb/Cr spread check on the pixels), the bare `black`/`white` tags become one `monochrome` tag. `raw_tags` keeps the tagger's output, and `metadata["reconciled_tags"]`, `metadata["tag_reconcile"]` (`dropped`, `added`, `notes`) and `metadata["monochrome"]` record the result. The refiner sees the reconciled tags, may not reintroduce a dropped term the prose doesn't name, and on a monochrome image rejects colour+noun pairs (`black beard`) that no input states.
+
 ### Dataset curation workflow
 
 [`workflows/`](workflows/README.md) contains a complete, resumable pipeline for a large people-photo library (`<name>/pics/<shoot_id>/*.jpg`). It captions each image once, groups images by shared identity, wardrobe, setting and action tags, flags multi-person images for face ID, and exports SDXL and Flux training datasets. It builds on these result fields:

@@ -107,6 +107,10 @@ IDENTITY_HINTS: tuple[str, ...] = (
     "twintails",
     "bald",
     "mustache",
+    "moustache",
+    "goatee",
+    "sideburns",
+    "facial hair",
     "stubble",
     "muscular",
     "slim",
@@ -335,6 +339,11 @@ SETTING_HINTS: tuple[str, ...] = (
 )
 
 LIGHTING_HINTS: tuple[str, ...] = (
+    "monochrome",
+    "black and white",
+    "grayscale",
+    "greyscale",
+    "sepia",
     "backlight",
     "backlighting",
     "natural light",
