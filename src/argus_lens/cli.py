@@ -68,7 +68,7 @@ def caption(
     prompt: str | None = Option(
         None,
         "--prompt",
-        help="openai-compat user prompt: preset (detailed, straightforward, descriptive, booru) or literal text",
+        help="openai-compat user prompt: preset (detailed, straightforward, grounded, descriptive, booru) or literal text",
     ),
     wd14_repo: str | None = Option(
         None, "--wd14-repo", help="WD14 v3 tagger repo, e.g. SmilingWolf/wd-eva02-large-tagger-v3"
