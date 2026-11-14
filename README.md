@@ -1,4 +1,9 @@
-# Argus Lens
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/lens/argus-lens-lockup-dark.svg">
+    <img alt="Argus Lens" src="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/lens/argus-lens-lockup-light.svg" height="52">
+  </picture>
+</h1>
 
 [![PyPI](https://img.shields.io/pypi/v/argus-lens)](https://pypi.org/project/argus-lens/)
 [![Python](https://img.shields.io/pypi/pyversions/argus-lens)](https://pypi.org/project/argus-lens/)
