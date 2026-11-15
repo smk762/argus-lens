@@ -9,6 +9,7 @@ from argus_lens.assembly.classifier import (
     split_lighting_clauses,
 )
 from argus_lens.assembly.coherence import clean_prose, repair_caption, repair_fragment
+from argus_lens.assembly.editorial import drop_editorial_sentences, is_mood_clause
 from argus_lens.assembly.filtering import (
     dedupe_fragments,
     extract_prose_tokens,
@@ -74,6 +75,12 @@ def compose_caption_result(
     compaction_notes: list[str] = []
     if prose_notes:
         compaction_notes.append(f"Normalised prose ({', '.join(prose_notes)}).")
+    # Mood/meta sentences ("The overall atmosphere is serene") carry no visual
+    # content; drop them before they become variant fragments (#104).
+    prose, editorial = drop_editorial_sentences(prose)
+    if editorial:
+        removed_phrases.extend(s.lower().rstrip(".!?") for s in editorial)
+        compaction_notes.append("Dropped editorial prose (mood/meta commentary).")
     # Index view: like ``buckets`` but split by source and with hint-less
     # fragments moved out of the identity fallback into "unclassified".
     index_buckets: dict[str, dict[str, list[str]]] = {
@@ -134,6 +141,9 @@ def compose_caption_result(
         for part in split_lighting_clauses(cleaned):
             part = repair_fragment(part)
             if not part:
+                continue
+            if is_mood_clause(part):
+                removed_phrases.append(part)
                 continue
             cat, matched = classify_fragment_detailed(part, categories)
             if cat != "identity":

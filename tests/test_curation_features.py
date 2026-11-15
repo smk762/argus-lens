@@ -82,7 +82,8 @@ def test_hybrid_shorthand_routes_kwargs_per_stage() -> None:
 
 def test_openai_compat_prompt_preset_and_literal(monkeypatch) -> None:
     """``prompt`` accepts a preset name, literal text, or the env var; temperature is optional."""
-    assert OpenAICompatBackend().user_prompt == PROMPT_PRESETS["detailed"]
+    monkeypatch.delenv("ARGUS_OPENAI_COMPAT_PROMPT", raising=False)
+    assert OpenAICompatBackend().user_prompt == PROMPT_PRESETS["straightforward"]
     assert OpenAICompatBackend(prompt="Describe the outfit.").user_prompt == "Describe the outfit."
     monkeypatch.setenv("ARGUS_OPENAI_COMPAT_PROMPT", "booru")
     assert OpenAICompatBackend().user_prompt == PROMPT_PRESETS["booru"]

@@ -83,6 +83,8 @@ _OPENER = re.compile(
     r"(?:(?:in|within) (?:this|the) (?:image|photo|photograph|picture|scene|shot),?\s*"
     r"|(?:this|the) (?:image|photo|photograph|picture|scene) (?:shows|depicts|features|captures|is|presents|portrays)\s+"
     r"(?:(?:a|an) (?:close-up |candid |portrait )?(?:photograph|photo|picture|image|shot) of\s+)?"
+    r"|(?:this|it) is (?:a|an) (?:close-up |candid |portrait |detailed |vintage |colou?r )?"
+    r"(?:photograph|photo|picture|image|shot) (?:of|showing|depicting)\s+"
     r"|(?:(?:a|an) )?(?:close-up |candid |portrait )?(?:photograph|photo|picture|image|shot) of\s+"
     r"|(?:here )?we (?:can )?see\s+)",
     re.I,

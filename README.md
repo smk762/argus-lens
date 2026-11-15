@@ -186,20 +186,22 @@ The `openai-compat` backend (alone, or as the prose stage of `hybrid:wd14+openai
 
 | Preset | Asks the model for | Use it for |
 |---|---|---|
-| `detailed` (default) | "Describe this image in detail." | A quick start with any VLM. |
-| `straightforward` | A concise caption that starts with the main subject and medium, uses confident, definite language, and focuses on concrete details (colour, shape, texture, spatial relationships). No mood, speculation, absences or "This image is" opener. | Captions from capable VLMs (Qwen3-VL 8B, JoyCaption). This is JoyCaption Beta One's trained wording, kept as trained. Lightbox's demo captions use it. |
+| `straightforward` (default) | A concise caption that starts with the main subject and medium, uses confident, definite language, and focuses on concrete details (colour, shape, texture, spatial relationships). No mood, speculation, absences or "This image is" opener. | Captions from capable VLMs (Qwen3-VL 8B, JoyCaption). This is JoyCaption Beta One's trained wording, kept as trained. Lightbox's demo captions use it. **Default** since #104: on a 205-photo run with `qwen3-vl:2b-instruct` it cut mood/meta wording about 5x and halved prose length compared with `detailed`, without `grounded`'s rule-following slips. |
+| `detailed` | "Describe this image in detail." | The pre-#104 default. Small VLMs answer it with editorial copy (mood words, "This image shows …" openers, ~2x the length). |
 | `grounded` | `straightforward` without "confident, definite language", plus: on a black-and-white or sepia image, say so and name no colours; give counts only for things counted one by one; quote text only when every letter is legible; name no army, side, organisation or rank unless it is written in the image. | Small general VLMs (e.g. `qwen3-vl:2b-instruct` on CPU), which state guessed counts and misread names as fact. Opt-in: at 2B the model follows these rules unreliably and can introduce new slips. |
 | `descriptive` | "Write a long descriptive caption for this image in a formal tone." | Long, formal prose. JoyCaption's descriptive mode. |
 | `booru` | "Write a list of Booru-like tags for this image." | Booru-style tags from a VLM. JoyCaption's booru mode. |
 
 There is also a `count` preset, which asks only for the number of people visible. It is not a caption prompt.
 
+Whatever the prompt, assembly drops editorial prose before it reaches a variant: a sentence that is only mood or meta commentary ("The overall atmosphere is peaceful", "This is a detailed description of the image") and a mood sub-clause ("…, creating a serene scene") go to `removed_phrases`. A sentence that also names a count, colour or position is kept.
+
 | Variable | Default | Description |
 |---|---|---|
 | `ARGUS_OPENAI_COMPAT_BASE_URL` | `http://localhost:11434/v1` (Ollama) | Endpoint (`--base-url`, `base_url=`) |
 | `ARGUS_OPENAI_COMPAT_MODEL` | `llava` | Model ID (`--model-id`, `model_id=`) |
 | `ARGUS_OPENAI_COMPAT_API_KEY` | -- | API key, if the server needs one (`--api-key`, `api_key=`) |
-| `ARGUS_OPENAI_COMPAT_PROMPT` | `detailed` | Preset name or literal prompt text (`--prompt`, `prompt=`) |
+| `ARGUS_OPENAI_COMPAT_PROMPT` | `straightforward` | Preset name or literal prompt text (`--prompt`, `prompt=`) |
 | `ARGUS_OPENAI_COMPAT_MAX_SIDE` | `1024` | Long edge, in pixels, that images are downscaled to before sending (`max_image_side=`); `0` sends full size. A 3600×2400 photo costs about 4k vision tokens and overflows Ollama's default 4096 context, while 1024 px is about 1.1k. |
 
 Arguments win over environment variables, which win over the defaults.

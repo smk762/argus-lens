@@ -62,7 +62,11 @@ PROMPT_PRESETS: dict[str, str] = {
         "reflections? Answer with a single integer and nothing else."
     ),
 }
-_DEFAULT_PROMPT = "detailed"
+# "straightforward" is the default (#104): on a <=4B VLM, "detailed" ("Describe
+# this image in detail.") produced editorial copy (mood words, "This image
+# shows ..." openers) at ~2x the length, and "grounded"'s extra rules caused
+# numbered lists and absence statements. Keep "detailed" as an opt-in preset.
+_DEFAULT_PROMPT = "straightforward"
 # Long edge sent to the server. A 3600x2400 photo costs ~4k vision tokens and
 # overflows Ollama's default 4096 context; 1024 px is ~1.1k and loses nothing a
 # caption needs.
@@ -115,7 +119,7 @@ class OpenAICompatBackend(CloudBackend):
     * ``model_id`` / ``ARGUS_OPENAI_COMPAT_MODEL`` (default ``llava``)
     * ``api_key`` / ``ARGUS_OPENAI_COMPAT_API_KEY`` (optional)
     * ``prompt`` / ``ARGUS_OPENAI_COMPAT_PROMPT`` — a ``PROMPT_PRESETS`` name
-      or literal user-prompt text (default ``detailed``)
+      or literal user-prompt text (default ``straightforward``)
     * ``max_image_side`` / ``ARGUS_OPENAI_COMPAT_MAX_SIDE`` — long edge the
       image is downscaled to before sending (default 1024; 0 = full size)
 
