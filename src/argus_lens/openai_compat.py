@@ -70,9 +70,11 @@ def _assemble_content(result: CaptionResult) -> str:
 def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
     """Return raw image bytes from an OpenAI-format message content list.
 
-    Handles:
-      • ``data:image/*;base64,<b64>``  — Frigate always sends this form
-      • ``http://`` / ``https://``     — fallback for direct URL usage
+    Only inline ``data:image/*;base64,<b64>`` URIs are accepted (Frigate
+    always sends this form). An ``http(s)://`` URL is refused with a 400
+    rather than fetched: fetching client-supplied URLs would let anyone who
+    can reach /v1 make this server GET internal-only hosts (cloud metadata,
+    LAN services) and read the reply back through the caption (SSRF).
     """
     for item in content:
         if item.get("type") != "image_url":
@@ -83,11 +85,13 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
             _header, _, b64 = url.partition(",")
             return base64.b64decode(b64)
         if url.startswith(("http://", "https://")):
-            import httpx
-
-            resp = httpx.get(url, timeout=15)
-            resp.raise_for_status()
-            return resp.content
+            _openai_error(
+                400,
+                "Remote image URLs are not supported; send the image inline as a data: URI",
+                "invalid_request_error",
+                "remote_url_not_supported",
+                param="messages",
+            )
     return b""
 
 

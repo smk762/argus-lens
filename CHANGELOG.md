@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Manifest captioning is confined to the source root** (audit pack-argus-lens-02858f2bfe).
+  `/caption/manifest[/stream]` now needs `--source-root` / `LENS_SOURCE_PATH` (400 otherwise),
+  like `/caption/folder`. `export_root` must lie inside it, and a row whose `abs_path` or
+  `export_root/exported_path` resolves outside it (symlinks included) is a per-row error. A
+  crafted manifest could otherwise read any image back through its caption, or write
+  `.txt`/`.xmp` sidecars into any writable directory. **Breaking** for callers that captioned
+  manifests without a source root, or with images outside it.
+- **`/v1/chat/completions` no longer fetches `http(s)://` image URLs** (SSRF, audit
+  pack-argus-lens-6e37a7b307). Such a URL is a 400 (`remote_url_not_supported`); send the image
+  inline as a `data:` URI, as Frigate does.
+- **The `.txt` exporter refuses names that escape its output directory** (audit
+  pack-argus-lens-1da399c6fb). An absolute name, a `..` part, or a sidecar resolving outside
+  the directory raises `ValueError` before anything is written.
+
 ### Added
 - **Per-request backend selection** (#107, for argus-studio#69). Every caption endpoint takes an
   optional `backend` (form field or JSON key). Omitted, the server default captions, as before.
