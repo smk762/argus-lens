@@ -39,6 +39,7 @@ class _FakeResponse:
         self.content = content
         self._json_data = json_data
         self.status_code = status_code
+        self.is_redirect = False
 
     def json(self):
         """Return the canned JSON payload."""
@@ -171,6 +172,46 @@ def test_fetch_original_returns_raw_bytes():
     assert data == b"raw-bytes"
     assert mock_get.call_args[0][0] == "http://immich.local/api/assets/abc/original"
     assert mock_get.call_args.kwargs["headers"]["Accept"] == "*/*"
+
+
+def _redirecting_source(location: str) -> tuple[ImmichSource, list[httpx.Request]]:
+    """An ImmichSource whose /original 302s to *location*; returns it plus the seen requests."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Redirect the /original request, serve bytes for anything else."""
+        seen.append(request)
+        if request.url.path.endswith("/original"):
+            return httpx.Response(302, headers={"location": location})
+        return httpx.Response(200, content=b"img")
+
+    src = ImmichSource("http://immich.local", "secret")
+    src._client = httpx.Client(transport=httpx.MockTransport(handler))
+    return src, seen
+
+
+def test_fetch_original_drops_api_key_on_cross_origin_redirect():
+    """A redirect to another host is followed without the x-api-key header."""
+    src, seen = _redirecting_source("https://cdn.example.com/blob")
+    assert src.fetch_original(AssetRef(id="abc")) == b"img"
+    assert seen[0].headers["x-api-key"] == "secret"
+    assert seen[1].url.host == "cdn.example.com"
+    assert "x-api-key" not in seen[1].headers
+
+
+def test_fetch_original_keeps_api_key_on_same_origin_redirect():
+    """A same-origin redirect keeps the key (Immich needs it to serve the file)."""
+    src, seen = _redirecting_source("/storage/abc.jpg")
+    assert src.fetch_original(AssetRef(id="abc")) == b"img"
+    assert seen[1].url == "http://immich.local/storage/abc.jpg"
+    assert seen[1].headers["x-api-key"] == "secret"
+
+
+def test_fetch_original_caps_redirects():
+    """A redirect loop raises instead of spinning forever."""
+    src, _ = _redirecting_source("http://immich.local/api/assets/abc/original")
+    with pytest.raises(httpx.TooManyRedirects):
+        src.fetch_original(AssetRef(id="abc"))
 
 
 # --- ImmichSource.fetch_image ---

@@ -56,7 +56,7 @@ def caption(
     prose_bias: float | None = Option(
         None, "--prose-bias", help="Continuous tag/prose balance: 0.0 (pure tags) .. 1.0 (full prose)"
     ),
-    output: Path | None = Option(None, "--output", "-o", help="Output file (for json/jsonl/csv)"),
+    output: Path | None = Option(None, "--output", "-o", help="Output file for a single image (written as --format)"),
     fmt: str = Option("txt", "--format", "-f", help="Output format: txt, json, jsonl, csv"),
     overwrite: bool = Option(False, "--overwrite", help="Overwrite existing caption files"),
     recursive: bool = Option(False, "--recursive", "-r", help="Walk sub-directories (results keyed by relative path)"),
@@ -148,9 +148,9 @@ def caption(
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc
         if output:
-            from argus_lens.exporters import export_results
+            from argus_lens.exporters import export_results_to_file
 
-            export_results({path.name: result}, output.parent, fmt)
+            export_results_to_file({path.name: result}, output, fmt)
             typer.echo(f"Exported to {output}")
         else:
             typer.echo(result.final_caption)
@@ -421,7 +421,9 @@ def eval_command(
 @app.command()
 def serve(
     port: int = Option(8080, "--port", "-p", help="Port to listen on"),
-    host: str = Option("0.0.0.0", "--host", help="Host to bind to"),
+    host: str = Option(
+        "127.0.0.1", "--host", help="Host to bind to (0.0.0.0 exposes the unauthenticated API to the network)"
+    ),
     backend: str = Option(
         "hybrid", "--backend", "-b", envvar="ARGUS_BACKEND", help="Default backend for /caption endpoints"
     ),

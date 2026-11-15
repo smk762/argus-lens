@@ -45,7 +45,7 @@ $ argus-lens caption [OPTIONS] PATH
 * `--target-backend TEXT`: Diffusion backend (sdxl, flux, sd3)  [default: sdxl]
 * `--hybrid-preset TEXT`: Tag/prose balance: tags, keywords, balanced, descriptive, prose
 * `--prose-bias FLOAT`: Continuous tag/prose balance: 0.0 (pure tags) .. 1.0 (full prose)
-* `-o, --output PATH`: Output file (for json/jsonl/csv)
+* `-o, --output PATH`: Output file for a single image (written as --format)
 * `-f, --format TEXT`: Output format: txt, json, jsonl, csv  [default: txt]
 * `--overwrite`: Overwrite existing caption files
 * `-r, --recursive`: Walk sub-directories (results keyed by relative path)
@@ -148,7 +148,7 @@ $ argus-lens serve [OPTIONS]
 **Options**:
 
 * `-p, --port INTEGER`: Port to listen on  [default: 8080]
-* `--host TEXT`: Host to bind to  [default: 0.0.0.0]
+* `--host TEXT`: Host to bind to (0.0.0.0 exposes the unauthenticated API to the network)  [default: 127.0.0.1]
 * `-b, --backend TEXT`: Default backend for /caption endpoints  [env var: ARGUS_BACKEND; default: hybrid]
 * `--cors`: Enable CORS for the localhost dev frontend (:3000)
 * `--cors-origin TEXT`: Allowed CORS origin (repeatable; implies CORS; or LENS_CORS_ORIGINS)
