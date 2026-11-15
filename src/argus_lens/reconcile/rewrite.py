@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 
+from argus_lens.assembly.subjects import rewrite_prose_count
 from argus_lens.eval.metrics import _COLORS, _canon_color, _noun_variants
 from argus_lens.reconcile.types import AttributeDispute
 
@@ -69,5 +70,9 @@ def apply_fix(prose: str, dispute: AttributeDispute, value: str) -> str:
             return _cased(value, match.group(0)) if word in flagged and word != target else match.group(0)
 
         return _WORD.sub(_sub, prose)
+
+    if dispute.kind == "count":
+        # "six soldiers" -> "five soldiers"; a non-integer or < 2 verdict leaves the prose alone.
+        return rewrite_prose_count(prose, int(value)) if value.isdigit() else prose
 
     return prose
