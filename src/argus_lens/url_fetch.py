@@ -13,7 +13,9 @@ result back as a caption. :func:`fetch_url` closes that:
   between the check and the connect;
 * redirects are followed by hand, at most :data:`MAX_REDIRECTS`, and each hop
   is checked the same way;
-* the body is capped at :data:`MAX_BYTES`.
+* the body is capped at :data:`MAX_BYTES`, and the whole fetch (every hop and
+  the body) at :data:`TOTAL_TIMEOUT_S`, so a host trickling bytes can't hold a
+  worker thread indefinitely (``TIMEOUT_S`` alone is per read).
 
 ``LENS_URL_FETCH=off`` turns URL fetching off entirely.
 """
@@ -23,11 +25,13 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+import time
 from urllib.parse import urljoin, urlsplit
 
 MAX_REDIRECTS = 5
 MAX_BYTES = 50 * 1024 * 1024
 TIMEOUT_S = 30.0
+TOTAL_TIMEOUT_S = 120.0
 _ALLOWED_PORTS = {"http": 80, "https": 443}
 
 
@@ -108,8 +112,11 @@ def fetch_url(url: str) -> bytes:
         raise URLRefused("URL fetching is disabled (LENS_URL_FETCH=off)")
 
     current = url
+    deadline = time.monotonic() + TOTAL_TIMEOUT_S
     with httpx.Client(timeout=TIMEOUT_S, follow_redirects=False, trust_env=False) as client:
         for _ in range(MAX_REDIRECTS + 1):
+            if time.monotonic() > deadline:
+                raise URLRefused(f"fetching the URL took longer than {TOTAL_TIMEOUT_S:g}s")
             host, ips, port = check_url(current)
             default_port = _ALLOWED_PORTS[urlsplit(current).scheme.lower()]
             host_header = host if port == default_port else f"{host}:{port}"
@@ -151,6 +158,8 @@ def fetch_url(url: str) -> bytes:
                     body.extend(chunk)
                     if len(body) > MAX_BYTES:
                         raise URLRefused(f"image is larger than {MAX_BYTES} bytes")
+                    if time.monotonic() > deadline:
+                        raise URLRefused(f"fetching {host!r} took longer than {TOTAL_TIMEOUT_S:g}s")
                 return bytes(body)
             finally:
                 resp.close()

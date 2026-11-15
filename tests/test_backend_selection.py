@@ -216,3 +216,10 @@ def test_admin_unload_frees_switched_engines_too() -> None:
     assert client.get("/health").json()["gpu"]["resident"] == ["alt"]
     assert client.post("/admin/unload").json()["unloaded"] is True
     assert client.get("/health").json()["gpu"]["resident"] == []
+
+
+def test_stream_disambiguates_duplicate_filenames() -> None:
+    """Like /caption/batch, two uploads sharing a filename stream under distinct names."""
+    files = [("files", ("a.png", _png(), "image/png")), ("files", ("a.png", _png(), "image/png"))]
+    stream = _client().post("/caption/stream", files=files)
+    assert [json.loads(line)["name"] for line in stream.text.splitlines()] == ["a.png", "a.png#2"]

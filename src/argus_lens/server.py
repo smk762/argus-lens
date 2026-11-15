@@ -643,7 +643,7 @@ def create_app(
     engines: dict[str, ArgusLens] = {default_name: engine}
     engines_lock = threading.Lock()
 
-    def _engine_for(backend: str | None) -> ArgusLens:
+    def _engine_for_sync(backend: str | None) -> ArgusLens:
         """Return the engine for a requested *backend* (``None``/empty = the default).
 
         A name that is unknown, not allowed on this server, or whose backend
@@ -672,6 +672,13 @@ def create_app(
             logger.info("backend_engine_created", backend=name)
             return engines[name]
 
+    async def _engine_for(backend: str | None) -> ArgusLens:
+        """Async :func:`_engine_for_sync`: a first-use backend import / availability probe runs off the event loop."""
+        name = (backend or "").strip()
+        if not name or name == default_name:
+            return engine
+        return await asyncio.to_thread(_engine_for_sync, name)
+
     # Root for GET /folders browsing + relative folder captioning (UI folder picker).
     default_source = source_root or os.environ.get("LENS_SOURCE_PATH")
     if read_only is None:
@@ -688,7 +695,7 @@ def create_app(
     # OpenAI-compatible /v1 endpoints (Frigate GenAI provider).
     # Always mounted — Frigate's genai block uses POST /v1/chat/completions.
     # Engine kwargs are forwarded so model_dir / florence_model_id are honoured.
-    app.include_router(create_openai_router(**kwargs), prefix="/v1")
+    app.include_router(create_openai_router(allowed_backends=allowed, **kwargs), prefix="/v1")
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -778,13 +785,14 @@ def create_app(
             # A shorthand (hybrid:ram+florence2) or an injected instance: list
             # the default too, so a picker can always show what is active.
             b = engine.backend
+            available, reason = await asyncio.to_thread(lambda: (b.is_available(), b.availability_reason()))
             backends[default_name] = {
                 "name": default_name,
                 "kind": getattr(getattr(b, "kind", None), "value", "composite"),
                 "style": getattr(b, "style", None),
                 "requires_gpu": getattr(b, "requires_gpu", False),
-                "available": b.is_available(),
-                "reason": b.availability_reason(),
+                "available": available,
+                "reason": reason,
             }
         for name, info in backends.items():
             info["allowed"] = allowed is None or name in allowed
@@ -810,7 +818,7 @@ def create_app(
         ``backend`` picks the caption backend for this request (default: the
         server's); an unknown/unavailable/disallowed one is a 400.
         """
-        eng = _engine_for(backend)
+        eng = await _engine_for(backend)
         data = await file.read()
         try:
             Image.open(io.BytesIO(data)).convert("RGB")
@@ -844,7 +852,7 @@ def create_app(
         """
         if not req.image_url.lower().startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="image_url must be an http(s):// URL")
-        eng = _engine_for(req.backend)
+        eng = await _engine_for(req.backend)
         try:
             result = await asyncio.to_thread(
                 eng.caption,
@@ -893,7 +901,7 @@ def create_app(
         (``{name: reason}``) rather than failing the whole request, so one
         un-recorded image doesn't discard the captions that did resolve (#48).
         """
-        eng = _engine_for(backend)
+        eng = await _engine_for(backend)
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
@@ -945,7 +953,7 @@ def create_app(
         prose_bias: float | None = Form(None),
     ) -> StreamingResponse:
         """Caption uploaded images, streaming one NDJSON result line per image."""
-        eng = _engine_for(backend)  # before streaming starts, so a bad name is a 400
+        eng = await _engine_for(backend)  # before streaming starts, so a bad name is a 400
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
@@ -956,6 +964,8 @@ def create_app(
                 continue
             payloads.append(data)
             names.append(f.filename or "image")
+        # As in /caption/batch: duplicate filenames get distinct line names.
+        names = _unique_names(names)
 
         async def _ndjson():
             """Yield one JSON line per captioned image, running inference off the event loop."""
@@ -1024,7 +1034,7 @@ def create_app(
         resolves outside it is a per-row error, never read or written.
         """
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
-        eng = _engine_for(backend)
+        eng = await _engine_for(backend)
         source = _confine_folder(default_source, ".")  # 400 when no source root is configured
         rows = _parse_manifest(await manifest.read())
         root = _manifest_export_root(default_source, export_root)
@@ -1085,7 +1095,7 @@ def create_app(
         to each by default.
         """
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
-        eng = _engine_for(backend)
+        eng = await _engine_for(backend)
         source = _confine_folder(default_source, ".")  # 400 when no source root is configured
         rows = _parse_manifest(await manifest.read())
         root = _manifest_export_root(default_source, export_root)
@@ -1165,7 +1175,7 @@ def create_app(
         ``/caption/manifest``.
         """
         _refuse_if_read_only(req.write_sidecar or req.write_xmp, "sidecar writes")
-        eng = _engine_for(req.backend)
+        eng = await _engine_for(req.backend)
         root = _confine_folder(default_source, req.folder)
         if not root.is_dir():
             raise HTTPException(status_code=400, detail=f"not a directory: {req.folder}")
@@ -1389,7 +1399,7 @@ def create_app(
                 ),
             )
         _refuse_if_read_only(req.write_back, "Immich write-back")
-        eng = _engine_for(req.backend)
+        eng = await _engine_for(req.backend)
         url, api_key = _immich_config()
         source = ImmichSource(url, api_key)
         sink = ImmichSink(url, api_key) if req.write_back else None

@@ -90,6 +90,9 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
         if url.startswith("data:"):
             # Strip the MIME header — everything after the comma is base64
             _header, _, b64 = url.partition(",")
+            # Some clients line-wrap base64 (MIME style); strict validation below
+            # would reject that whitespace, so drop it first.
+            b64 = "".join(b64.split())
             if len(b64) > _MAX_B64_CHARS:
                 _openai_error(
                     413,
@@ -180,7 +183,7 @@ class _ChatCompletionRequest(BaseModel):
 # ── Router factory ─────────────────────────────────────────────────────────────
 
 
-def create_openai_router(**engine_kwargs: Any) -> APIRouter:
+def create_openai_router(*, allowed_backends: set[str] | None = None, **engine_kwargs: Any) -> APIRouter:
     """Return an APIRouter with the OpenAI-compatible /v1 endpoints.
 
     Mount at ``/v1`` in the parent FastAPI app:
@@ -189,9 +192,15 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
 
     Any ``engine_kwargs`` (e.g. ``model_dir``, ``florence_model_id``) are
     forwarded to every ArgusLens engine created by this router.
+    *allowed_backends* (the server's ``ARGUS_ALLOWED_BACKENDS`` pin, ``None`` =
+    no pin) limits the models offered and accepted to those whose backend is
+    allowed, so /v1 cannot load a model the native endpoints refuse.
     """
     router = APIRouter(tags=["openai-compat"])
     pool = _EnginePool(**engine_kwargs)
+    models = {
+        mid: backend for mid, backend in _MODEL_MAP.items() if allowed_backends is None or backend in allowed_backends
+    }
 
     @router.get("/models")
     async def list_models() -> dict[str, Any]:
@@ -205,7 +214,7 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
                     "created": 0,
                     "owned_by": "argus-lens",
                 }
-                for mid in _MODEL_MAP
+                for mid in models
             ],
         }
 
@@ -221,10 +230,10 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
         if req.stream:
             _openai_error(400, "Streaming is not supported", "invalid_request_error", "stream_not_supported")
 
-        if req.model not in _MODEL_MAP:
+        if req.model not in models:
             _openai_error(
                 404,
-                f"Model '{req.model}' not found. Available: {list(_MODEL_MAP)}",
+                f"Model '{req.model}' not found. Available: {list(models)}",
                 "invalid_request_error",
                 "model_not_found",
             )

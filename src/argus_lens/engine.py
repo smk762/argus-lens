@@ -173,7 +173,9 @@ def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, I
     if isinstance(source, bytes):
         asset = ImageAsset(name="bytes", sha256=hashlib.sha256(source).hexdigest(), data=source)
         return asset, Image.open(io.BytesIO(source)).convert("RGB")
-    if isinstance(source, str) and source.startswith(("http://", "https://")):
+    # Case-insensitive like the scheme itself (and /caption/url's check): "HTTP://..." is a
+    # URL, never a server-side path.
+    if isinstance(source, str) and source.lower().startswith(("http://", "https://")):
         from argus_lens.url_fetch import fetch_url
 
         content = fetch_url(source)

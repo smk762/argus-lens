@@ -85,3 +85,35 @@ def test_invalid_base64_data_uri_is_400() -> None:
     resp = TestClient(app).post("/v1/chat/completions", json=_body("data:image/png;base64,@@not*base64@@"))
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"]["code"] == "invalid_image"
+
+
+def test_line_wrapped_base64_data_uri_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MIME-style line breaks inside the base64 payload are tolerated, as before strict validation."""
+    from argus_lens.types import CaptionResult
+
+    class _Engine:
+        """Engine stand-in returning a fixed caption."""
+
+        def caption(self, pil):
+            """Return a fixed result."""
+            return CaptionResult(final_caption="ok")
+
+    monkeypatch.setattr(compat._EnginePool, "get", lambda self, model_id: _Engine())
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(buf, format="PNG")
+    b64 = base64.encodebytes(buf.getvalue()).decode()  # wraps at 76 chars with "\n"
+    app = FastAPI()
+    app.include_router(compat.create_openai_router(), prefix="/v1")
+    resp = TestClient(app).post("/v1/chat/completions", json=_body("data:image/png;base64," + b64))
+    assert resp.status_code == 200, resp.text
+
+
+def test_allowed_backends_pin_limits_v1_models() -> None:
+    """With a backend pin, /v1 neither lists nor accepts a model whose backend is not allowed."""
+    app = FastAPI()
+    app.include_router(compat.create_openai_router(allowed_backends={"hybrid"}), prefix="/v1")
+    client = TestClient(app)
+    assert [m["id"] for m in client.get("/v1/models").json()["data"]] == ["argus-hybrid"]
+    resp = client.post("/v1/chat/completions", json=_body("data:image/png;base64,AAAA"))
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"]["code"] == "model_not_found"

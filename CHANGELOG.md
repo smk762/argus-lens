@@ -26,6 +26,11 @@ Breaking changes, most likely to bite first:
 - **Replay**: a sha256 with no recording is a 404 (`ReplayMiss`), with no fallback to the URI.
 
 ### Security
+- Release-review fixes (#117):
+  - `ARGUS_ALLOWED_BACKENDS` / `--allow-backend` now also pins `/v1`: a model whose backend is
+    not allowed is neither listed nor accepted (404 `model_not_found`).
+  - URL fetches have a 120 s total deadline, so a host trickling bytes can't hold a worker.
+  - An upper-case `HTTP(S)://` URL is fetched under the SSRF policy, never read as a file path.
 - **Audit hardening** (ai-code-auditor nightly, 43 packs):
   - `/caption/url` no longer echoes raw fetch errors. Transport failures say "could not fetch
     image_url" (and are logged), HTTP errors give only the status code, and unexpected
@@ -60,6 +65,9 @@ Breaking changes, most likely to bite first:
   the directory raises `ValueError` before anything is written.
 
 ### Fixed
+- Release-review fixes (#117): a first request for another `backend` builds and probes it off
+  the event loop; `/caption/stream` names duplicate filenames `a.png#2` like `/caption/batch`;
+  `/v1` accepts line-wrapped base64 again.
 - `import argus_lens` works in a source tree that was never built or installed (no generated
   `_version.py`). The version falls back to the installed metadata, then `0.0.0+unknown`. This
   lets the ai-code-auditor's `validate_patch` sandbox run the test suite instead of lint only.

@@ -247,3 +247,21 @@ def test_falls_back_to_next_checked_address(net):
     _, pil = _load_image("https://example.com/a.png")
     assert pil.size == (64, 64)
     assert net.seen == [("https://93.184.215.14/a.png", "example.com", "example.com")]
+
+
+def test_uppercase_scheme_is_fetched_as_a_url(net):
+    """``HTTPS://`` is a URL under the SSRF policy, not a server-side path."""
+    net.dns["example.com"] = ["93.184.215.14"]
+    net.routes["https://example.com/a.png"] = httpx.Response(200, content=_PNG)
+    asset, _ = _load_image("HTTPS://example.com/a.png")
+    assert asset.uri == "HTTPS://example.com/a.png"
+    assert net.seen and net.seen[0][1] == "example.com"
+
+
+def test_total_deadline_caps_a_slow_body(net, monkeypatch):
+    """A body still arriving after TOTAL_TIMEOUT_S is refused (per-read timeouts alone never fire)."""
+    net.dns["example.com"] = ["93.184.215.14"]
+    net.routes["https://example.com/slow.png"] = httpx.Response(200, content=_PNG)
+    monkeypatch.setattr(url_fetch, "TOTAL_TIMEOUT_S", -1.0)
+    with pytest.raises(url_fetch.URLRefused, match="longer than"):
+        url_fetch.fetch_url("https://example.com/slow.png")
