@@ -633,12 +633,15 @@ class ArgusLens:
             )
         )
 
-        loaded = [_load_image(img) for img in images]
-        total = len(loaded)
+        # Decode one image at a time (like caption_stream): pre-decoding the
+        # whole batch would hold every full-size RGB image in memory at once,
+        # which a large /caption/folder walk can't afford.
+        total = len(images)
         results: dict[str, CaptionResult] = {}
         caption_cache: dict[str, tuple[str, str]] = {}
 
-        for idx, (asset, pil) in enumerate(loaded):
+        for idx, source in enumerate(images):
+            asset, pil = _load_image(source)
             name = names[idx] if names and idx < len(names) else asset.name
 
             if replay:

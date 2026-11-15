@@ -641,3 +641,12 @@ def test_manifest_export_root_outside_source_root_is_a_400(tmp_path: Path) -> No
     resp = _post_manifest(client, [_v2_row("01.jpg", "")], export_root=str(export))
     assert resp.status_code == 400
     assert not (export / "01.txt").exists()
+
+
+def test_parse_manifest_keeps_rows_with_unicode_line_separators() -> None:
+    """U+2028/U+2029/U+0085 inside a JSON string don't split a JSONL row (only '\\n' does)."""
+    from argus_lens.server import _parse_manifest
+
+    rows = [{"rel_path": f"a{sep}b.jpg"} for sep in ("\u2028", "\u2029", "\x85")]
+    raw = ("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\r\n").encode("utf-8")
+    assert _parse_manifest(raw) == rows

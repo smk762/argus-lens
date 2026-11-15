@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import io
 import threading
 import time
@@ -66,6 +67,12 @@ def _assemble_content(result: CaptionResult) -> str:
 
 # ── Image extraction ───────────────────────────────────────────────────────────
 
+# Largest decoded image accepted inline (matches url_fetch.MAX_BYTES). The
+# base64 text is checked against this before decoding, so an oversized payload
+# is refused without allocating its decoded copy.
+MAX_IMAGE_BYTES = 50 * 1024 * 1024
+_MAX_B64_CHARS = 4 * ((MAX_IMAGE_BYTES + 2) // 3)
+
 
 def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
     """Return raw image bytes from an OpenAI-format message content list.
@@ -83,7 +90,24 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
         if url.startswith("data:"):
             # Strip the MIME header — everything after the comma is base64
             _header, _, b64 = url.partition(",")
-            return base64.b64decode(b64)
+            if len(b64) > _MAX_B64_CHARS:
+                _openai_error(
+                    413,
+                    f"Inline image is larger than {MAX_IMAGE_BYTES} bytes",
+                    "invalid_request_error",
+                    "image_too_large",
+                    param="messages",
+                )
+            try:
+                return base64.b64decode(b64, validate=True)
+            except binascii.Error:
+                _openai_error(
+                    400,
+                    "Image data URI is not valid base64",
+                    "invalid_request_error",
+                    "invalid_image",
+                    param="messages",
+                )
         if url.startswith(("http://", "https://")):
             _openai_error(
                 400,
@@ -221,7 +245,9 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
             _openai_error(400, f"Invalid image data: {exc}", "invalid_request_error", "invalid_image")
 
         try:
-            engine = pool.get(req.model)
+            # First use constructs the engine (backend imports); keep that
+            # off the event loop too, not just the caption call.
+            engine = await asyncio.to_thread(pool.get, req.model)
             result: CaptionResult = await asyncio.to_thread(engine.caption, pil)
         except Exception as exc:
             _openai_error(503, f"Caption backend error: {exc}", "server_error", "backend_unavailable")
