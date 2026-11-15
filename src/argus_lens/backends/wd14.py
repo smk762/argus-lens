@@ -40,7 +40,11 @@ def _model_filename(repo: str) -> str:
 
 
 def _download_model(dest_dir: Path, repo: str = _HF_REPO) -> None:
-    """Download WD14 model files for *repo* from HuggingFace if not present."""
+    """Download WD14 model files for *repo* from HuggingFace if not present.
+
+    The tag CSV has a fixed name, so *dest_dir* must hold *repo* alone: callers pass
+    the shared cache root only for the default repo, and a per-repo subdir otherwise.
+    """
     from argus_lens.backends._download import stream_download
 
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -64,8 +68,10 @@ class WD14Backend(LocalBackend):
     *model_repo* (or ``WD14_MODEL_REPO``) picks the tagger; the default is
     ``SmilingWolf/wd-vit-tagger-v3`` (see ``WD14_V3_REPOS``).
 
-    Search order for model directory:
-    1. *model_dir* constructor argument
+    Search order for model directory (each is checked for a ``<repo-name>/``
+    subdir first, then flat):
+    1. *model_dir* constructor argument (auto-downloads into
+       ``<model_dir>/<repo-name>/``, never over files already there)
     2. ``WD14_MODEL_DIR`` environment variable
     3. ``~/.cache/wd14_tagger/`` for the default model, or
        ``~/.cache/wd14_tagger/<repo-name>/`` for any other (auto-downloads
@@ -102,17 +108,26 @@ class WD14Backend(LocalBackend):
         dirs.append(self._default_cache_dir())
         return dirs
 
+    def _repo_dirname(self) -> str:
+        """Per-repo subdirectory name (the ONNX filename without its suffix)."""
+        return self._model_filename.removesuffix(".onnx")
+
     def _default_cache_dir(self) -> Path:
         """Auto-download location: the shared cache root, or a per-repo subdir."""
         if self._repo == _HF_REPO:
             return _DEFAULT_CACHE_DIR
-        return _DEFAULT_CACHE_DIR / self._model_filename.removesuffix(".onnx")
+        return _DEFAULT_CACHE_DIR / self._repo_dirname()
 
     def _find_model(self) -> Path | None:
-        """Return the first existing model file among the search dirs, or None."""
+        """Return the first existing model file among the search dirs, or None.
+
+        Each dir is checked for a ``<repo-name>/`` subdir (where downloads into a
+        caller-supplied dir land) before the flat layout.
+        """
         for d in self._search_dirs():
-            if (d / self._model_filename).exists():
-                return d / self._model_filename
+            for candidate in (d / self._repo_dirname() / self._model_filename, d / self._model_filename):
+                if candidate.exists():
+                    return candidate
         return None
 
     def _ensure_model(self) -> Path:
@@ -121,13 +136,19 @@ class WD14Backend(LocalBackend):
         if model_path is not None:
             return model_path
 
-        target_dir = self._model_dir or self._default_cache_dir()
-        # The model and tag CSV must stay a matched pair: when the model is
-        # missing (fresh install or a version bump renamed it), drop any CSV
-        # left over from a previous model so both are re-downloaded together.
-        stale_csv = target_dir / _TAGS_FILENAME
-        if stale_csv.exists():
-            stale_csv.unlink()
+        if self._model_dir is not None:
+            # A caller-supplied dir may already hold another model and its CSV:
+            # download into a per-repo subdir and never delete or overwrite there.
+            target_dir = self._model_dir / self._repo_dirname()
+        else:
+            target_dir = self._default_cache_dir()
+            # The model and tag CSV must stay a matched pair: when the model is
+            # missing (fresh install or a version bump renamed it), drop any CSV
+            # left over from a previous model so both are re-downloaded together.
+            # Safe only here, where the cache dir holds this repo alone.
+            stale_csv = target_dir / _TAGS_FILENAME
+            if stale_csv.exists():
+                stale_csv.unlink()
         _download_model(target_dir, self._repo)
 
         model_path = target_dir / self._model_filename

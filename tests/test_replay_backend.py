@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import random
 
 import pytest
 from PIL import Image
@@ -117,6 +118,13 @@ def test_lookup_falls_back_to_uri_when_sha_absent() -> None:
     assert result.final_caption == _RECORDED_ROW[0]
 
 
+def test_lookup_sha_miss_does_not_fall_back_to_uri() -> None:
+    """A hash with no recording is a miss even when its uri has one: the file changed at that path."""
+    backend = _backend_with({("uri", "file:///x.jpg"): ("caption of the old content",) + _RECORDED_ROW[1:]})
+
+    assert backend.lookup(sha256="b" * 64, uri="file:///x.jpg") is None
+
+
 def test_lookup_prefers_sha_over_uri() -> None:
     """When both keys match, the sha256 row wins over the uri row."""
     sha = "a" * 64
@@ -211,6 +219,35 @@ def test_engine_batch_replays_each_by_name() -> None:
     assert results["blue.png"].final_caption == "a cold blue sky"
 
 
+def _truncated_jpeg() -> bytes:
+    """A JPEG with a valid header but truncated scan data.
+
+    It passes ``Image.verify()`` (a header-only check) yet raises on a full
+    decode — the case that regressed the upload endpoints to HTTP 500 when they
+    validated with ``verify()`` instead of a real decode.
+
+    The image is noise so the entropy-coded scan dominates the file, and the cut
+    is made relative to the scan data (after the SOS segment): cutting a flat
+    image at half its length lands inside the Huffman tables, which fails at
+    ``Image.open()`` and so can't tell ``verify()`` from a real decode.
+    """
+    noise = random.Random(0).randbytes(64 * 64 * 3)
+    buf = io.BytesIO()
+    Image.frombytes("RGB", (64, 64), noise).save(buf, format="JPEG", quality=95)
+    full = buf.getvalue()
+    sos = full.index(b"\xff\xda")
+    scan_start = sos + 2 + int.from_bytes(full[sos + 2 : sos + 4], "big")
+    return full[: scan_start + (len(full) - scan_start) // 2]
+
+
+def test_truncated_jpeg_fixture_passes_verify_but_fails_decode() -> None:
+    """Guard the fixture: header-valid (``verify()`` passes) yet a full decode raises."""
+    data = _truncated_jpeg()
+    Image.open(io.BytesIO(data)).verify()
+    with pytest.raises(OSError):
+        Image.open(io.BytesIO(data)).load()
+
+
 # -- server wiring ------------------------------------------------------------
 
 pytest.importorskip("fastapi")
@@ -252,19 +289,6 @@ def test_server_caption_rejects_invalid_image() -> None:
     client = _replay_client({})
     resp = client.post("/caption", files={"file": ("x.jpg", b"not an image", "image/jpeg")})
     assert resp.status_code == 400
-
-
-def _truncated_jpeg() -> bytes:
-    """A JPEG with a valid header but truncated scan data.
-
-    It passes ``Image.verify()`` (a header-only check) yet raises on a full
-    decode — the case that regressed the upload endpoints to HTTP 500 when they
-    validated with ``verify()`` instead of a real decode.
-    """
-    buf = io.BytesIO()
-    Image.new("RGB", (64, 64), (30, 60, 90)).save(buf, format="JPEG", quality=95)
-    full = buf.getvalue()
-    return full[: len(full) // 2]
 
 
 def test_server_caption_rejects_truncated_image() -> None:

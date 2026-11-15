@@ -52,7 +52,8 @@ class RamBackend(LocalBackend):
     of a hybrid, where it names the prose model (``hybrid:ram+openai-compat
     --model-id qwen3-vl:8b-instruct``).
 
-    Search order for the checkpoint:
+    Search order for the checkpoint (for a non-default repo, each directory's
+    ``<org>--<name>/`` subdir, so repos sharing a directory never load each other's weights):
     1. *model_dir* constructor argument
     2. ``RAM_MODEL_DIR`` environment variable
     3. ``~/.cache/ram_plus/`` for the default repo, ``~/.cache/ram_plus/<org>--<name>/``
@@ -107,19 +108,28 @@ class RamBackend(LocalBackend):
 
     # -- weights ----------------------------------------------------------
 
+    def _repo_subdir(self) -> str | None:
+        """Per-repo subdirectory (``<org>--<name>``) for a non-default repo; ``None`` for the default one.
+
+        Every repo's checkpoint has the same filename, so only the subdir tells them apart.
+        """
+        if self._repo_id == DEFAULT_MODEL_ID:
+            return None
+        return self._repo_id.strip("/").replace("/", "--")
+
     def _search_dirs(self) -> list[Path]:
-        """Candidate checkpoint directories in priority order."""
-        dirs = [self._model_dir] if self._model_dir else []
+        """Candidate checkpoint directories in priority order, namespaced per repo like the default cache."""
+        roots = [self._model_dir] if self._model_dir else []
         if env_dir := os.environ.get("RAM_MODEL_DIR"):
-            dirs.append(Path(env_dir))
-        dirs.append(self._default_cache_dir())
-        return dirs
+            roots.append(Path(env_dir))
+        roots.append(_DEFAULT_CACHE_DIR)
+        sub = self._repo_subdir()
+        return [root / sub if sub else root for root in roots]
 
     def _default_cache_dir(self) -> Path:
         """Auto-download location: the cache root for the default repo, a per-repo subdir otherwise."""
-        if self._repo_id == DEFAULT_MODEL_ID:
-            return _DEFAULT_CACHE_DIR
-        return _DEFAULT_CACHE_DIR / self._repo_id.strip("/").replace("/", "--")
+        sub = self._repo_subdir()
+        return _DEFAULT_CACHE_DIR / sub if sub else _DEFAULT_CACHE_DIR
 
     def _ensure_checkpoint(self) -> Path:
         """Find the checkpoint on disk, downloading it to the first search dir if missing."""
@@ -135,7 +145,13 @@ class RamBackend(LocalBackend):
 
     def _cache_key(self, device: str) -> str:
         """Registry key: device + checkpoint source, so differently-configured backends never share a model."""
-        source = str(self._model_dir or os.environ.get("RAM_MODEL_DIR") or self._repo_id)
+        model_dir = self._model_dir or os.environ.get("RAM_MODEL_DIR")
+        if not model_dir:
+            source = self._repo_id
+        elif self._repo_subdir():
+            source = f"{model_dir}:{self._repo_id}"
+        else:
+            source = str(model_dir)
         vocab = ("" if self._builtin_vocab else "packs-only") + "".join(f"+{p}" for p in self._vocab_packs)
         return f"ram:{device}:{source}{':' + vocab if vocab else ''}"
 
