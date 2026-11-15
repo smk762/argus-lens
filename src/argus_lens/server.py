@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import os
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ from argus_lens.connectors.base import AssetRef
 from argus_lens.connectors.filesystem import IMAGE_SUFFIXES
 from argus_lens.connectors.immich import ImmichSink, ImmichSource
 from argus_lens.connectors.xmp import XmpSink
-from argus_lens.engine import ArgusLens
+from argus_lens.engine import ArgusLens, _resolve_backend
 from argus_lens.openai_compat import create_openai_router
 from argus_lens.types import (
     BACKEND_TOKEN_BUDGETS,
@@ -60,6 +61,7 @@ class CaptionURLRequest(BaseModel):
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
+    backend: str | None = None
     hybrid_preset: str | None = None
     prose_bias: float | None = None
     prose_enrichment: bool = True
@@ -77,6 +79,7 @@ class CaptionFolderRequest(BaseModel):
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
+    backend: str | None = None
     checkpoint: str | None = None
     hybrid_preset: str | None = None
     prose_bias: float | None = None
@@ -101,6 +104,7 @@ class ImmichCaptionRequest(BaseModel):
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
+    backend: str | None = None
     checkpoint: str | None = None
     hybrid_preset: str | None = None
     prose_bias: float | None = None
@@ -503,6 +507,7 @@ def create_app(
     source_root: str | None = None,
     cors_allow_any: bool = False,
     read_only: bool | None = None,
+    allowed_backends: list[str] | None = None,
     **kwargs: Any,
 ) -> FastAPI:
     """Create a FastAPI application for image captioning.
@@ -518,6 +523,13 @@ def create_app(
     write: ``.txt``/``.xmp`` sidecars, Immich pulls to disk and Immich
     write-back are a 403, while captions returned in the response still work.
     ``/health`` advertises it so a UI can disable those controls up front.
+
+    *default_backend* captions every request that names no ``backend``. A
+    caption request may pick another one (``backend`` field, #107); it is
+    built lazily and kept. *allowed_backends* (or ``ARGUS_ALLOWED_BACKENDS``,
+    comma-separated) pins the names a request may pick (the default is always
+    allowed), so a shared/public deployment can stop clients loading a
+    second model onto its GPU; unset means any registered backend.
     """
 
     app = FastAPI(
@@ -573,6 +585,50 @@ def create_app(
 
         recorder = recorder_from_env()  # off unless LENS_RECORD_LINEAGE=1 (+ CORTEX_PG_URL)
     engine = ArgusLens(backend=default_backend, recorder=recorder, **kwargs)
+    # The name clients use for the default: the configured string, or the
+    # instance's own name when an embedder passed a backend object.
+    default_name = default_backend if isinstance(default_backend, str) else engine.backend.name
+    if allowed_backends is None and (env_allowed := os.environ.get("ARGUS_ALLOWED_BACKENDS", "").strip()):
+        allowed_backends = [b.strip() for b in env_allowed.split(",") if b.strip()]
+    # None = any registered backend may be requested; a list pins the set (the
+    # default is always usable, listed or not).
+    allowed: set[str] | None = {*allowed_backends, default_name} if allowed_backends is not None else None
+    # Per-request backends (#107): one engine per name, built on first request
+    # and kept (each gets the idle-unload reaper, so a one-off switch frees its
+    # VRAM again). Same recorder, so a switched-to backend's captions still
+    # land on the lineage tape.
+    engines: dict[str, ArgusLens] = {default_name: engine}
+    engines_lock = threading.Lock()
+
+    def _engine_for(backend: str | None) -> ArgusLens:
+        """Return the engine for a requested *backend* (``None``/empty = the default).
+
+        A name that is unknown, not allowed on this server, or whose backend
+        reports itself unavailable is a 400 carrying the reason — never a
+        silent fall-back to another backend.
+        """
+        name = (backend or "").strip()
+        if not name or name == default_name:
+            return engine
+        if allowed is not None and name not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"backend {name!r} is not allowed on this server (allowed: {', '.join(sorted(allowed))})",
+            )
+        with engines_lock:
+            if name in engines:
+                return engines[name]
+            try:
+                resolved = _resolve_backend(name, **kwargs)
+            except Exception as exc:  # unknown name, bad hybrid spec, constructor failure
+                raise HTTPException(status_code=400, detail=f"backend {name!r} is unusable: {exc}") from exc
+            if not resolved.is_available():
+                reason = resolved.availability_reason() or "backend reports itself unavailable"
+                raise HTTPException(status_code=400, detail=f"backend {name!r} is not available: {reason}")
+            engines[name] = ArgusLens(backend=resolved, recorder=recorder, **kwargs)
+            logger.info("backend_engine_created", backend=name)
+            return engines[name]
+
     # Root for GET /folders browsing + relative folder captioning (UI folder picker).
     default_source = source_root or os.environ.get("LENS_SOURCE_PATH")
     if read_only is None:
@@ -604,17 +660,27 @@ def create_app(
         Immich pulls and write-back are refused), ``immich`` (``IMMICH_URL`` and
         ``IMMICH_API_KEY`` are set) and ``immich_write_back`` (Immich is
         configured and the server is not read-only).
+
+        ``backend`` names the default caption backend (what a request without
+        ``backend`` uses) and ``allowed_backends`` the names a request may pick
+        (``null`` = any registered backend). ``gpu`` describes the default
+        engine; ``gpu.resident`` lists every backend whose model is loaded,
+        including ones a request switched to (#107).
         """
         immich = bool(os.environ.get("IMMICH_URL") and os.environ.get("IMMICH_API_KEY"))
+        gpu = await asyncio.to_thread(engine.vram_status)
+        gpu["resident"] = sorted(name for name, eng in list(engines.items()) if eng.loaded)
         return {
             "status": "ok",
             "service": "argus-lens",
             "version": __version__,
+            "backend": default_name,
+            "allowed_backends": sorted(allowed) if allowed is not None else None,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
             "read_only": read_only,
             "immich": immich,
             "immich_write_back": immich and not read_only,
-            "gpu": await asyncio.to_thread(engine.vram_status),
+            "gpu": gpu,
         }
 
     @app.post("/admin/unload")
@@ -624,9 +690,16 @@ def create_app(
         The model reloads lazily on the next caption. Set ``ARGUS_ADMIN_TOKEN``
         to require ``Authorization: Bearer <token>`` (otherwise the endpoint is open —
         keep it off untrusted networks to avoid unload/reload-thrash abuse).
+        Every engine is unloaded, including backends a request switched to;
+        ``unloaded`` is true when any of them freed a model.
         """
         _require_admin_token(authorization)
-        unloaded = await asyncio.to_thread(engine.unload)
+
+        def _unload_all() -> bool:
+            """Unload each pooled engine; True if any was resident."""
+            return any([eng.unload() for eng in list(engines.values())])
+
+        unloaded = await asyncio.to_thread(_unload_all)
         return {"unloaded": unloaded, "gpu": await asyncio.to_thread(engine.vram_status)}
 
     @app.get("/profiles")
@@ -649,8 +722,34 @@ def create_app(
 
     @app.get("/backends")
     async def list_backends() -> dict[str, Any]:
-        """List all registered captioning backends with availability status."""
-        return {"backends": engine.available_backends()}
+        """List the registered captioning backends with availability status.
+
+        ``default`` names the backend a caption request without ``backend``
+        uses; each entry's ``allowed`` says whether a request may pick it on
+        this server (``ARGUS_ALLOWED_BACKENDS``), and ``allowed`` at the top is
+        that list (``null`` = no pin). A request for a backend that is not
+        ``available`` or not ``allowed`` is refused with 400 (#107).
+        """
+        backends = await asyncio.to_thread(engine.available_backends)
+        if default_name not in backends:
+            # A shorthand (hybrid:ram+florence2) or an injected instance: list
+            # the default too, so a picker can always show what is active.
+            b = engine.backend
+            backends[default_name] = {
+                "name": default_name,
+                "kind": getattr(getattr(b, "kind", None), "value", "composite"),
+                "style": getattr(b, "style", None),
+                "requires_gpu": getattr(b, "requires_gpu", False),
+                "available": b.is_available(),
+                "reason": b.availability_reason(),
+            }
+        for name, info in backends.items():
+            info["allowed"] = allowed is None or name in allowed
+        return {
+            "default": default_name,
+            "allowed": sorted(allowed) if allowed is not None else None,
+            "backends": backends,
+        }
 
     @app.post("/caption")
     async def caption_image(
@@ -659,10 +758,16 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        backend: str | None = Form(None),
         hybrid_preset: str | None = Form(None),
         prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
-        """Caption a single uploaded image and return the structured result."""
+        """Caption a single uploaded image and return the structured result.
+
+        ``backend`` picks the caption backend for this request (default: the
+        server's); an unknown/unavailable/disallowed one is a 400.
+        """
+        eng = _engine_for(backend)
         data = await file.read()
         try:
             Image.open(io.BytesIO(data)).convert("RGB")
@@ -673,7 +778,7 @@ def create_app(
         # replay lookup on the file's sha256 — the content id cortex records.
         try:
             result = await asyncio.to_thread(
-                engine.caption,
+                eng.caption,
                 data,
                 trigger_word=trigger_word,
                 target_style=target_style,
@@ -689,9 +794,10 @@ def create_app(
     @app.post("/caption/url")
     async def caption_url(req: CaptionURLRequest) -> dict[str, Any]:
         """Caption an image from a URL (JSON body, no file upload needed)."""
+        eng = _engine_for(req.backend)
         try:
             result = await asyncio.to_thread(
-                engine.caption,
+                eng.caption,
                 req.image_url,
                 trigger_word=req.trigger_word,
                 target_style=req.target_style,
@@ -714,6 +820,7 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        backend: str | None = Form(None),
         hybrid_preset: str | None = Form(None),
         prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
@@ -723,6 +830,7 @@ def create_app(
         (``{name: reason}``) rather than failing the whole request, so one
         un-recorded image doesn't discard the captions that did resolve (#48).
         """
+        eng = _engine_for(backend)
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
@@ -743,7 +851,7 @@ def create_app(
         # Original bytes (not decoded PILs) so replay can key on each file's
         # sha256; explicit names keep results from collapsing under one key.
         results = await asyncio.to_thread(
-            engine.caption_batch,
+            eng.caption_batch,
             payloads,
             names=names,
             on_miss=_record_miss,
@@ -766,10 +874,12 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        backend: str | None = Form(None),
         hybrid_preset: str | None = Form(None),
         prose_bias: float | None = Form(None),
     ) -> StreamingResponse:
         """Caption uploaded images, streaming one NDJSON result line per image."""
+        eng = _engine_for(backend)  # before streaming starts, so a bad name is a 400
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
@@ -784,7 +894,7 @@ def create_app(
         async def _ndjson():
             """Yield one JSON line per captioned image, running inference off the event loop."""
             # Original bytes so replay can key on each file's sha256.
-            stream = engine.caption_stream(
+            stream = eng.caption_stream(
                 payloads,
                 names=names,
                 trigger_word=trigger_word,
@@ -821,6 +931,7 @@ def create_app(
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
         include_buckets: bool = Form(False),
+        backend: str | None = Form(None),
     ) -> dict[str, Any]:
         """Batch-caption an argus-curator JSONL manifest.
 
@@ -843,6 +954,7 @@ def create_app(
         ``manifest_version`` outside the 1.x/2.x majors are rejected with 400.
         """
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
+        eng = _engine_for(backend)
         rows = _parse_manifest(await manifest.read())
         root = _manifest_export_root(export_root)
 
@@ -853,7 +965,7 @@ def create_app(
             errors: list[dict[str, Any]] = []
             for row in rows:
                 outcome = _caption_manifest_row(
-                    engine,
+                    eng,
                     row,
                     trigger_word=trigger_word,
                     write_sidecar=write_sidecar,
@@ -886,6 +998,7 @@ def create_app(
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
         include_buckets: bool = Form(False),
+        backend: str | None = Form(None),
     ) -> StreamingResponse:
         """Streaming variant of /caption/manifest for live progress.
 
@@ -900,6 +1013,7 @@ def create_app(
         to each by default.
         """
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
+        eng = _engine_for(backend)
         rows = _parse_manifest(await manifest.read())
         root = _manifest_export_root(export_root)
         total = len(rows)
@@ -915,7 +1029,7 @@ def create_app(
                 # stream flushes each line promptly.
                 outcome = await asyncio.to_thread(
                     _caption_manifest_row,
-                    engine,
+                    eng,
                     row,
                     trigger_word=trigger_word,
                     write_sidecar=write_sidecar,
@@ -977,6 +1091,7 @@ def create_app(
         ``/caption/manifest``.
         """
         _refuse_if_read_only(req.write_sidecar or req.write_xmp, "sidecar writes")
+        eng = _engine_for(req.backend)
         root = _confine_folder(default_source, req.folder)
         if not root.is_dir():
             raise HTTPException(status_code=400, detail=f"not a directory: {req.folder}")
@@ -990,7 +1105,7 @@ def create_app(
             errors: list[dict[str, Any]] = []
             for p in images:
                 outcome = _caption_and_write(
-                    engine,
+                    eng,
                     str(p),
                     str(p.relative_to(root)),
                     trigger_word=req.trigger_word,
@@ -1200,6 +1315,7 @@ def create_app(
                 ),
             )
         _refuse_if_read_only(req.write_back, "Immich write-back")
+        eng = _engine_for(req.backend)
         url, api_key = _immich_config()
         source = ImmichSource(url, api_key)
         sink = ImmichSink(url, api_key) if req.write_back else None
@@ -1239,7 +1355,7 @@ def create_app(
                 # fetch_original() + a decode, so this is identical for every
                 # other backend but keeps the replay backend reachable here (#47).
                 data = source.fetch_original(ref)
-                result = engine.caption(
+                result = eng.caption(
                     data,
                     trigger_word=req.trigger_word,
                     target_style=req.target_style,

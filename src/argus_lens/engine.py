@@ -283,6 +283,11 @@ class ArgusLens:
         """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
 
+    @property
+    def loaded(self) -> bool:
+        """True while the backend's model is resident (loaded and not yet unloaded)."""
+        return self._loaded
+
     def unload(self) -> bool:
         """Release the backend's model/resources and free the CUDA cache (#37).
 
@@ -826,12 +831,15 @@ class ArgusLens:
                     "available": False,
                     "reason": str(exc),
                 }
+        # The default hybrid is wd14 + florence2: available only when both are.
+        stages = [result.get("wd14", {}), result.get("florence2", {})]
+        reasons = [s.get("reason") for s in stages if not s.get("available") and s.get("reason")]
         result["hybrid"] = {
             "name": "hybrid",
             "kind": "composite",
             "style": "photo",
             "requires_gpu": False,
-            "available": True,
-            "reason": None,
+            "available": all(s.get("available") for s in stages),
+            "reason": "; ".join(reasons) or None,
         }
         return result

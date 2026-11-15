@@ -436,6 +436,12 @@ def serve(
     read_only: bool = Option(
         False, "--read-only", help="Refuse sidecar/XMP writes, Immich pulls and write-back (or LENS_READ_ONLY=1)"
     ),
+    allow_backend: list[str] = Option(
+        [],
+        "--allow-backend",
+        help="Backend a caption request may pick (repeatable; the default is always allowed; "
+        "or ARGUS_ALLOWED_BACKENDS). Unset: any registered backend",
+    ),
 ) -> None:
     """Start the Argus Lens micro-server (FastAPI).
 
@@ -463,6 +469,7 @@ def serve(
         cors_allow_any=cors_any,
         source_root=source_root,
         read_only=read_only or None,
+        allowed_backends=allow_backend or None,
     )
     uvicorn.run(app, host=host, port=port)
 
