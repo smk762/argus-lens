@@ -141,14 +141,16 @@ class ReplayBackend(CaptionBackend):
     def lookup(self, *, sha256: str | None = None, uri: str | None = None) -> CaptionResult | None:
         """Return the recorded caption for an asset, or ``None`` if absent.
 
-        Resolves by ``source_asset.sha256`` first (the content identity), then by
-        ``uri`` when no hash is available. Returns the latest caption (highest
-        version, newest row) as a fully-populated :class:`CaptionResult`.
+        Resolves by ``source_asset.sha256`` (the content identity), or by ``uri``
+        only when no hash is available. A hash with no recording is a miss: the
+        same uri may hold a caption recorded for different (older) content.
+        Returns the latest caption (highest version, newest row) as a
+        fully-populated :class:`CaptionResult`.
         """
         row = None
         if sha256:
             row = self._query("sha256", sha256)
-        if row is None and uri:
+        elif uri:
             row = self._query("uri", uri)
         if row is None:
             return None

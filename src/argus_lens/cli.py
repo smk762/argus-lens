@@ -251,9 +251,15 @@ def ram_vocab_build(
         writer = DescriptionWriter(base_url=base_url, model_id=model, api_key=api_key)
         typer.echo(f"Writing descriptions for {len(todo)} tag(s) with {writer.model_id} at {writer.base_url} ...")
         try:
-            descriptions.update(
-                writer.describe_all(todo, on_progress=lambda i, n, tag: typer.echo(f"  [{i}/{n}] {tag}"))
-            )
+            writer.describe_all(todo, on_progress=lambda i, n, tag: typer.echo(f"  [{i}/{n}] {tag}"), into=descriptions)
+        except Exception:
+            # Keep the descriptions already paid for: the partial file is valid input, and a
+            # re-run with it only writes the tags still empty.
+            partial = out / "descriptions.partial.json"
+            out.mkdir(parents=True, exist_ok=True)
+            partial.write_text(json.dumps({t: descriptions.get(t, []) for t in parsed.tags}, indent=1), "utf-8")
+            typer.echo(f"Description writing failed; completed tags saved to {partial} (re-run with it).", err=True)
+            raise
         finally:
             writer.close()
         source_info.update(llm=writer.model_id, endpoint=writer.base_url, prompts="upstream")
