@@ -20,6 +20,7 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from argus_lens.assembly.subjects import exact_prose_counts, exact_tag_count
 from argus_lens.assembly.token_budget import estimate_tokens
 from argus_lens.types import BACKEND_TOKEN_BUDGETS, DEFAULT_TOKEN_BUDGET
 
@@ -182,7 +183,7 @@ def _prose_colors_for_noun(clauses: list[list[str]], noun: str) -> set[str]:
 
 
 def tag_prose_contradiction(result: CaptionResult) -> dict:
-    """Count places where the prose contradicts the tags (colour + posture).
+    """Count places where the prose contradicts the tags (colour, posture, headcount).
 
     Returns ``{count, checked, rate, details}``. ``checked`` is how many
     attributes could be compared (present in both signals); ``rate`` is
@@ -219,6 +220,20 @@ def tag_prose_contradiction(result: CaptionResult) -> dict:
             if t.isdisjoint(p):
                 count += 1
                 details.append({"kind": "pose", "subject": "posture", "tags_say": sorted(t), "prose_says": sorted(p)})
+
+    # Headcount contradictions (#87): an exact tag count (``1girl, 1boy``) vs the
+    # one headcount the prose states ("three people"). Several prose headcounts
+    # ("two women and three men") are not comparable to a total, so are skipped.
+    tag_count = exact_tag_count(_split_tags(tags))
+    prose_counts = exact_prose_counts(prose)
+    if tag_count is not None and len(prose_counts) == 1:
+        checked += 1
+        prose_count = prose_counts[0][0]
+        if prose_count != tag_count:
+            count += 1
+            details.append(
+                {"kind": "count", "subject": "people", "tags_say": [str(tag_count)], "prose_says": [str(prose_count)]}
+            )
 
     rate = count / checked if checked else 0.0
     return {"count": count, "checked": checked, "rate": rate, "details": details}

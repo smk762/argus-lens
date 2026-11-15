@@ -227,9 +227,9 @@ argus-lens eval eval/golden.jsonl --clip --baseline baseline.json --fail-on-regr
 
 Metrics: **tag↔prose contradiction** (colour/pose — reference-free), **token-budget adherence**, **redundancy/filler rate**, **tag-coverage recall** (labelled), and optional **CLIPScore**. A labelled golden set is a JSONL manifest — see [eval/README.md](https://github.com/smk762/argus-lens/blob/dev/eval/README.md) for the format.
 
-### Reconciliation (colour/pose fixes)
+### Reconciliation (colour/pose/headcount fixes)
 
-Florence-2 sometimes hallucinates a colour or hand position. Reconciliation finds the attributes where the prose *contradicts* the tags (the same detector the eval harness uses) and asks a pluggable **verifier** to adjudicate each, then rewrites the prose to match:
+Florence-2 sometimes hallucinates a colour or hand position, and a small VLM can state the wrong number of people. Reconciliation finds the attributes where the prose *contradicts* the tags (the same detector the eval harness uses) and asks a pluggable **verifier** to adjudicate each, then rewrites the prose to match:
 
 ```python
 from argus_lens import ArgusLens
@@ -249,6 +249,8 @@ engine = ArgusLens(backend="hybrid", verifier=build_verifier(
 | `openai-compat` | asks a served vision model "what colour is the dress?" | a running OpenAI-compatible endpoint (`httpx` only) |
 | `florence` | grounds the subject to a box, samples the pixels | `[torch]` (reuses Florence-2's unused grounding task) |
 | `molmo` | asks Molmo, which can point at pixels | `[torch]` + ~8–17 GB VRAM |
+
+**Headcount disputes** (`kind: "count"`) need an exact count on both sides: numbered headcount tags (`1girl, 2boys`; not `multiple_girls` or `6+boys`) and exactly one stated headcount in the prose ("six soldiers", "3 people"). `tag-prior` resolves to the tag count, and the VQA verifiers ask "how many people are visible". The rewrite changes only the number ("six soldiers" → "three soldiers") and never to a singular. Photo taggers such as RAM++ emit no headcount tags, so with them a count dispute never fires; use a VQA verifier and a bigger VLM for counts there.
 
 Measure the effect with the eval harness — `--reconcile` runs the verifier before scoring, so the contradiction rate shows the improvement directly:
 
@@ -286,7 +288,7 @@ argus-lens caption ./images/ --recursive --refine-model qwen3:14b   # refine is 
 | `ARGUS_REFINE_IMAGE` | `false` | `true`/`1`/`yes` also sends the image (downscaled to 1024 px) for vision models (`--refine-image`) |
 | `ARGUS_REFINE_REASONING_EFFORT` | `none` | `reasoning_effort` sent with each request. `none` turns off "thinking" on hybrid reasoning models such as Qwen3, which otherwise spend the token budget reasoning and return nothing. Set it empty to never send the parameter. A server that rejects it with HTTP 400 is retried once without it, and it isn't sent again. |
 
-**Tag reconciliation.** Before tags are bucketed, assembly settles tagger output that contradicts itself, the prose or the pixels: `girl`/`boy` next to `woman`/`man` is dropped unless the prose names a child, and `man`+`woman` on a portrait the prose describes as one sex keeps only that one. `beard` becomes `mustache` when the prose names a moustache and no beard (RAM++ has no moustache tag); when the prose says nothing about facial hair, `beard` is kept. On a black-and-white or toned image (a cheap Cb/Cr spread check on the pixels), the bare `black`/`white` tags become one `monochrome` tag. `raw_tags` keeps the tagger's output, and `metadata["reconciled_tags"]`, `metadata["tag_reconcile"]` (`dropped`, `added`, `notes`) and `metadata["monochrome"]` record the result. The refiner sees the reconciled tags, may not reintroduce a dropped term the prose doesn't name, and on a monochrome image rejects colour+noun pairs (`black beard`) that no input states.
+**Tag reconciliation.** Before tags are bucketed, assembly settles tagger output that contradicts itself, the prose or the pixels: `girl`/`boy` next to `woman`/`man` is dropped unless the prose names a child, and `man`+`woman` on a portrait the prose describes as one sex keeps only that one. `beard` becomes `mustache` when the prose names a moustache and no beard (RAM++ has no moustache tag); when the prose says nothing about facial hair, `beard` is kept. `smile`/`laugh`/`grin` is dropped when the prose describes a different expression (tongue out, frowning, crying, a serious face) and never mentions smiling; a prose silent on expression keeps the tag. On a black-and-white or toned image (a cheap Cb/Cr spread check on the pixels), the bare `black`/`white` tags become one `monochrome` tag. `raw_tags` keeps the tagger's output, and `metadata["reconciled_tags"]`, `metadata["tag_reconcile"]` (`dropped`, `added`, `notes`) and `metadata["monochrome"]` record the result. The refiner sees the reconciled tags, may not reintroduce a dropped term the prose doesn't name, and on a monochrome image rejects colour+noun pairs (`black beard`) that no input states.
 
 ### Dataset curation workflow
 

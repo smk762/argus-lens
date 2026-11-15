@@ -327,3 +327,56 @@ def test_refine_allows_black_and_white_medium_after_folding_colour_tags() -> Non
         monochrome=True,
     )
     assert "suppressed terms" not in " ".join(refined.metadata["refine"].get("rejected", {}).get("identity", []))
+
+
+# --- expression (#87) ---
+
+
+def test_smile_dropped_when_prose_shows_tongue_out() -> None:
+    """Einstein sticking his tongue out: RAM++'s smile/laugh tags lose to the prose."""
+    result = reconcile_tags(
+        _tags("man, face, hair, smile, laugh"), "An older man with wild white hair, his tongue extended."
+    )
+    assert result.tags == ["man", "face", "hair"]
+    assert set(result.dropped) == {"smile", "laugh"}
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "A man frowning at the camera.",
+        "A woman with a serious expression.",
+        "A child crying in a stroller.",
+        "A man, not smiling, looks at the camera.",
+    ],
+)
+def test_smile_dropped_for_contrary_expressions(prose: str) -> None:
+    """Frowns, serious faces, tears and an explicit 'not smiling' all override the tag."""
+    assert "smile" not in reconcile_tags(_tags("person, smile"), prose).tags
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "A man smiling broadly, not frowning.",  # prose mentions a smile
+        "A woman laughing with her tongue out.",
+        "A man in a grey coat.",  # silent on expression
+        "",
+    ],
+)
+def test_smile_kept_without_contrary_evidence(prose: str) -> None:
+    """A smile in the prose, or silence, keeps the tag."""
+    assert "smile" in reconcile_tags(_tags("man, smile"), prose).tags
+
+
+def test_dropped_smile_stays_out_of_variants() -> None:
+    """The reconciled-away tag doesn't reach the identity variant."""
+    profile = resolve_target_profile(target_style="photo", target_category="identity", target_backend="sdxl")
+    result = compose_caption_result(
+        trigger_word="",
+        tags="man, smile, mustache",
+        prose="An older man with a mustache sticks his tongue out.",
+        target_profile=profile,
+    )
+    assert "smile" not in result.caption_variants["identity"]
+    assert "smile" in result.metadata["tag_reconcile"]["dropped"]

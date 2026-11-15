@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "none visible" answer.
 
 ### Added
+- **Headcount and expression contradiction checks** (#87).
+  - Tag reconciliation drops a `smile`/`laugh`/`grin` tag when the prose describes a different
+    expression (tongue out, frowning, crying, a serious face) and never mentions smiling. This
+    fixes RAM++ `smile` on the Einstein tongue photo.
+  - The contradiction detector, shared by eval and `reconcile`, gains a `count` dispute: an exact
+    tag headcount against the one headcount the prose states. `tag-prior` and the VQA verifiers
+    adjudicate it, and the rewrite changes only the number ("six soldiers" → "three soldiers").
+  - The prose headcount parser recognises more plural nouns ("soldiers", "figures", "officers",
+    "hikers", …).
 - **Per-request backend selection** (#107, for argus-studio#69). Every caption endpoint takes an
   optional `backend` (form field or JSON key). Omitted, the server default captions, as before.
   An unknown or unavailable backend is a 400 that carries its `reason`; the server never falls
