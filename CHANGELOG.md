@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pack-argus-lens-1da399c6fb). An absolute name, a `..` part, or a sidecar resolving outside
   the directory raises `ValueError` before anything is written.
 
+### Fixed
+- **Refine no longer accepts an empty identity rewrite** (#104). An empty `identity` answer
+  counted as "nothing of this category" and blanked `final_caption`. It is now rejected and
+  retried, and the deterministic variant is kept. Other category variants still accept an empty
+  "none visible" answer.
+
 ### Added
 - **Per-request backend selection** (#107, for argus-studio#69). Every caption endpoint takes an
   optional `backend` (form field or JSON key). Omitted, the server default captions, as before.
@@ -34,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each entry gains `allowed`.
 
 ### Changed
+- **The `openai-compat` default prompt is now `straightforward`** (#104), replacing `detailed`
+  ("Describe this image in detail."). On the 205-photo Lightbox set with `qwen3-vl:2b-instruct`,
+  `detailed` wrote editorial copy (mood words, "This image shows …" openers) at about twice the
+  length. `straightforward` cut that wording about 5x without `grounded`'s rule-following slips.
+  Set `ARGUS_OPENAI_COMPAT_PROMPT=detailed` to keep the old prompt.
+- **Assembly drops editorial prose** (#104). A sentence that is only mood or meta commentary
+  ("The overall atmosphere is peaceful", "This is a detailed description of the image",
+  "The image evokes a sense of …"), and a mood sub-clause ("…, creating a serene scene"), is
+  removed before it reaches any variant and is listed in `removed_phrases`. A sentence that also
+  names a count, colour or position is kept, and prose that is all editorial is left alone.
+  "This is a photograph of …" openers are now stripped like "The image shows …".
 - `GET /backends` wraps the backend map with `default` and `allowed` (the map itself is still
   under `backends`). Its `hybrid` entry now reports wd14 + florence2 availability instead of
   always `available: true`.

@@ -52,7 +52,7 @@ $ argus-lens caption [OPTIONS] PATH
 * `--api-key TEXT`: API key for cloud backends
 * `--model-id TEXT`: Model ID override
 * `--base-url TEXT`: Endpoint URL for openai-compat backend (e.g. http://localhost:11434/v1)
-* `--prompt TEXT`: openai-compat user prompt: preset (detailed, straightforward, grounded, descriptive, booru) or literal text
+* `--prompt TEXT`: openai-compat user prompt: preset (straightforward [default], detailed, grounded, descriptive, booru) or literal text
 * `--wd14-repo TEXT`: WD14 v3 tagger repo, e.g. SmilingWolf/wd-eva02-large-tagger-v3
 * `--reconcile TEXT`: Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo
 * `--verifier-url TEXT`: Base URL for the openai-compat verifier

@@ -347,3 +347,14 @@ def test_space_separated_rewrite_accepted_once_fixed() -> None:
     refined = Refiner(rewriter, variants=("identity",)).refine(result, profile)
     assert refined.caption_variants["identity"] == "woman, brown hair"
     assert refined.metadata["refine"]["attempts"] == 2
+
+
+def test_empty_identity_rewrite_is_rejected() -> None:
+    """An empty identity answer keeps the deterministic variant instead of blanking the caption (#104)."""
+    result, profile = _result()
+    rewriter = _ScriptedRewriter({"identity": ""}, {"identity": ""})
+    refined = Refiner(rewriter, variants=("identity",)).refine(result, profile)
+    assert refined.caption_variants["identity"] == result.caption_variants["identity"]
+    assert refined.caption_variants["identity"]
+    assert "identity" not in refined.metadata["refine"]["accepted"]
+    assert refined.metadata["refine"]["rejected"]["identity"] == ["missing from response"]

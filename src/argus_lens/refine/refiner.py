@@ -203,7 +203,11 @@ def variant_spec(name: str) -> VariantSpec:
         return VARIANT_SPECS[name]
     rules = _CATEGORY_RULES.replace("{category}", name.replace("_", " and "))
     rules = rules.replace("{identity_rule}", "" if name == "identity" else _NOT_IDENTITY)
-    return VariantSpec("list", rules, suppress_identity=name != "identity", allow_empty=True)
+    # Identity is the fallback bucket (every unmatched fragment lands there) and
+    # usually the final caption: an empty identity rewrite is a failure, never
+    # "nothing of this category" (#104, empty final_caption accepted).
+    is_identity = name == "identity"
+    return VariantSpec("list", rules, suppress_identity=not is_identity, allow_empty=not is_identity)
 
 
 def render_rules(name: str, token_budget: int, target_backend: str | None, target_style: str = "photo") -> str:
