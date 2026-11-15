@@ -41,6 +41,7 @@ from argus_lens.types import (
     CaptionResult,
     get_category_names,
 )
+from argus_lens.url_fetch import URLRefused
 
 logger = structlog.get_logger()
 
@@ -176,6 +177,25 @@ def _parse_keywords(raw_tags: str) -> list[str]:
     return [t.strip() for t in raw_tags.split(",") if t.strip()]
 
 
+def _unique_names(names: list[str]) -> list[str]:
+    """Return *names* with repeats suffixed ``#2``, ``#3``, … so each is a distinct key.
+
+    The first occurrence of a name keeps it; a suffix never reuses a name that
+    appears literally in the input, so the output has no duplicates.
+    """
+    literal = set(names)
+    used: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        candidate, n = name, 1
+        while candidate in used or (candidate != name and candidate in literal):
+            n += 1
+            candidate = f"{name}#{n}"
+        used.add(candidate)
+        out.append(candidate)
+    return out
+
+
 def _resolve_within(root: Path, rel: str) -> Path:
     """Resolve ``rel`` under ``root`` and refuse path traversal escapes."""
     candidate = (root / rel).resolve()
@@ -229,7 +249,9 @@ def _parse_manifest(raw: bytes) -> list[dict[str, Any]]:
         raise HTTPException(status_code=400, detail=f"manifest not UTF-8: {exc}") from exc
 
     rows: list[dict[str, Any]] = []
-    for i, line in enumerate(text.splitlines()):
+    # Split on "\n" only: JSONL's row separator. str.splitlines() would also
+    # split inside rows on U+2028/U+2029/U+0085, which JSON strings may contain raw.
+    for i, line in enumerate(text.split("\n")):
         line = line.strip()
         if not line:
             continue
@@ -473,12 +495,19 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
         for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
             if entry.is_dir() and not entry.name.startswith("."):
                 sub_rel = str(Path(rel) / entry.name) if rel else entry.name
-                subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                try:
+                    subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                    abs_path = str(entry.resolve())
+                except OSError as exc:
+                    # One unreadable/vanished child (permissions, stale mount,
+                    # deleted mid-scan) must not hide its readable siblings.
+                    logger.info("browse_folder_skipped", path=str(entry), error=str(exc))
+                    continue
                 folders.append(
                     {
                         "name": entry.name,
                         "rel_path": sub_rel,
-                        "abs_path": str(entry.resolve()),
+                        "abs_path": abs_path,
                         "image_count": _count_images(entry),
                         "subfolder_count": subfolders,
                     }
@@ -830,8 +859,21 @@ def create_app(
             )
         except ReplayMiss as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except Exception as exc:
+        except URLRefused as exc:
+            # url_fetch's refusals are written to be returned as-is.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=400, detail=f"image_url returned HTTP {exc.response.status_code}") from exc
+        except (Image.UnidentifiedImageError, Image.DecompressionBombError) as exc:
+            raise HTTPException(status_code=400, detail="image_url did not return a decodable image") from exc
+        except (httpx.HTTPError, OSError) as exc:
+            # Raw transport/OS errors can name internal hosts, ports and
+            # addresses; log them, return a generic message (no probing oracle).
+            logger.warning("caption_url_fetch_failed", error=repr(exc))
+            raise HTTPException(status_code=400, detail="could not fetch image_url") from exc
+        except Exception as exc:
+            logger.exception("caption_url_failed")
+            raise HTTPException(status_code=500, detail="captioning failed (see server log)") from exc
         return _result_to_dict(result)
 
     @app.post("/caption/batch")
@@ -862,6 +904,9 @@ def create_app(
                 continue
             payloads.append(data)
             names.append(f.filename or "image")
+        # Results/errors are keyed by name: two uploads sharing a filename (or
+        # both sent without one) must not collapse into a single entry.
+        names = _unique_names(names)
 
         errors: dict[str, str] = {}
 

@@ -148,8 +148,28 @@ def test_missing_checkpoint_downloads_to_first_search_dir(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(ram_module, "_download_checkpoint", lambda dest, repo: calls.append((dest, repo)))
     target = tmp_path / "models"
-    assert RamBackend(model_dir=target, repo_id="org/ram")._ensure_checkpoint() == target / CHECKPOINT_FILENAME
-    assert calls == [(target / CHECKPOINT_FILENAME, "org/ram")]
+    assert RamBackend(model_dir=target)._ensure_checkpoint() == target / CHECKPOINT_FILENAME
+    expected = target / "org--ram" / CHECKPOINT_FILENAME
+    assert RamBackend(model_dir=target, repo_id="org/ram")._ensure_checkpoint() == expected
+    assert calls == [(target / CHECKPOINT_FILENAME, DEFAULT_MODEL_ID), (expected, "org/ram")]
+
+
+def test_custom_repo_is_namespaced_under_ram_model_dir(tmp_path, monkeypatch):
+    """With RAM_MODEL_DIR set, a non-default repo never loads the default repo's flat checkpoint or shares its key."""
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    (env_dir / CHECKPOINT_FILENAME).write_bytes(b"default")
+    monkeypatch.setenv("RAM_MODEL_DIR", str(env_dir))
+    monkeypatch.setattr(ram_module, "_DEFAULT_CACHE_DIR", tmp_path / "cache")
+    calls = []
+    monkeypatch.setattr(ram_module, "_download_checkpoint", lambda dest, repo: calls.append((dest, repo)))
+
+    default, custom = RamBackend(), RamBackend(repo_id="org/custom-ram")
+    assert default._ensure_checkpoint() == env_dir / CHECKPOINT_FILENAME
+    expected = env_dir / "org--custom-ram" / CHECKPOINT_FILENAME
+    assert custom._ensure_checkpoint() == expected
+    assert calls == [(expected, "org/custom-ram")]
+    assert default._cache_key("cpu") != custom._cache_key("cpu")
 
 
 def test_custom_repo_gets_its_own_cache_dir(tmp_path, monkeypatch):

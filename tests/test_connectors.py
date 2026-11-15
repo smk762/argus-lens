@@ -121,6 +121,30 @@ def test_fetch_image_requires_local_path():
         FilesystemSource("/tmp").fetch_image(AssetRef(id="remote", uri="https://example.com/x.jpg"))
 
 
+def test_fetch_image_refuses_paths_outside_root(tmp_path):
+    """A ref whose path escapes the root (absolute or via ..) is refused, not read."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _make_png(tmp_path / "secret.png")
+    src = FilesystemSource(root)
+    for path in (str(tmp_path / "secret.png"), str(root / ".." / "secret.png")):
+        with pytest.raises(ValueError, match="outside the source root"):
+            src.fetch_image(AssetRef(id="secret.png", path=path))
+
+
+def test_list_assets_skips_symlinks_out_of_root(tmp_path):
+    """A symlink inside the root pointing outside it is neither listed nor fetchable."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _make_png(root / "in.png")
+    _make_png(tmp_path / "secret.png")
+    (root / "link.png").symlink_to(tmp_path / "secret.png")
+    src = FilesystemSource(root)
+    assert [r.id for r in src.list_assets()] == ["in.png"]
+    with pytest.raises(ValueError):
+        src.fetch_image(AssetRef(id="link.png", path=str(root / "link.png")))
+
+
 def test_fetch_image_roundtrip_from_bytes(tmp_path):
     """A PNG written from raw bytes is listed and fetched back at its original size."""
     buf = io.BytesIO()

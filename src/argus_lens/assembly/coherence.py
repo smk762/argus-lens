@@ -201,9 +201,13 @@ def split_sentences(text: str, *, semicolons: bool = False) -> list[str]:
 
 
 def end_sentence(body: str) -> str:
-    """Return *body* with a full stop, unless it already ends ``."`` / ``?)`` style."""
-    stripped = body.rstrip(_CLOSERS)
-    if stripped != body and stripped[-1:] in (".", "!", "?"):
+    """Return *body* with a full stop, unless it already ends ``.`` / ``?`` / ``."`` / ``?)`` style.
+
+    An empty or whitespace-only *body* is returned unchanged rather than as ``"."``.
+    """
+    if not body.strip():
+        return body
+    if body.rstrip(_CLOSERS)[-1:] in (".", "!", "?"):
         return body
     return body + "."
 

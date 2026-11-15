@@ -106,28 +106,63 @@ def test_cache_key_includes_model_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     assert WD14Backend()._cache_key("cpu") == "wd14:cpu:/env/dir"
 
 
-def test_ensure_model_refreshes_stale_tags_csv(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When the model file is missing, a leftover CSV from a prior model is re-downloaded with it."""
+def _fake_download_into(calls: list) -> Any:
+    """Return a stand-in for _download_model with its skip-if-exists behaviour, no network."""
     from argus_lens.backends import wd14 as wd14_mod
 
-    def _fake_download(dest_dir: Any, repo: str = "") -> None:
-        """Mimic _download_model's skip-if-exists behavior without the network."""
+    def _fake_download(dest_dir: Any, repo: str = wd14_mod._HF_REPO) -> None:
+        """Write the repo's model + CSV into *dest_dir* unless already present."""
+        calls.append((dest_dir, repo))
         dest_dir.mkdir(parents=True, exist_ok=True)
-        for name in (wd14_mod._MODEL_FILENAME, wd14_mod._TAGS_FILENAME):
+        for name in (wd14_mod._model_filename(repo), wd14_mod._TAGS_FILENAME):
             dest = dest_dir / name
             if not dest.exists():
-                dest.write_text("v3-fresh")
+                dest.write_text(f"fresh:{repo}")
 
-    monkeypatch.setattr(wd14_mod, "_download_model", _fake_download)
+    return _fake_download
+
+
+def test_ensure_model_refreshes_stale_tags_csv(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In the default cache, a leftover CSV from a prior model is re-downloaded with the missing model."""
+    from argus_lens.backends import wd14 as wd14_mod
+
+    monkeypatch.setattr(wd14_mod, "_download_model", _fake_download_into([]))
     # Keep the search inside tmp_path: a model already in WD14_MODEL_DIR or the
     # real ~/.cache/wd14_tagger would short-circuit _ensure_model before the stale-CSV path.
     monkeypatch.delenv("WD14_MODEL_DIR", raising=False)
-    monkeypatch.setattr(wd14_mod, "_DEFAULT_CACHE_DIR", tmp_path / "cache")
-    stale_csv = tmp_path / wd14_mod._TAGS_FILENAME
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(wd14_mod, "_DEFAULT_CACHE_DIR", cache)
+    stale_csv = cache / wd14_mod._TAGS_FILENAME
     stale_csv.write_text("v2-stale")
 
-    backend = WD14Backend(model_dir=tmp_path)
+    model_path = WD14Backend()._ensure_model()
+
+    assert model_path == cache / wd14_mod._MODEL_FILENAME
+    assert stale_csv.read_text() == f"fresh:{wd14_mod._HF_REPO}"  # stale pair was replaced, not kept
+
+
+def test_ensure_model_never_touches_files_in_caller_model_dir(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A download into a caller-supplied dir lands in a per-repo subdir; the existing pair is left intact."""
+    from argus_lens.backends import wd14 as wd14_mod
+
+    calls: list = []
+    monkeypatch.setattr(wd14_mod, "_download_model", _fake_download_into(calls))
+    monkeypatch.delenv("WD14_MODEL_DIR", raising=False)
+    monkeypatch.setattr(wd14_mod, "_DEFAULT_CACHE_DIR", tmp_path / "cache")
+    (tmp_path / wd14_mod._MODEL_FILENAME).write_text("vit-model")
+    (tmp_path / wd14_mod._TAGS_FILENAME).write_text("vit-tags")
+
+    repo = "SmilingWolf/wd-eva02-large-tagger-v3"
+    backend = WD14Backend(model_dir=tmp_path, model_repo=repo)
     model_path = backend._ensure_model()
 
-    assert model_path == tmp_path / wd14_mod._MODEL_FILENAME
-    assert stale_csv.read_text() == "v3-fresh"  # stale pair was replaced, not kept
+    subdir = tmp_path / "wd-eva02-large-tagger-v3"
+    assert model_path == subdir / "wd-eva02-large-tagger-v3.onnx"
+    assert (subdir / wd14_mod._TAGS_FILENAME).read_text() == f"fresh:{repo}"
+    assert (tmp_path / wd14_mod._TAGS_FILENAME).read_text() == "vit-tags"  # the other model's CSV survives
+    # the default model in the same dir still resolves to its own flat pair
+    assert WD14Backend(model_dir=tmp_path)._ensure_model() == tmp_path / wd14_mod._MODEL_FILENAME
+    # a second run finds the subdir copy without downloading again
+    assert backend._ensure_model() == model_path
+    assert len(calls) == 1

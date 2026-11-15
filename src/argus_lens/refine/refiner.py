@@ -278,19 +278,22 @@ def _ungrounded_hue_pairs(text: str, tags: str, prose: str) -> list[str]:
     tag_pairs = {" ".join(_WORD.findall(t.lower().replace("_", " "))) for t in tags.split(",")}
     tag_words = {w for t in tag_pairs for w in t.split()}
     sentences = [_WORD.findall(s) for s in re.split(r"[.;:!?]", prose.lower())]
-    words = _WORD.findall(text.lower().replace("_", " "))
-    pairs = [
-        (w, nxt)
-        for w, nxt in zip(words, words[1:], strict=False)
-        if w in tag_reconcile.HUE_WORDS and nxt not in tag_reconcile.HUE_WORDS and nxt not in _MEDIUM_WORDS
-    ]
-    if words and words[-1] in tag_reconcile.HUE_WORDS:
-        pairs.append((words[-1], ""))
+    pairs: list[tuple[str, str]] = []
+    # Pair per sentence/clause, so "His beard is white. The man ..." never yields "white the".
+    for chunk in re.split(r"[.;:!?]", text.lower().replace("_", " ")):
+        words = _WORD.findall(chunk)
+        pairs.extend(
+            (w, nxt)
+            for w, nxt in zip(words, words[1:], strict=False)
+            if w in tag_reconcile.HUE_WORDS and nxt not in tag_reconcile.HUE_WORDS and nxt not in _MEDIUM_WORDS
+        )
+        if words and words[-1] in tag_reconcile.HUE_WORDS:
+            pairs.append((words[-1], ""))
 
     def grounded(hue: str, noun: str) -> bool:
         if not noun:  # a bare trailing hue word: any mention of it will do
             return hue in tag_words or any(hue in toks for toks in sentences)
-        if any(f"{hue} {noun}" in f" {t} " for t in tag_pairs):
+        if any(f" {hue} {noun} " in f" {t} " for t in tag_pairs):  # whole words: not "bored hair"
             return True
         for toks in sentences:
             for i, tok in enumerate(toks):
@@ -304,6 +307,12 @@ def _ungrounded_hue_pairs(text: str, tags: str, prose: str) -> list[str]:
         return False
 
     return [f"{h} {n}".strip() for h, n in dict.fromkeys(pairs) if not grounded(h, n)]
+
+
+def _plain_phrases(text: str, trigger_word: str) -> str:
+    """De-underscore a list caption for photo targets, leaving the trigger word (``ohwx_woman``) intact."""
+    trigger = trigger_word.strip()
+    return ",".join(item if item.strip() == trigger else item.replace("_", " ") for item in text.split(","))
 
 
 def _vocabulary(*texts: str) -> frozenset[str]:
@@ -454,7 +463,7 @@ class Refiner:
                 spec = variant_spec(name)
                 text = (out.get(name) or "").strip()
                 if text and spec.kind == "list" and profile.target_style != "anime":
-                    text = text.replace("_", " ")  # photo targets want plain phrases, not booru tags
+                    text = _plain_phrases(text, trigger_word)
                 if text:
                     text, _ = repair_caption(text, spec.kind, trigger_word=trigger_word)
                 if spec.allow_empty and name in out and text.strip() in ("", trigger_word.strip()):

@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **Audit hardening** (ai-code-auditor nightly, 43 packs):
+  - `/caption/url` no longer echoes raw fetch errors. Transport failures say "could not fetch
+    image_url" (and are logged), HTTP errors give only the status code, and unexpected
+    captioning failures are a generic 500.
+  - `/v1/chat/completions` refuses inline `data:` images over 50 MB (413 `image_too_large`) and
+    malformed base64 (400 `invalid_image`), checking the size before decoding.
+  - `FilesystemSource` no longer reads outside its root (`..`, absolute paths, symlinks pointing
+    out), and `list_assets` skips files whose target is outside the root.
+  - The Immich connector drops `x-api-key` once a redirect leaves the configured host.
+  - CSV export prefixes cells starting with `=`, `+`, `-`, `@`, tab or CR with `'` (formula
+    injection).
 - **Manifest captioning is confined to the source root** (audit pack-argus-lens-02858f2bfe).
   `/caption/manifest[/stream]` now needs `--source-root` / `LENS_SOURCE_PATH` (400 otherwise),
   like `/caption/folder`. `export_root` must lie inside it, and a row whose `abs_path` or
@@ -31,6 +42,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the directory raises `ValueError` before anything is written.
 
 ### Fixed
+- Audit fixes (assembly, backends, server, workflows):
+  - Captions no longer get doubled terminal punctuation (`..`, `?.`). Training prose keeps
+    one-word descriptor clauses ("barefoot") that identity suppression didn't create. 16-bit
+    greyscale images (`I;16B/L/N`, `La`) are detected as monochrome.
+  - Refine: the monochrome hue check works per sentence and matches tags by whole word; an
+    underscored trigger word (`ohwx_woman`) survives photo list rewrites; an unrelated HTTP 400
+    no longer permanently disables `reasoning_effort` (it retries without it first).
+  - Model registry: `clear()` no longer frees models still in use or loading (they are freed at
+    their last release), a release after a reload can't corrupt the new model's refcount, and a
+    failing `.cpu()` is logged while the CUDA cache is still emptied.
+  - RAM++ with a non-default `repo_id` under `model_dir`/`RAM_MODEL_DIR` uses
+    `<dir>/<org>--<name>/` (move a flat custom checkpoint there). WD14 downloads into a user
+    `model_dir` go to `<model_dir>/<repo-name>/` and never replace an existing tag CSV.
+  - Replay: a sha256 with no recording is a `ReplayMiss`; the URI fallback runs only when no
+    sha256 is given, so a changed file can't get a stale caption.
+  - Replicate honours an explicit `api_key` over `REPLICATE_API_TOKEN` without writing the
+    environment, and joins streamed tokens without extra spaces.
+  - `ram-vocab build` keeps finished descriptions on failure (`descriptions.partial.json`;
+    re-run with it to resume).
+  - `argus-lens caption <file> -o PATH` writes exactly `PATH`.
+  - `caption_batch` decodes one image at a time; `/v1` builds engines off the event loop;
+    `GET /folders` skips unreadable subfolders; manifest rows containing U+2028/U+2029/U+0085
+    parse.
+  - `workflows/curate_index.py`: a torn last JSONL line is skipped, "no one"/"nobody" counts
+    as 0, and `export` resolves a relative `source_root` and replaces dangling or stale links.
 - **Refine no longer accepts an empty identity rewrite** (#104). An empty `identity` answer
   counted as "nothing of this category" and blanked `final_caption`. It is now rejected and
   retried, and the deterministic variant is kept. Other category variants still accept an empty
@@ -57,6 +93,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each entry gains `allowed`.
 
 ### Changed
+- **`argus-lens serve` binds `127.0.0.1` by default** (audit). Pass `--host 0.0.0.0` to expose
+  it on the network; the Docker images already do.
+- `CaptionTargetProfile` built without an explicit `token_budget` uses its `target_backend`'s
+  budget (Flux/SD3 200) instead of always SDXL's 60. `resolve_target_profile` is unchanged.
+- `/caption/batch` keys uploads that share a filename as `name`, `name#2`, `name#3`, … instead of
+  letting later ones overwrite earlier results.
 - **The `openai-compat` default prompt is now `straightforward`** (#104), replacing `detailed`
   ("Describe this image in detail."). On the 205-photo Lightbox set with `qwen3-vl:2b-instruct`,
   `detailed` wrote editorial copy (mood words, "This image shows …" openers) at about twice the

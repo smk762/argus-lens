@@ -48,3 +48,13 @@ def test_prose_training_caption_fits_whole_text_estimate() -> None:
     caption, _ = assemble_prose_training_variant("ohwx", prose, token_budget=200, target_backend="flux")
     assert caption
     assert estimate_tokens(caption, "flux") <= 200
+
+
+def test_target_profile_budget_follows_backend() -> None:
+    """A directly built profile sizes its budget for *target_backend*, not always SDXL."""
+    from argus_lens.types import CaptionTargetProfile, TokenBudgetConfig
+
+    assert CaptionTargetProfile(target_backend="flux").token_budget == TokenBudgetConfig.for_backend("flux")
+    assert CaptionTargetProfile().token_budget == TokenBudgetConfig.for_backend("sdxl")
+    explicit = TokenBudgetConfig.for_backend("flux", 42)
+    assert CaptionTargetProfile(target_backend="sdxl", token_budget=explicit).token_budget is explicit

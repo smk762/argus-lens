@@ -111,12 +111,23 @@ class DescriptionWriter:
         return out
 
     def describe_all(
-        self, tags: Sequence[str], on_progress: Callable[[int, int, str], None] | None = None
+        self,
+        tags: Sequence[str],
+        on_progress: Callable[[int, int, str], None] | None = None,
+        *,
+        into: dict[str, list[str]] | None = None,
     ) -> dict[str, list[str]]:
-        """Describe every tag, reporting ``(done, total, tag)`` after each."""
-        result: dict[str, list[str]] = {}
+        """Describe every tag, reporting ``(done, total, tag)`` after each.
+
+        Results go into *into* (a fresh dict by default) as each tag finishes, so when a
+        request fails mid-run the caller still holds every completed tag and can persist
+        it. Tags that already have descriptions in *into* are skipped, which makes a
+        re-run with the same dict resume where the failed one stopped.
+        """
+        result: dict[str, list[str]] = {} if into is None else into
         for i, tag in enumerate(tags, 1):
-            result[tag] = self.describe(tag)
+            if not result.get(tag):
+                result[tag] = self.describe(tag)
             if on_progress:
                 on_progress(i, len(tags), tag)
         return result

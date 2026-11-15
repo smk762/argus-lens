@@ -56,7 +56,7 @@ def caption(
     prose_bias: float | None = Option(
         None, "--prose-bias", help="Continuous tag/prose balance: 0.0 (pure tags) .. 1.0 (full prose)"
     ),
-    output: Path | None = Option(None, "--output", "-o", help="Output file (for json/jsonl/csv)"),
+    output: Path | None = Option(None, "--output", "-o", help="Output file for a single image (written as --format)"),
     fmt: str = Option("txt", "--format", "-f", help="Output format: txt, json, jsonl, csv"),
     overwrite: bool = Option(False, "--overwrite", help="Overwrite existing caption files"),
     recursive: bool = Option(False, "--recursive", "-r", help="Walk sub-directories (results keyed by relative path)"),
@@ -148,9 +148,9 @@ def caption(
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc
         if output:
-            from argus_lens.exporters import export_results
+            from argus_lens.exporters import export_results_to_file
 
-            export_results({path.name: result}, output.parent, fmt)
+            export_results_to_file({path.name: result}, output, fmt)
             typer.echo(f"Exported to {output}")
         else:
             typer.echo(result.final_caption)
@@ -251,9 +251,15 @@ def ram_vocab_build(
         writer = DescriptionWriter(base_url=base_url, model_id=model, api_key=api_key)
         typer.echo(f"Writing descriptions for {len(todo)} tag(s) with {writer.model_id} at {writer.base_url} ...")
         try:
-            descriptions.update(
-                writer.describe_all(todo, on_progress=lambda i, n, tag: typer.echo(f"  [{i}/{n}] {tag}"))
-            )
+            writer.describe_all(todo, on_progress=lambda i, n, tag: typer.echo(f"  [{i}/{n}] {tag}"), into=descriptions)
+        except Exception:
+            # Keep the descriptions already paid for: the partial file is valid input, and a
+            # re-run with it only writes the tags still empty.
+            partial = out / "descriptions.partial.json"
+            out.mkdir(parents=True, exist_ok=True)
+            partial.write_text(json.dumps({t: descriptions.get(t, []) for t in parsed.tags}, indent=1), "utf-8")
+            typer.echo(f"Description writing failed; completed tags saved to {partial} (re-run with it).", err=True)
+            raise
         finally:
             writer.close()
         source_info.update(llm=writer.model_id, endpoint=writer.base_url, prompts="upstream")
@@ -421,7 +427,9 @@ def eval_command(
 @app.command()
 def serve(
     port: int = Option(8080, "--port", "-p", help="Port to listen on"),
-    host: str = Option("0.0.0.0", "--host", help="Host to bind to"),
+    host: str = Option(
+        "127.0.0.1", "--host", help="Host to bind to (0.0.0.0 exposes the unauthenticated API to the network)"
+    ),
     backend: str = Option(
         "hybrid", "--backend", "-b", envvar="ARGUS_BACKEND", help="Default backend for /caption endpoints"
     ),

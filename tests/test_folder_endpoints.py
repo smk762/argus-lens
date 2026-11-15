@@ -256,3 +256,22 @@ def test_folders_requires_source_root() -> None:
     """GET /folders returns 400 when the app was created without a source root."""
     client = TestClient(create_app(default_backend=_StubBackend()))
     assert client.get("/folders").status_code == 400
+
+
+def test_folders_browse_skips_unreadable_subfolder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One subfolder that can't be listed is left out; its readable siblings are still returned."""
+    _png(tmp_path / "ok" / "01.jpg")
+    (tmp_path / "locked").mkdir()
+    real_iterdir = Path.iterdir
+
+    def _iterdir(self: Path):
+        """Raise PermissionError for the 'locked' folder, like a root-owned dir would."""
+        if self.name == "locked":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.get("/folders")
+    assert resp.status_code == 200, resp.text
+    assert [f["name"] for f in resp.json()["folders"]] == ["ok"]
