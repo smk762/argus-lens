@@ -106,7 +106,8 @@ def is_monochrome(image: Image.Image) -> bool:
     few levels of the median Cb/Cr chroma, and that the median itself is at
     most a tint. Pure Pillow, a millisecond or two per image.
     """
-    if image.mode in ("1", "L", "LA", "I", "I;16", "F"):
+    # Every single-channel greyscale mode, incl. the 16-bit "I;16B"/"I;16L"/"I;16N" variants (not "P": a palette).
+    if image.mode in ("1", "L", "LA", "La", "I", "F") or image.mode.startswith("I;16"):
         return True
     # Downscale first (as thumbnail() would): converting the full-size image copies it for nothing.
     scale = min(1.0, _MONOCHROME_SAMPLE_SIDE / max(1, *image.size))

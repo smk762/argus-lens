@@ -85,6 +85,7 @@ def _clean_sentence(
     if text.rstrip("\"'\u201d\u2019)]") == text:
         text = text.rstrip(".!?;")  # a closing quote keeps its own full stop
     text = _join_adjective_commas(text)
+    original_clauses = {c.strip() for c in text.split(",")}
     removed.extend(m.group(0).strip(" ,") for m in _IDENTITY_PHRASE.finditer(text))
     text = _IDENTITY_PHRASE.sub("", text)
     kept: list[str] = []
@@ -92,8 +93,10 @@ def _clean_sentence(
     for clause in (c.strip() for c in text.split(",")):
         if not clause:
             continue
-        # A bare subject left after excision ("She has green eyes" -> "She").
-        if len(clause.split()) < 2 or _identity_dominant(clause, categories):
+        # A bare subject left after excision ("She has green eyes" -> "She"); a one-word clause
+        # the prose had all along ("barefoot", "smiling") is a descriptor, not an orphan.
+        orphan = len(clause.split()) < 2 and clause not in original_clauses
+        if orphan or _identity_dominant(clause, categories):
             removed.append(clause)
             if kept:
                 dropped_after.add(len(kept) - 1)

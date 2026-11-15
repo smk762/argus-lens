@@ -630,7 +630,8 @@ class CaptionTargetProfile:
             — determines the CLIP/T5 token budget.
         checkpoint: Optional checkpoint name — used for style inference
             (e.g. ``"ponyDiffusion"`` implies anime).
-        token_budget: Resolved token budget (computed from *target_backend*).
+        token_budget: Resolved token budget; computed from *target_backend*
+            when not given.
         redundancy_threshold: Prose-vs-tag balance for the hybrid pipeline
             (see ``HYBRID_PRESETS`` / ``resolve_redundancy_threshold``).
     """
@@ -639,8 +640,13 @@ class CaptionTargetProfile:
     target_category: str = "identity"
     target_backend: str | None = "sdxl"
     checkpoint: str | None = None
-    token_budget: TokenBudgetConfig = field(default_factory=lambda: TokenBudgetConfig.for_backend("sdxl"))
+    token_budget: TokenBudgetConfig | None = None
     redundancy_threshold: float = DEFAULT_REDUNDANCY_THRESHOLD
+
+    def __post_init__(self) -> None:
+        """Resolve an omitted *token_budget* from *target_backend* (not always SDXL's)."""
+        if self.token_budget is None:
+            object.__setattr__(self, "token_budget", TokenBudgetConfig.for_backend(self.target_backend))
 
 
 def normalise_target_style(

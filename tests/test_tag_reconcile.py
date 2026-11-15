@@ -49,6 +49,12 @@ def test_colour_images_are_not_monochrome() -> None:
     assert not is_monochrome(hand_coloured)
 
 
+@pytest.mark.parametrize("mode", ["I;16", "I;16B", "I;16L"])
+def test_sixteen_bit_greyscale_modes_are_monochrome(mode: str) -> None:
+    """Every single-band 16-bit greyscale mode takes the fast path (no RGB conversion)."""
+    assert is_monochrome(Image.new(mode, (16, 16)))
+
+
 # --- person nouns (#85) ---
 
 
@@ -270,6 +276,9 @@ def test_refine_accepts_a_hue_the_prose_states_with_modifiers_between() -> None:
         ("man, black hair", "man", "a white shirt and black trousers. his hair is short.", ["black hair"]),
         ("man, white hair", "man", "a man in a white shirt and black hair band.", ["white hair"]),
         ("man, white", "man, white", "", []),
+        ("His beard is white. The man smiles", "man, white beard", "", []),  # no "white the" across sentences
+        ("man, red hair", "man, bored hair", "", ["red hair"]),  # tag match is whole words
+        ("man, white hair", "man, white hairband", "", ["white hair"]),
     ],
 )
 def test_ungrounded_hue_pairs(text: str, tags: str, prose: str, ungrounded: list[str]) -> None:
