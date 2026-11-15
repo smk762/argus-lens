@@ -162,7 +162,9 @@ class ImageAsset:
 def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, Image.Image]:
     """Load an image from various source types.
 
-    Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs.
+    Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs. URLs go
+    through :func:`argus_lens.url_fetch.fetch_url`, which refuses non-public
+    addresses unless ``LENS_URL_ALLOWED_HOSTS`` names the host (#110).
     Returns ``(asset, pil_image)`` — the asset carries the original-bytes sha256
     when it is recoverable (everything except a pre-decoded PIL input).
     """
@@ -172,13 +174,12 @@ def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, I
         asset = ImageAsset(name="bytes", sha256=hashlib.sha256(source).hexdigest(), data=source)
         return asset, Image.open(io.BytesIO(source)).convert("RGB")
     if isinstance(source, str) and source.startswith(("http://", "https://")):
-        import httpx
+        from argus_lens.url_fetch import fetch_url
 
-        resp = httpx.get(source, follow_redirects=True, timeout=30.0)
-        resp.raise_for_status()
+        content = fetch_url(source)
         name = source.rsplit("/", 1)[-1].split("?")[0] or "image"
-        asset = ImageAsset(name=name, sha256=hashlib.sha256(resp.content).hexdigest(), uri=source, data=resp.content)
-        return asset, Image.open(io.BytesIO(resp.content)).convert("RGB")
+        asset = ImageAsset(name=name, sha256=hashlib.sha256(content).hexdigest(), uri=source, data=content)
+        return asset, Image.open(io.BytesIO(content)).convert("RGB")
     path = Path(source)
     if path.exists():
         data = path.read_bytes()

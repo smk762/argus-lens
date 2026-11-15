@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/v1/chat/completions` no longer fetches `http(s)://` image URLs** (SSRF, audit
   pack-argus-lens-6e37a7b307). Such a URL is a 400 (`remote_url_not_supported`); send the image
   inline as a `data:` URI, as Frigate does.
+- **`POST /caption/url` is fenced against SSRF** (#110). A URL whose host resolves to a
+  private, loopback, link-local, CGNAT, multicast or reserved address, or that redirects to one,
+  is a 400 and no connection is made. Lens connects to the IP it checked (stops DNS rebinding),
+  re-checks every redirect hop (at most 5) and caps the body at 50 MB. `LENS_URL_ALLOWED_HOSTS`
+  names trusted LAN hosts; `LENS_URL_FETCH=off` refuses every URL. A non-`http(s)` `image_url`
+  is now a 400: it used to be opened as a server-side file path. **Breaking** for callers that
+  caption from LAN URLs (add the host to `LENS_URL_ALLOWED_HOSTS`). The guard sits in
+  `_load_image`, so library calls with a URL get it too.
 - **The `.txt` exporter refuses names that escape its output directory** (audit
   pack-argus-lens-1da399c6fb). An absolute name, a `..` part, or a sidecar resolving outside
   the directory raises `ValueError` before anything is written.

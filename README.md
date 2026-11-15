@@ -371,7 +371,7 @@ argus-lens serve --cors --port 8080
 Endpoints:
 
 - `POST /caption` -- multipart file upload
-- `POST /caption/url` -- JSON body with image URL
+- `POST /caption/url` -- JSON body with an `http(s)://` image URL. Lens fetches it, so the fetch is fenced against SSRF: a host that resolves to a private, loopback, link-local, CGNAT or reserved address (or a redirect hop to one) is a `400` and no connection is made. The connection goes to the IP that was checked, redirects are capped at 5 and re-checked, and bodies over 50 MB are refused. Name trusted LAN hosts in `LENS_URL_ALLOWED_HOSTS`; `LENS_URL_FETCH=off` refuses every URL. A non-URL `image_url` (a server path) is a `400`
 - `POST /caption/batch` -- multiple file upload
 - `POST /caption/stream` -- NDJSON streaming for batch
 - `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars). Understands manifest 1.x and 2.x (unknown majors are a 400): pass the curator's export root as `export_root` and 2.0 rows are read from `export_root / exported_path` (valid even for `mode=move` exports); without it, rows fall back to `abs_path` (shared volume). Needs `--source-root` / `LENS_SOURCE_PATH` (400 otherwise): `export_root` must lie inside it, and a row whose image resolves outside it is a per-row error, never read or written
@@ -467,6 +467,8 @@ Copy or create a `.env` file for the Docker deployment:
 | `ARGUS_MODEL_IDLE_SECONDS` | `300` | Idle seconds before the shared WD14/RAM++/BLIP-2 model cache evicts an unused model |
 | `LENS_CORS_ORIGINS` | -- | Comma-separated origins allowed CORS and cross-site writes (the image runs `--cors`, which trusts only `localhost:3000`) |
 | `LENS_READ_ONLY` | -- | `1` refuses sidecar/XMP writes, Immich pulls and write-back with a 403 (advertised as `read_only` on `/health`) |
+| `LENS_URL_ALLOWED_HOSTS` | -- | Comma-separated hostnames `POST /caption/url` may fetch even when they resolve to a private/LAN address, e.g. `immich.lan` (unset: only public addresses) |
+| `LENS_URL_FETCH` | `on` | `off` refuses every `POST /caption/url` fetch (clients upload bytes to `/caption` instead) |
 | `LENS_SOURCE_PATH` | `/data/images` | Host image folder mounted read-write at `/data/images` for the folder picker and `POST /caption/folder`; `.txt` sidecars are written next to the images |
 
 #### GPU prerequisites
