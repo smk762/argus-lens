@@ -155,6 +155,7 @@ $ argus-lens serve [OPTIONS]
 * `--cors-any`: Allow ANY origin to read, credential-less (public demos only; implies CORS)
 * `--source-root TEXT`: Root folder for /folders browsing (UI picker)
 * `--read-only`: Refuse sidecar/XMP writes, Immich pulls and write-back (or LENS_READ_ONLY=1)
+* `--allow-backend TEXT`: Backend a caption request may pick (repeatable; the default is always allowed; or ARGUS_ALLOWED_BACKENDS). Unset: any registered backend
 * `--help`: Show this message and exit.
 
 ## `argus-lens ram-vocab`

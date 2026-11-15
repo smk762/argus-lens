@@ -378,8 +378,8 @@ Endpoints:
 - `POST /caption/manifest/stream` -- streaming variant of `/caption/manifest`: one NDJSON progress line per image, then a completion summary (supports `write_xmp` and `export_root` too)
 - `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars)
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
-- `GET /backends` -- list available backends
-- `GET /health` -- liveness probe: `{status, service, version, source_root, read_only, immich, immich_write_back, gpu}`. The three booleans advertise write capabilities so a UI can disable controls up front: `read_only` (the server refuses writes), `immich` (`IMMICH_URL` and `IMMICH_API_KEY` are set) and `immich_write_back` (Immich is configured and the server is not read-only)
+- `GET /backends` -- `{default, allowed, backends}`: every registered backend with `available`, `reason` and `allowed`, plus the name of the default
+- `GET /health` -- liveness probe: `{status, service, version, backend, allowed_backends, source_root, read_only, immich, immich_write_back, gpu}`. `backend` is the default caption backend; `gpu.resident` lists every backend with a model loaded. The three booleans advertise write capabilities so a UI can disable controls up front: `read_only` (the server refuses writes), `immich` (`IMMICH_URL` and `IMMICH_API_KEY` are set) and `immich_write_back` (Immich is configured and the server is not read-only)
 - `GET /profiles` -- caption taxonomy for UIs: `{assembly_profiles, target_styles, target_categories, target_backends, token_budgets, hybrid_presets, default_hybrid_preset}`. `hybrid_presets` maps each preset name to its redundancy threshold (`tags` 0.20 … `prose` 0.85), and `default_hybrid_preset` is `balanced`
 - `GET /immich/albums` -- list Immich albums (`{albums: [{id, name, asset_count}]}`); requires `IMMICH_URL` + `IMMICH_API_KEY`
 - `POST /immich/pull` -- download an Immich album (or selected `asset_ids`) into a folder under the source root; NDJSON progress stream, atomic concurrent downloads, skips existing files (in-request filename collisions are per-asset errors, and non-captionable originals like HEIC/DNG get a `warning`)
@@ -388,6 +388,8 @@ Endpoints:
 - `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider). `model` must be one of the `/v1/models` IDs (default `argus-hybrid`); any other value is a 404
 
 `/caption/folder`, `/caption/manifest` and `/caption/manifest/stream` rows carry only `rel_path` and `final_caption` (plus `xmp_path`). Pass `include_buckets: true` to add `metadata.buckets` (`{tags, prose}` → category → fragments) to each row, for faceted filtering over batch results.
+
+**Choosing the backend per request.** Every caption endpoint (`/caption`, `/caption/url`, `/caption/batch`, `/caption/stream`, `/caption/folder`, `/caption/manifest[/stream]`, `/immich/caption/stream`) takes an optional `backend` (form field or JSON key) naming any `/backends` entry or a `hybrid:tag+prose` pair. Omitted, the server default (`--backend` / `ARGUS_BACKEND`) captions, and `backend_name` in the result says which one ran. An unknown name, or a backend whose `available` is false, is a `400` that carries the backend's `reason`; the server never falls back to another backend. A switched-to backend loads its own model on first use and stays resident until `ARGUS_IDLE_UNLOAD_S` or `POST /admin/unload` (which unloads every backend) frees it. On a shared GPU or a public deployment, pin the set with `--allow-backend <name>` (repeatable) or `ARGUS_ALLOWED_BACKENDS` (comma-separated): any other name is a `400`. The default is always allowed, so `ARGUS_ALLOWED_BACKENDS=<default>` turns switching off.
 
 **Read-only mode.** `--read-only` or `LENS_READ_ONLY=1` refuses every request that would write, with a `403`: `.txt`/`.xmp` sidecars (pass `write_sidecar: false`), `/immich/pull` and Immich `write_back`. Captions returned in the response still work.
 
@@ -460,6 +462,7 @@ Copy or create a `.env` file for the Docker deployment:
 | `WD14_MODEL_DIR` | `~/.cache/wd14_tagger/` | WD14 ONNX model directory (auto-downloads on first use) |
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
 | `HF_TRUST_REMOTE_CODE` | `false` | Only needed for legacy `microsoft/Florence-2-*` weights. See [Security](#security) |
+| `ARGUS_ALLOWED_BACKENDS` | -- | Comma-separated backends a caption request may pick with `backend` (the default is always allowed; unset: any registered backend) |
 | `ARGUS_IDLE_UNLOAD_S` | -- | Free the model's VRAM after this many idle seconds; it reloads on the next caption (unset: stay loaded) |
 | `ARGUS_MODEL_IDLE_SECONDS` | `300` | Idle seconds before the shared WD14/RAM++/BLIP-2 model cache evicts an unused model |
 | `LENS_CORS_ORIGINS` | -- | Comma-separated origins allowed CORS and cross-site writes (the image runs `--cors`, which trusts only `localhost:3000`) |

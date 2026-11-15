@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-request backend selection** (#107, for argus-studio#69). Every caption endpoint takes an
+  optional `backend` (form field or JSON key). Omitted, the server default captions, as before.
+  An unknown or unavailable backend is a 400 that carries its `reason`; the server never falls
+  back to another backend. A switched-to backend gets its own lazily built engine (same
+  recorder, refiner and idle unload). `--allow-backend` / `ARGUS_ALLOWED_BACKENDS` pins the
+  names a request may pick; the default is always allowed.
+- **The default backend is named without captioning**: `/health` gains `backend`,
+  `allowed_backends` and `gpu.resident`; `/backends` becomes `{default, allowed, backends}`, and
+  each entry gains `allowed`.
+
+### Changed
+- `GET /backends` wraps the backend map with `default` and `allowed` (the map itself is still
+  under `backends`). Its `hybrid` entry now reports wd14 + florence2 availability instead of
+  always `available: true`.
+- `POST /admin/unload` unloads every resident engine, including switched-to backends.
+
 ## [0.11.0] - 2026-11-13
 
 ### Added
