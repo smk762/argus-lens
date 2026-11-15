@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the directory raises `ValueError` before anything is written.
 
 ### Fixed
+- `import argus_lens` works in a source tree that was never built or installed (no generated
+  `_version.py`). The version falls back to the installed metadata, then `0.0.0+unknown`. This
+  lets the ai-code-auditor's `validate_patch` sandbox run the test suite instead of lint only.
 - Audit fixes (assembly, backends, server, workflows):
   - Captions no longer get doubled terminal punctuation (`..`, `?.`). Training prose keeps
     one-word descriptor clauses ("barefoot") that identity suppression didn't create. 16-bit

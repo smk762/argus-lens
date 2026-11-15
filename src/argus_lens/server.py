@@ -24,7 +24,7 @@ import structlog
 from argus_cortex.xmp import XmpError
 from PIL import Image
 
-from argus_lens._version import __version__
+from argus_lens._pkg_version import __version__
 from argus_lens.assembly.profiles import available_profiles
 from argus_lens.backends.replay import ReplayMiss
 from argus_lens.connectors.base import AssetRef
