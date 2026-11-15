@@ -87,3 +87,40 @@ def test_allowed_host_captions(client, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.json()["final_caption"]
     assert called == [("127.0.0.1", ["127.0.0.1"], 8080)]
+
+
+def test_transport_error_detail_is_generic(client, monkeypatch):
+    """A raw fetch error (which can name internal hosts/ports) is not echoed back."""
+    import httpx
+
+    def boom(url):
+        """Raise a transport error naming an internal address."""
+        raise httpx.ConnectError("[Errno 111] Connection refused (10.0.0.5:6333)")
+
+    monkeypatch.setattr(url_fetch, "fetch_url", boom)
+    resp = client.post("/caption/url", json={"image_url": "https://example.com/a.png"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "could not fetch image_url"
+
+
+def test_http_status_error_reports_only_the_status(client, monkeypatch):
+    """A non-2xx response is reported by status code alone."""
+    import httpx
+
+    def not_found(url):
+        """Raise a 404 whose message names an internal URL."""
+        req = httpx.Request("GET", url)
+        raise httpx.HTTPStatusError("404 for http://internal:9000/x", request=req, response=httpx.Response(404))
+
+    monkeypatch.setattr(url_fetch, "fetch_url", not_found)
+    resp = client.post("/caption/url", json={"image_url": "https://example.com/a.png"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "image_url returned HTTP 404"
+
+
+def test_undecodable_body_is_a_generic_400(client, monkeypatch):
+    """A body that isn't an image gets a fixed message, not PIL's error text."""
+    monkeypatch.setattr(url_fetch, "fetch_url", lambda url: b"<html>not an image</html>")
+    resp = client.post("/caption/url", json={"image_url": "https://example.com/a.png"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "image_url did not return a decodable image"

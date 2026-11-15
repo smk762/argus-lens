@@ -65,3 +65,23 @@ def test_data_uri_still_reaches_the_engine(monkeypatch: pytest.MonkeyPatch) -> N
     assert resp.status_code == 200, resp.text
     assert seen["size"] == (4, 4)
     assert resp.json()["choices"][0]["message"]["content"] == "a red square"
+
+
+def test_oversized_data_uri_is_413_without_decoding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A data: URI over the size cap is refused before base64 decoding."""
+    monkeypatch.setattr(compat, "_MAX_B64_CHARS", 16)
+    monkeypatch.setattr(compat.base64, "b64decode", lambda *a, **k: pytest.fail("decoded oversized payload"))
+    app = FastAPI()
+    app.include_router(compat.create_openai_router(), prefix="/v1")
+    resp = TestClient(app).post("/v1/chat/completions", json=_body("data:image/png;base64," + "A" * 32))
+    assert resp.status_code == 413
+    assert resp.json()["detail"]["error"]["code"] == "image_too_large"
+
+
+def test_invalid_base64_data_uri_is_400() -> None:
+    """Malformed base64 is a 400 invalid_image, not a server error."""
+    app = FastAPI()
+    app.include_router(compat.create_openai_router(), prefix="/v1")
+    resp = TestClient(app).post("/v1/chat/completions", json=_body("data:image/png;base64,@@not*base64@@"))
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"]["code"] == "invalid_image"
