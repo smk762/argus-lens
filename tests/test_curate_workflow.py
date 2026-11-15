@@ -136,6 +136,67 @@ def test_parse_count() -> None:
     assert curate._parse_count("unclear") is None
 
 
+@pytest.mark.parametrize("answer", ["No one is visible in the image.", "Nobody.", "no people", "No person is shown."])
+def test_parse_count_negations_are_zero(answer: str) -> None:
+    """'No one' must not parse as 1 via the word 'one'."""
+    assert curate._parse_count(answer) == 0
+
+
+def test_read_jsonl_skips_line_torn_mid_utf8(tmp_path, capsys) -> None:
+    """A trailing append cut inside a multi-byte character is skipped, not fatal."""
+    path = tmp_path / "raw.jsonl"
+    good = json.dumps({"caption": "café"}, ensure_ascii=False).encode()
+    torn = json.dumps({"caption": "naïve"}, ensure_ascii=False).encode()
+    path.write_bytes(good + b"\n" + torn[: torn.index("ï".encode()) + 1])
+    assert list(curate.read_jsonl(path)) == [{"caption": "café"}]
+    assert "skipping unreadable line" in capsys.readouterr().err
+
+
+def _export_run(tmp_path: Path, source_root: str) -> tuple[Path, Path]:
+    """A minimal run dir (inventory + sdxl captions) for one image under *source_root*."""
+    image = tmp_path / "src" / "alice" / "pics" / "s1" / "IMG_1.jpg"
+    image.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8)).save(image)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "inventory.json").write_text(json.dumps({"source_root": source_root}))
+    row = {
+        "image_id": "abcdef0123456789",
+        "name": "alice",
+        "shoot_id": "s1",
+        "rel_path": "alice/pics/s1/IMG_1.jpg",
+        "subjects": {},
+        "variants": {"training": "sks, woman"},
+    }
+    (run / "captions.sdxl.jsonl").write_text(json.dumps(row) + "\n")
+    return run, image
+
+
+def test_export_symlinks_absolute_with_relative_source_root(tmp_path, monkeypatch) -> None:
+    """A relative source_root still yields links that resolve (not relative to the link's dir)."""
+    monkeypatch.chdir(tmp_path)
+    run, image = _export_run(tmp_path, "src")
+    dest = tmp_path / "dataset"
+    curate.main(["export", str(run), str(dest)])
+    link = next(dest.rglob("*.jpg"))
+    assert link.is_symlink() and link.exists()
+    assert link.resolve() == image.resolve()
+
+
+def test_export_replaces_dangling_symlink(tmp_path) -> None:
+    """Re-export over a link whose old target vanished recreates it instead of crashing."""
+    run, image = _export_run(tmp_path, str(tmp_path / "src"))
+    dest = tmp_path / "dataset"
+    curate.main(["export", str(run), str(dest)])
+    link = next(dest.rglob("*.jpg"))
+    link.unlink()
+    link.symlink_to(tmp_path / "gone.jpg")  # dangling, as if the library moved
+    curate.main(["export", str(run), str(dest)])
+    assert link.is_symlink() and link.resolve() == image.resolve()
+    curate.main(["export", str(run), str(dest), "--copy"])  # copy mode replaces the link with a real file
+    assert not link.is_symlink() and link.read_bytes() == image.read_bytes()
+
+
 def test_run_json_records_env_configured_settings(library, monkeypatch) -> None:
     """Settings supplied via env vars land in run.json, not as nulls."""
     src, run = library

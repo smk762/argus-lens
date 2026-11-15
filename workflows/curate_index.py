@@ -44,15 +44,17 @@ def read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
     """Yield rows of a JSONL file (nothing if it does not exist), skipping a torn last line."""
     if not path.exists():
         return
-    with path.open(encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
+    with path.open("rb") as fh:
+        for raw in fh:
+            raw = raw.strip()
+            if not raw:
                 continue
             try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
+                row = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):  # a torn append can split a multi-byte char
                 print(f"warning: skipping unreadable line in {path.name}", file=sys.stderr)
+                continue
+            yield row
 
 
 def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> int:
@@ -179,12 +181,21 @@ def _load_run_config(run: Path, wanted: dict[str, Any], force: bool) -> dict[str
     return config
 
 
+_NO_PEOPLE = re.compile(
+    r"\b(?:no[ -]one|nobody|no (?:people|persons?|humans?|faces?|subjects?|figures?|individuals?|men|women))\b",
+    re.IGNORECASE,
+)
+
+
 def _parse_count(text: str) -> int | None:
-    """First integer in a headcount answer ("2", "Two people." -> 2)."""
+    """First integer in a headcount answer ("2", "Two people." -> 2; "No one is visible." -> 0)."""
     words = {"zero": 0, "none": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
     match = re.search(r"\d+", text)
     if match:
         return int(match.group(0))
+    # Negations first, or "No one is visible" would match the word "one".
+    if _NO_PEOPLE.search(text):
+        return 0
     for word in re.findall(r"[a-z]+", text.lower()):
         if word in words:
             return words[word]
@@ -565,7 +576,8 @@ def cmd_export(args: argparse.Namespace) -> None:
     import shutil
 
     run = Path(args.run_dir)
-    root = Path(json.loads((run / "inventory.json").read_text())["source_root"])
+    # Absolute, so symlink targets do not resolve against the link's own directory.
+    root = Path(json.loads((run / "inventory.json").read_text())["source_root"]).expanduser().resolve()
     dest = Path(args.dest)
     rows = list(read_jsonl(run / f"captions.{args.target}.jsonl"))
     if args.name:
@@ -585,6 +597,9 @@ def cmd_export(args: argparse.Namespace) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         stem = f"{row['shoot_id']}_{Path(row['rel_path']).stem}_{row['image_id'][:8]}"
         image_out = out_dir / f"{stem}{src.suffix.lower()}"
+        # exists() follows links: drop a dangling or stale link from an earlier export so it is recreated.
+        if image_out.is_symlink() and (args.copy or not image_out.exists() or Path(os.readlink(image_out)) != src):
+            image_out.unlink()
         if not image_out.exists():
             if args.copy:
                 shutil.copy2(src, image_out)
