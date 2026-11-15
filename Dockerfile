@@ -11,4 +11,4 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     rm -rf /tmp/wheels
 
 EXPOSE 8080
-CMD ["argus-lens", "serve", "--port", "8080", "--cors"]
+CMD ["argus-lens", "serve", "--host", "0.0.0.0", "--port", "8080", "--cors"]

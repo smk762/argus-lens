@@ -20,6 +20,7 @@ from argus_lens.connectors.base import AssetRef
 
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_PAGE_SIZE = 250  # Immich's server-side default for /api/search/metadata
+MAX_REDIRECTS = 5
 
 
 class _ImmichClient:
@@ -142,14 +143,25 @@ class ImmichSource(_ImmichClient):
         ]
 
     def fetch_original(self, ref: AssetRef) -> bytes:
-        """Download the asset's original file bytes from Immich (no decoding)."""
-        resp = self._http.get(
-            self._url(self._asset_path(ref.id, "/original")),
-            headers=self._headers(accept="*/*"),
-            follow_redirects=True,
-        )
-        resp.raise_for_status()
-        return resp.content
+        """Download the asset's original file bytes from Immich (no decoding).
+
+        Redirects (e.g. to object storage behind a proxy) are followed by hand:
+        httpx strips only ``Authorization`` on a cross-origin hop and would
+        forward the custom ``x-api-key`` header, so the key is sent only while
+        the target keeps the base URL's scheme, host and port.
+        """
+        base = httpx.URL(self._base_url)
+        url = httpx.URL(self._url(self._asset_path(ref.id, "/original")))
+        headers = self._headers(accept="*/*")
+        for _ in range(MAX_REDIRECTS + 1):
+            resp = self._http.get(url, headers=headers, follow_redirects=False)
+            if not resp.is_redirect:
+                resp.raise_for_status()
+                return resp.content
+            url = url.join(resp.headers["location"])
+            if (url.scheme, url.host, url.port) != (base.scheme, base.host, base.port):
+                headers = {"Accept": "*/*"}
+        raise httpx.TooManyRedirects(f"more than {MAX_REDIRECTS} redirects fetching asset {ref.id!r}")
 
     def fetch_image(self, ref: AssetRef) -> Image.Image:
         """Download the asset's original file from Immich and decode it as RGB."""

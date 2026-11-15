@@ -372,6 +372,8 @@ pip install argus-lens[cli,server,local]
 argus-lens serve --cors --port 8080
 ```
 
+The server binds `127.0.0.1` by default. Pass `--host 0.0.0.0` to reach it from other machines (Frigate, a LAN UI); the caption endpoints have no auth, so only do that on a trusted network. The Docker images pass `--host 0.0.0.0` so the published port works.
+
 Endpoints:
 
 - `POST /caption` -- multipart file upload
