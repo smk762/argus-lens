@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-15
+
+### Upgrading
+Breaking changes, most likely to bite first:
+- **`argus-lens serve` binds `127.0.0.1`.** Pass `--host 0.0.0.0` to serve the network (the
+  Docker images already do).
+- **`POST /caption/url` refuses private/LAN addresses.** Name trusted hosts in
+  `LENS_URL_ALLOWED_HOSTS`. A non-URL `image_url` is now a 400.
+- **Manifest captioning needs `--source-root` / `LENS_SOURCE_PATH`**, and every manifest image
+  must resolve inside it.
+- **`/v1/chat/completions` takes only inline `data:` images** (max 50 MB); `http(s)` URLs are a
+  400.
+- **The `openai-compat` default prompt is `straightforward`**; set
+  `ARGUS_OPENAI_COMPAT_PROMPT=detailed` for the old one.
+- **RAM++ with a custom `repo_id`** under `model_dir` / `RAM_MODEL_DIR` loads from
+  `<dir>/<org>--<name>/`; move a flat custom checkpoint there.
+- **Replay**: a sha256 with no recording is a 404 (`ReplayMiss`), with no fallback to the URI.
+
 ### Security
 - **Audit hardening** (ai-code-auditor nightly, 43 packs):
   - `/caption/url` no longer echoes raw fetch errors. Transport failures say "could not fetch
@@ -681,7 +699,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/smk762/argus-lens/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/smk762/argus-lens/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/smk762/argus-lens/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/smk762/argus-lens/compare/v0.8.0...v0.9.0
