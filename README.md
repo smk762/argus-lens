@@ -374,7 +374,7 @@ Endpoints:
 - `POST /caption/url` -- JSON body with image URL
 - `POST /caption/batch` -- multiple file upload
 - `POST /caption/stream` -- NDJSON streaming for batch
-- `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars). Understands manifest 1.x and 2.x (unknown majors are a 400): pass the curator's export root as `export_root` and 2.0 rows are read from `export_root / exported_path` (valid even for `mode=move` exports); without it, rows fall back to `abs_path` (shared volume)
+- `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars). Understands manifest 1.x and 2.x (unknown majors are a 400): pass the curator's export root as `export_root` and 2.0 rows are read from `export_root / exported_path` (valid even for `mode=move` exports); without it, rows fall back to `abs_path` (shared volume). Needs `--source-root` / `LENS_SOURCE_PATH` (400 otherwise): `export_root` must lie inside it, and a row whose image resolves outside it is a per-row error, never read or written
 - `POST /caption/manifest/stream` -- streaming variant of `/caption/manifest`: one NDJSON progress line per image, then a completion summary (supports `write_xmp` and `export_root` too)
 - `POST /caption/folder` -- batch-caption every image in a folder under the source root (optionally recursive, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars)
 - `GET /folders?path=<rel>` -- browse folders under `--source-root` / `LENS_SOURCE_PATH` (for the UI folder picker)
@@ -385,7 +385,7 @@ Endpoints:
 - `POST /immich/pull` -- download an Immich album (or selected `asset_ids`) into a folder under the source root; NDJSON progress stream, atomic concurrent downloads, skips existing files (in-request filename collisions are per-asset errors, and non-captionable originals like HEIC/DNG get a `warning`)
 - `POST /immich/caption/stream` -- caption Immich album assets in memory (NDJSON progress); `write_back: true` pushes captions back to Immich (`write_xmp` is rejected here -- assets never touch disk; pull first, then `/caption/folder`)
 - `GET /v1/models` -- the model IDs `/v1/chat/completions` accepts, in OpenAI list format: `argus-wd14`, `argus-florence2`, `argus-hybrid`
-- `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider). `model` must be one of the `/v1/models` IDs (default `argus-hybrid`); any other value is a 404
+- `POST /v1/chat/completions` -- OpenAI-compatible endpoint (always mounted; usable as a Frigate GenAI provider). `model` must be one of the `/v1/models` IDs (default `argus-hybrid`); any other value is a 404. Images must be inline `data:` URIs (what Frigate sends); an `http(s)://` `image_url` is a 400, never fetched
 
 `/caption/folder`, `/caption/manifest` and `/caption/manifest/stream` rows carry only `rel_path` and `final_caption` (plus `xmp_path`). Pass `include_buckets: true` to add `metadata.buckets` (`{tags, prose}` → category → fragments) to each row, for faceted filtering over batch results.
 

@@ -249,16 +249,17 @@ def _parse_manifest(raw: bytes) -> list[dict[str, Any]]:
     return rows
 
 
-def _manifest_export_root(export_root: str) -> Path | None:
+def _manifest_export_root(source_root: str | None, export_root: str) -> Path | None:
     """Validate the optional ``export_root`` form field into a directory path.
 
     An empty string (the field's default) means "not supplied" and returns
-    ``None``; anything else must be an existing directory, otherwise every row
-    would fail with an unhelpful per-image read error instead of one clear 400.
+    ``None``; anything else must be an existing directory inside the source
+    root (confined like ``/caption/folder``), otherwise every row would fail
+    with an unhelpful per-image read error instead of one clear 400.
     """
     if not export_root:
         return None
-    root = Path(export_root)
+    root = _confine_folder(source_root, export_root)
     if not root.is_dir():
         raise HTTPException(status_code=400, detail=f"export_root is not a directory: {export_root}")
     return root
@@ -374,10 +375,16 @@ def _caption_manifest_row(
     xmp_overwrite: bool,
     prose_enrichment: bool,
     written: set[Path],
+    source_root: Path,
     export_root: Path | None = None,
     include_buckets: bool = False,
 ) -> dict[str, Any]:
     """Caption one manifest row via its resolved image path and ``target_profile``.
+
+    Every image path is resolved and must sit inside *source_root* (as
+    ``/caption/folder`` requires); a row pointing anywhere else is a per-row
+    error, so a crafted manifest can neither read an arbitrary image back
+    through its caption nor write sidecars outside the dataset root.
 
     Manifest 2.0 rows carry ``exported_path`` — the path actually written
     under the export root (the normative locator; ``mode=move`` exports leave
@@ -412,6 +419,13 @@ def _caption_manifest_row(
         }
     else:
         return {"rel_path": rel_path, "error": "row missing abs_path"}
+    if not isinstance(image_path, str):
+        return {"rel_path": rel_path, "error": "abs_path must be a string"}
+    resolved = Path(image_path).resolve()
+    if not resolved.is_relative_to(source_root.resolve()):
+        return {"rel_path": rel_path, "error": "image path is outside the configured source root"}
+    # Caption (and place sidecars next to) the resolved path, the one checked.
+    image_path = str(resolved)
     profile = row.get("target_profile") or {}
     if not isinstance(profile, dict):
         return {"rel_path": rel_path, "error": "target_profile must be a JSON object"}
@@ -952,11 +966,16 @@ def create_app(
         that carry no ``exported_path``) images are read from ``abs_path``,
         which assumes a volume shared with the curator. Rows declaring a
         ``manifest_version`` outside the 1.x/2.x majors are rejected with 400.
+
+        Like ``/caption/folder``, this needs a configured source root (400
+        otherwise): ``export_root`` must lie inside it, and a row whose image
+        resolves outside it is a per-row error, never read or written.
         """
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
         eng = _engine_for(backend)
+        source = _confine_folder(default_source, ".")  # 400 when no source root is configured
         rows = _parse_manifest(await manifest.read())
-        root = _manifest_export_root(export_root)
+        root = _manifest_export_root(default_source, export_root)
 
         def _run() -> dict[str, Any]:
             """Caption every manifest row sequentially, collecting results and per-row errors."""
@@ -973,6 +992,7 @@ def create_app(
                     xmp_overwrite=xmp_overwrite,
                     prose_enrichment=prose_enrichment,
                     written=written,
+                    source_root=source,
                     export_root=root,
                     include_buckets=include_buckets,
                 )
@@ -1014,8 +1034,9 @@ def create_app(
         """
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
         eng = _engine_for(backend)
+        source = _confine_folder(default_source, ".")  # 400 when no source root is configured
         rows = _parse_manifest(await manifest.read())
-        root = _manifest_export_root(export_root)
+        root = _manifest_export_root(default_source, export_root)
         total = len(rows)
         written: set[Path] = set()
 
@@ -1037,6 +1058,7 @@ def create_app(
                     xmp_overwrite=xmp_overwrite,
                     prose_enrichment=prose_enrichment,
                     written=written,
+                    source_root=source,
                     export_root=root,
                     include_buckets=include_buckets,
                 )
