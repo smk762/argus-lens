@@ -807,7 +807,14 @@ def create_app(
 
     @app.post("/caption/url")
     async def caption_url(req: CaptionURLRequest) -> dict[str, Any]:
-        """Caption an image from a URL (JSON body, no file upload needed)."""
+        """Caption an image from a URL (JSON body, no file upload needed).
+
+        Only ``http(s)://`` URLs are accepted (anything else would be read as a
+        server-side path). Non-public hosts are refused unless
+        ``LENS_URL_ALLOWED_HOSTS`` names them (#110).
+        """
+        if not req.image_url.lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="image_url must be an http(s):// URL")
         eng = _engine_for(req.backend)
         try:
             result = await asyncio.to_thread(
