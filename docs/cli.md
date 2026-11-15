@@ -45,14 +45,14 @@ $ argus-lens caption [OPTIONS] PATH
 * `--target-backend TEXT`: Diffusion backend (sdxl, flux, sd3)  [default: sdxl]
 * `--hybrid-preset TEXT`: Tag/prose balance: tags, keywords, balanced, descriptive, prose
 * `--prose-bias FLOAT`: Continuous tag/prose balance: 0.0 (pure tags) .. 1.0 (full prose)
-* `-o, --output PATH`: Output file (for json/jsonl/csv)
+* `-o, --output PATH`: Output file for a single image (written as --format)
 * `-f, --format TEXT`: Output format: txt, json, jsonl, csv  [default: txt]
 * `--overwrite`: Overwrite existing caption files
 * `-r, --recursive`: Walk sub-directories (results keyed by relative path)
 * `--api-key TEXT`: API key for cloud backends
 * `--model-id TEXT`: Model ID override
 * `--base-url TEXT`: Endpoint URL for openai-compat backend (e.g. http://localhost:11434/v1)
-* `--prompt TEXT`: openai-compat user prompt: preset (detailed, straightforward, grounded, descriptive, booru) or literal text
+* `--prompt TEXT`: openai-compat user prompt: preset (straightforward [default], detailed, grounded, descriptive, booru) or literal text
 * `--wd14-repo TEXT`: WD14 v3 tagger repo, e.g. SmilingWolf/wd-eva02-large-tagger-v3
 * `--reconcile TEXT`: Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo
 * `--verifier-url TEXT`: Base URL for the openai-compat verifier
@@ -148,13 +148,14 @@ $ argus-lens serve [OPTIONS]
 **Options**:
 
 * `-p, --port INTEGER`: Port to listen on  [default: 8080]
-* `--host TEXT`: Host to bind to  [default: 0.0.0.0]
+* `--host TEXT`: Host to bind to (0.0.0.0 exposes the unauthenticated API to the network)  [default: 127.0.0.1]
 * `-b, --backend TEXT`: Default backend for /caption endpoints  [env var: ARGUS_BACKEND; default: hybrid]
 * `--cors`: Enable CORS for the localhost dev frontend (:3000)
 * `--cors-origin TEXT`: Allowed CORS origin (repeatable; implies CORS; or LENS_CORS_ORIGINS)
 * `--cors-any`: Allow ANY origin to read, credential-less (public demos only; implies CORS)
 * `--source-root TEXT`: Root folder for /folders browsing (UI picker)
 * `--read-only`: Refuse sidecar/XMP writes, Immich pulls and write-back (or LENS_READ_ONLY=1)
+* `--allow-backend TEXT`: Backend a caption request may pick (repeatable; the default is always allowed; or ARGUS_ALLOWED_BACKENDS). Unset: any registered backend
 * `--help`: Show this message and exit.
 
 ## `argus-lens ram-vocab`

@@ -1,6 +1,6 @@
 """Argus Lens — Structured image captioning for training and generation."""
 
-from argus_lens._version import __version__
+from argus_lens._pkg_version import __version__
 from argus_lens.engine import ArgusLens
 from argus_lens.types import (
     BackendKind,

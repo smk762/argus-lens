@@ -162,7 +162,9 @@ class ImageAsset:
 def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, Image.Image]:
     """Load an image from various source types.
 
-    Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs.
+    Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs. URLs go
+    through :func:`argus_lens.url_fetch.fetch_url`, which refuses non-public
+    addresses unless ``LENS_URL_ALLOWED_HOSTS`` names the host (#110).
     Returns ``(asset, pil_image)`` — the asset carries the original-bytes sha256
     when it is recoverable (everything except a pre-decoded PIL input).
     """
@@ -171,14 +173,15 @@ def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, I
     if isinstance(source, bytes):
         asset = ImageAsset(name="bytes", sha256=hashlib.sha256(source).hexdigest(), data=source)
         return asset, Image.open(io.BytesIO(source)).convert("RGB")
-    if isinstance(source, str) and source.startswith(("http://", "https://")):
-        import httpx
+    # Case-insensitive like the scheme itself (and /caption/url's check): "HTTP://..." is a
+    # URL, never a server-side path.
+    if isinstance(source, str) and source.lower().startswith(("http://", "https://")):
+        from argus_lens.url_fetch import fetch_url
 
-        resp = httpx.get(source, follow_redirects=True, timeout=30.0)
-        resp.raise_for_status()
+        content = fetch_url(source)
         name = source.rsplit("/", 1)[-1].split("?")[0] or "image"
-        asset = ImageAsset(name=name, sha256=hashlib.sha256(resp.content).hexdigest(), uri=source, data=resp.content)
-        return asset, Image.open(io.BytesIO(resp.content)).convert("RGB")
+        asset = ImageAsset(name=name, sha256=hashlib.sha256(content).hexdigest(), uri=source, data=content)
+        return asset, Image.open(io.BytesIO(content)).convert("RGB")
     path = Path(source)
     if path.exists():
         data = path.read_bytes()
@@ -282,6 +285,11 @@ class ArgusLens:
     def backend(self) -> CaptionBackend:
         """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
+
+    @property
+    def loaded(self) -> bool:
+        """True while the backend's model is resident (loaded and not yet unloaded)."""
+        return self._loaded
 
     def unload(self) -> bool:
         """Release the backend's model/resources and free the CUDA cache (#37).
@@ -627,12 +635,15 @@ class ArgusLens:
             )
         )
 
-        loaded = [_load_image(img) for img in images]
-        total = len(loaded)
+        # Decode one image at a time (like caption_stream): pre-decoding the
+        # whole batch would hold every full-size RGB image in memory at once,
+        # which a large /caption/folder walk can't afford.
+        total = len(images)
         results: dict[str, CaptionResult] = {}
         caption_cache: dict[str, tuple[str, str]] = {}
 
-        for idx, (asset, pil) in enumerate(loaded):
+        for idx, source in enumerate(images):
+            asset, pil = _load_image(source)
             name = names[idx] if names and idx < len(names) else asset.name
 
             if replay:
@@ -826,12 +837,15 @@ class ArgusLens:
                     "available": False,
                     "reason": str(exc),
                 }
+        # The default hybrid is wd14 + florence2: available only when both are.
+        stages = [result.get("wd14", {}), result.get("florence2", {})]
+        reasons = [s.get("reason") for s in stages if not s.get("available") and s.get("reason")]
         result["hybrid"] = {
             "name": "hybrid",
             "kind": "composite",
             "style": "photo",
             "requires_gpu": False,
-            "available": True,
-            "reason": None,
+            "available": all(s.get("available") for s in stages),
+            "reason": "; ".join(reasons) or None,
         }
         return result

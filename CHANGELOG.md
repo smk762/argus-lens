@@ -7,6 +7,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-15
+
+### Upgrading
+Breaking changes, most likely to bite first:
+- **`argus-lens serve` binds `127.0.0.1`.** Pass `--host 0.0.0.0` to serve the network (the
+  Docker images already do).
+- **`POST /caption/url` refuses private/LAN addresses.** Name trusted hosts in
+  `LENS_URL_ALLOWED_HOSTS`. A non-URL `image_url` is now a 400.
+- **Manifest captioning needs `--source-root` / `LENS_SOURCE_PATH`**, and every manifest image
+  must resolve inside it.
+- **`/v1/chat/completions` takes only inline `data:` images** (max 50 MB); `http(s)` URLs are a
+  400.
+- **The `openai-compat` default prompt is `straightforward`**; set
+  `ARGUS_OPENAI_COMPAT_PROMPT=detailed` for the old one.
+- **RAM++ with a custom `repo_id`** under `model_dir` / `RAM_MODEL_DIR` loads from
+  `<dir>/<org>--<name>/`; move a flat custom checkpoint there.
+- **Replay**: a sha256 with no recording is a 404 (`ReplayMiss`), with no fallback to the URI.
+
+### Security
+- Release-review fixes (#117):
+  - `ARGUS_ALLOWED_BACKENDS` / `--allow-backend` now also pins `/v1`: a model whose backend is
+    not allowed is neither listed nor accepted (404 `model_not_found`).
+  - URL fetches have a 120 s total deadline, so a host trickling bytes can't hold a worker.
+  - An upper-case `HTTP(S)://` URL is fetched under the SSRF policy, never read as a file path.
+- **Audit hardening** (ai-code-auditor nightly, 43 packs):
+  - `/caption/url` no longer echoes raw fetch errors. Transport failures say "could not fetch
+    image_url" (and are logged), HTTP errors give only the status code, and unexpected
+    captioning failures are a generic 500.
+  - `/v1/chat/completions` refuses inline `data:` images over 50 MB (413 `image_too_large`) and
+    malformed base64 (400 `invalid_image`), checking the size before decoding.
+  - `FilesystemSource` no longer reads outside its root (`..`, absolute paths, symlinks pointing
+    out), and `list_assets` skips files whose target is outside the root.
+  - The Immich connector drops `x-api-key` once a redirect leaves the configured host.
+  - CSV export prefixes cells starting with `=`, `+`, `-`, `@`, tab or CR with `'` (formula
+    injection).
+- **Manifest captioning is confined to the source root** (audit pack-argus-lens-02858f2bfe).
+  `/caption/manifest[/stream]` now needs `--source-root` / `LENS_SOURCE_PATH` (400 otherwise),
+  like `/caption/folder`. `export_root` must lie inside it, and a row whose `abs_path` or
+  `export_root/exported_path` resolves outside it (symlinks included) is a per-row error. A
+  crafted manifest could otherwise read any image back through its caption, or write
+  `.txt`/`.xmp` sidecars into any writable directory. **Breaking** for callers that captioned
+  manifests without a source root, or with images outside it.
+- **`/v1/chat/completions` no longer fetches `http(s)://` image URLs** (SSRF, audit
+  pack-argus-lens-6e37a7b307). Such a URL is a 400 (`remote_url_not_supported`); send the image
+  inline as a `data:` URI, as Frigate does.
+- **`POST /caption/url` is fenced against SSRF** (#110). A URL whose host resolves to a
+  private, loopback, link-local, CGNAT, multicast or reserved address, or that redirects to one,
+  is a 400 and no connection is made. Lens connects to the IP it checked (stops DNS rebinding),
+  re-checks every redirect hop (at most 5) and caps the body at 50 MB. `LENS_URL_ALLOWED_HOSTS`
+  names trusted LAN hosts; `LENS_URL_FETCH=off` refuses every URL. A non-`http(s)` `image_url`
+  is now a 400: it used to be opened as a server-side file path. **Breaking** for callers that
+  caption from LAN URLs (add the host to `LENS_URL_ALLOWED_HOSTS`). The guard sits in
+  `_load_image`, so library calls with a URL get it too.
+- **The `.txt` exporter refuses names that escape its output directory** (audit
+  pack-argus-lens-1da399c6fb). An absolute name, a `..` part, or a sidecar resolving outside
+  the directory raises `ValueError` before anything is written.
+
+### Fixed
+- Release-review fixes (#117): a first request for another `backend` builds and probes it off
+  the event loop; `/caption/stream` names duplicate filenames `a.png#2` like `/caption/batch`;
+  `/v1` accepts line-wrapped base64 again.
+- `import argus_lens` works in a source tree that was never built or installed (no generated
+  `_version.py`). The version falls back to the installed metadata, then `0.0.0+unknown`. This
+  lets the ai-code-auditor's `validate_patch` sandbox run the test suite instead of lint only.
+- Audit fixes (assembly, backends, server, workflows):
+  - Captions no longer get doubled terminal punctuation (`..`, `?.`). Training prose keeps
+    one-word descriptor clauses ("barefoot") that identity suppression didn't create. 16-bit
+    greyscale images (`I;16B/L/N`, `La`) are detected as monochrome.
+  - Refine: the monochrome hue check works per sentence and matches tags by whole word; an
+    underscored trigger word (`ohwx_woman`) survives photo list rewrites; an unrelated HTTP 400
+    no longer permanently disables `reasoning_effort` (it retries without it first).
+  - Model registry: `clear()` no longer frees models still in use or loading (they are freed at
+    their last release), a release after a reload can't corrupt the new model's refcount, and a
+    failing `.cpu()` is logged while the CUDA cache is still emptied.
+  - RAM++ with a non-default `repo_id` under `model_dir`/`RAM_MODEL_DIR` uses
+    `<dir>/<org>--<name>/` (move a flat custom checkpoint there). WD14 downloads into a user
+    `model_dir` go to `<model_dir>/<repo-name>/` and never replace an existing tag CSV.
+  - Replay: a sha256 with no recording is a `ReplayMiss`; the URI fallback runs only when no
+    sha256 is given, so a changed file can't get a stale caption.
+  - Replicate honours an explicit `api_key` over `REPLICATE_API_TOKEN` without writing the
+    environment, and joins streamed tokens without extra spaces.
+  - `ram-vocab build` keeps finished descriptions on failure (`descriptions.partial.json`;
+    re-run with it to resume).
+  - `argus-lens caption <file> -o PATH` writes exactly `PATH`.
+  - `caption_batch` decodes one image at a time; `/v1` builds engines off the event loop;
+    `GET /folders` skips unreadable subfolders; manifest rows containing U+2028/U+2029/U+0085
+    parse.
+  - `workflows/curate_index.py`: a torn last JSONL line is skipped, "no one"/"nobody" counts
+    as 0, and `export` resolves a relative `source_root` and replaces dangling or stale links.
+- **Refine no longer accepts an empty identity rewrite** (#104). An empty `identity` answer
+  counted as "nothing of this category" and blanked `final_caption`. It is now rejected and
+  retried, and the deterministic variant is kept. Other category variants still accept an empty
+  "none visible" answer.
+
+### Added
+- **Headcount and expression contradiction checks** (#87).
+  - Tag reconciliation drops a `smile`/`laugh`/`grin` tag when the prose describes a different
+    expression (tongue out, frowning, crying, a serious face) and never mentions smiling. This
+    fixes RAM++ `smile` on the Einstein tongue photo.
+  - The contradiction detector, shared by eval and `reconcile`, gains a `count` dispute: an exact
+    tag headcount against the one headcount the prose states. `tag-prior` and the VQA verifiers
+    adjudicate it, and the rewrite changes only the number ("six soldiers" → "three soldiers").
+  - The prose headcount parser recognises more plural nouns ("soldiers", "figures", "officers",
+    "hikers", …).
+- **Per-request backend selection** (#107, for argus-studio#69). Every caption endpoint takes an
+  optional `backend` (form field or JSON key). Omitted, the server default captions, as before.
+  An unknown or unavailable backend is a 400 that carries its `reason`; the server never falls
+  back to another backend. A switched-to backend gets its own lazily built engine (same
+  recorder, refiner and idle unload). `--allow-backend` / `ARGUS_ALLOWED_BACKENDS` pins the
+  names a request may pick; the default is always allowed.
+- **The default backend is named without captioning**: `/health` gains `backend`,
+  `allowed_backends` and `gpu.resident`; `/backends` becomes `{default, allowed, backends}`, and
+  each entry gains `allowed`.
+
+### Changed
+- **`argus-lens serve` binds `127.0.0.1` by default** (audit). Pass `--host 0.0.0.0` to expose
+  it on the network; the Docker images already do.
+- `CaptionTargetProfile` built without an explicit `token_budget` uses its `target_backend`'s
+  budget (Flux/SD3 200) instead of always SDXL's 60. `resolve_target_profile` is unchanged.
+- `/caption/batch` keys uploads that share a filename as `name`, `name#2`, `name#3`, … instead of
+  letting later ones overwrite earlier results.
+- **The `openai-compat` default prompt is now `straightforward`** (#104), replacing `detailed`
+  ("Describe this image in detail."). On the 205-photo Lightbox set with `qwen3-vl:2b-instruct`,
+  `detailed` wrote editorial copy (mood words, "This image shows …" openers) at about twice the
+  length. `straightforward` cut that wording about 5x without `grounded`'s rule-following slips.
+  Set `ARGUS_OPENAI_COMPAT_PROMPT=detailed` to keep the old prompt.
+- **Assembly drops editorial prose** (#104). A sentence that is only mood or meta commentary
+  ("The overall atmosphere is peaceful", "This is a detailed description of the image",
+  "The image evokes a sense of …"), and a mood sub-clause ("…, creating a serene scene"), is
+  removed before it reaches any variant and is listed in `removed_phrases`. A sentence that also
+  names a count, colour or position is kept, and prose that is all editorial is left alone.
+  "This is a photograph of …" openers are now stripped like "The image shows …".
+- `GET /backends` wraps the backend map with `default` and `allowed` (the map itself is still
+  under `backends`). Its `hybrid` entry now reports wd14 + florence2 availability instead of
+  always `available: true`.
+- `POST /admin/unload` unloads every resident engine, including switched-to backends.
+
 ## [0.11.0] - 2026-11-13
 
 ### Added
@@ -570,7 +707,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/smk762/argus-lens/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/smk762/argus-lens/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/smk762/argus-lens/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/smk762/argus-lens/compare/v0.8.0...v0.9.0

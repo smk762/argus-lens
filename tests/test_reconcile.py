@@ -263,3 +263,63 @@ def test_engine_applies_reconciliation(tmp_path) -> None:
     result = fixed.caption(img)
     assert "red dress" in result.raw_prose
     assert "blue" not in result.raw_prose
+
+
+# --------------------------------------------------------------------------- #
+# Headcount disputes (#87)
+# --------------------------------------------------------------------------- #
+
+
+def test_detect_count_dispute() -> None:
+    """An exact tag headcount vs the one headcount the prose states is a ``count`` dispute."""
+    disputes = detect_disputes("1girl, 1boy, standing", "Three people stand in a kitchen.")
+    assert disputes == [AttributeDispute(kind="count", subject="people", tags_say=("2",), prose_says=("3",))]
+
+
+@pytest.mark.parametrize(
+    ("tags", "prose"),
+    [
+        ("1girl, 1boy", "Two people stand in a kitchen."),  # agree
+        ("multiple_girls", "Three women sit on a bench."),  # lower bound, not exact
+        ("6+girls", "Nine women sit on a bench."),  # lower bound
+        ("2girls, 3boys", "Two women and three men sit at a table."),  # several headcounts
+        ("1girl, 1boy", "A group of people at a table."),  # no exact prose count
+        ("man, smile", "Six soldiers stand in a row."),  # no headcount tags (RAM++)
+    ],
+)
+def test_no_count_dispute(tags: str, prose: str) -> None:
+    """Only two exact, comparable headcounts can disagree."""
+    assert not [d for d in detect_disputes(tags, prose) if d.kind == "count"]
+
+
+def test_tag_prior_fixes_count() -> None:
+    """tag-prior rewrites the stated headcount to the tag count."""
+    res = Reconciler(TagPriorVerifier()).reconcile(
+        Image.new("RGB", (8, 8)), "2girls, 1boy", "Six soldiers stand in a row; the soldiers wear grey."
+    )
+    assert res.prose == "Three soldiers stand in a row; the soldiers wear grey."
+    assert [(c.kind, c.was, c.now) for c in res.changes] == [("count", ("6",), "3")]
+
+
+def test_count_rewrite_keeps_grammar() -> None:
+    """Digits stay digits; a singular verdict leaves the plural phrase alone."""
+    dispute = AttributeDispute(kind="count", subject="people", tags_say=("5",), prose_says=("6",))
+    assert apply_fix("A photo of 6 men.", dispute, "5") == "A photo of 5 men."
+    assert apply_fix("Six men.", dispute, "1") == "Six men."
+    assert apply_fix("Six men.", dispute, "several") == "Six men."
+
+
+def test_count_question_and_answer() -> None:
+    """VQA verifiers ask for an integer and parse digits or number words."""
+    dispute = AttributeDispute(kind="count", subject="people", tags_say=("2",), prose_says=("3",))
+    assert "How many people" in build_question(dispute)
+    assert parse_answer("5", "count") == "5"
+    assert parse_answer("There are five.", "count") == "5"
+    assert parse_answer("I can't tell", "count") is None
+
+
+def test_florence_abstains_on_count() -> None:
+    """Florence grounding only adjudicates colour."""
+    dispute = AttributeDispute(kind="count", subject="people", tags_say=("2",), prose_says=("3",))
+    verdict = FlorenceGroundingVerifier.__new__(FlorenceGroundingVerifier).verify(Image.new("RGB", (8, 8)), dispute)
+    assert verdict.value is None

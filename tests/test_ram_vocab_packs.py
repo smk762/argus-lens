@@ -170,6 +170,31 @@ def test_description_writer_follows_upstream_recipe(monkeypatch):
     assert (seen[0]["temperature"], seen[0]["max_tokens"]) == (0.99, 77)
 
 
+def test_describe_all_keeps_completed_tags_on_failure_and_resumes():
+    """A failed request leaves finished tags in *into*; a re-run skips them and only describes the rest."""
+    calls = {"n": 0, "fail": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        if calls["fail"] and "beta" in prompt:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "desc"}}]})
+
+    client = httpx.Client(base_url="http://llm.test/v1", transport=httpx.MockTransport(handler))
+    writer = DescriptionWriter(client=client, prompts=("what is {tag}",), samples_per_prompt=2)
+    done: dict[str, list[str]] = {}
+    with pytest.raises(httpx.HTTPStatusError):
+        writer.describe_all(["alpha", "beta", "gamma"], into=done)
+    assert done == {"alpha": [template("alpha"), "desc", "desc"]}
+
+    calls.update(n=0, fail=False)
+    result = writer.describe_all(["alpha", "beta", "gamma"], into=done)
+    assert result is done
+    assert set(done) == {"alpha", "beta", "gamma"}
+    assert calls["n"] == 4  # only beta and gamma were requested again
+
+
 # -- backend wiring ---------------------------------------------------------------------------------
 
 

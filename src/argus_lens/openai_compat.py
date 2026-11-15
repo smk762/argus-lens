@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import io
 import threading
 import time
@@ -66,13 +67,21 @@ def _assemble_content(result: CaptionResult) -> str:
 
 # ── Image extraction ───────────────────────────────────────────────────────────
 
+# Largest decoded image accepted inline (matches url_fetch.MAX_BYTES). The
+# base64 text is checked against this before decoding, so an oversized payload
+# is refused without allocating its decoded copy.
+MAX_IMAGE_BYTES = 50 * 1024 * 1024
+_MAX_B64_CHARS = 4 * ((MAX_IMAGE_BYTES + 2) // 3)
+
 
 def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
     """Return raw image bytes from an OpenAI-format message content list.
 
-    Handles:
-      • ``data:image/*;base64,<b64>``  — Frigate always sends this form
-      • ``http://`` / ``https://``     — fallback for direct URL usage
+    Only inline ``data:image/*;base64,<b64>`` URIs are accepted (Frigate
+    always sends this form). An ``http(s)://`` URL is refused with a 400
+    rather than fetched: fetching client-supplied URLs would let anyone who
+    can reach /v1 make this server GET internal-only hosts (cloud metadata,
+    LAN services) and read the reply back through the caption (SSRF).
     """
     for item in content:
         if item.get("type") != "image_url":
@@ -81,13 +90,35 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
         if url.startswith("data:"):
             # Strip the MIME header — everything after the comma is base64
             _header, _, b64 = url.partition(",")
-            return base64.b64decode(b64)
+            # Some clients line-wrap base64 (MIME style); strict validation below
+            # would reject that whitespace, so drop it first.
+            b64 = "".join(b64.split())
+            if len(b64) > _MAX_B64_CHARS:
+                _openai_error(
+                    413,
+                    f"Inline image is larger than {MAX_IMAGE_BYTES} bytes",
+                    "invalid_request_error",
+                    "image_too_large",
+                    param="messages",
+                )
+            try:
+                return base64.b64decode(b64, validate=True)
+            except binascii.Error:
+                _openai_error(
+                    400,
+                    "Image data URI is not valid base64",
+                    "invalid_request_error",
+                    "invalid_image",
+                    param="messages",
+                )
         if url.startswith(("http://", "https://")):
-            import httpx
-
-            resp = httpx.get(url, timeout=15)
-            resp.raise_for_status()
-            return resp.content
+            _openai_error(
+                400,
+                "Remote image URLs are not supported; send the image inline as a data: URI",
+                "invalid_request_error",
+                "remote_url_not_supported",
+                param="messages",
+            )
     return b""
 
 
@@ -152,7 +183,7 @@ class _ChatCompletionRequest(BaseModel):
 # ── Router factory ─────────────────────────────────────────────────────────────
 
 
-def create_openai_router(**engine_kwargs: Any) -> APIRouter:
+def create_openai_router(*, allowed_backends: set[str] | None = None, **engine_kwargs: Any) -> APIRouter:
     """Return an APIRouter with the OpenAI-compatible /v1 endpoints.
 
     Mount at ``/v1`` in the parent FastAPI app:
@@ -161,9 +192,15 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
 
     Any ``engine_kwargs`` (e.g. ``model_dir``, ``florence_model_id``) are
     forwarded to every ArgusLens engine created by this router.
+    *allowed_backends* (the server's ``ARGUS_ALLOWED_BACKENDS`` pin, ``None`` =
+    no pin) limits the models offered and accepted to those whose backend is
+    allowed, so /v1 cannot load a model the native endpoints refuse.
     """
     router = APIRouter(tags=["openai-compat"])
     pool = _EnginePool(**engine_kwargs)
+    models = {
+        mid: backend for mid, backend in _MODEL_MAP.items() if allowed_backends is None or backend in allowed_backends
+    }
 
     @router.get("/models")
     async def list_models() -> dict[str, Any]:
@@ -177,7 +214,7 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
                     "created": 0,
                     "owned_by": "argus-lens",
                 }
-                for mid in _MODEL_MAP
+                for mid in models
             ],
         }
 
@@ -193,10 +230,10 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
         if req.stream:
             _openai_error(400, "Streaming is not supported", "invalid_request_error", "stream_not_supported")
 
-        if req.model not in _MODEL_MAP:
+        if req.model not in models:
             _openai_error(
                 404,
-                f"Model '{req.model}' not found. Available: {list(_MODEL_MAP)}",
+                f"Model '{req.model}' not found. Available: {list(models)}",
                 "invalid_request_error",
                 "model_not_found",
             )
@@ -217,7 +254,9 @@ def create_openai_router(**engine_kwargs: Any) -> APIRouter:
             _openai_error(400, f"Invalid image data: {exc}", "invalid_request_error", "invalid_image")
 
         try:
-            engine = pool.get(req.model)
+            # First use constructs the engine (backend imports); keep that
+            # off the event loop too, not just the caption call.
+            engine = await asyncio.to_thread(pool.get, req.model)
             result: CaptionResult = await asyncio.to_thread(engine.caption, pil)
         except Exception as exc:
             _openai_error(503, f"Caption backend error: {exc}", "server_error", "backend_unavailable")

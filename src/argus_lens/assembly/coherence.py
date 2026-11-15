@@ -83,6 +83,8 @@ _OPENER = re.compile(
     r"(?:(?:in|within) (?:this|the) (?:image|photo|photograph|picture|scene|shot),?\s*"
     r"|(?:this|the) (?:image|photo|photograph|picture|scene) (?:shows|depicts|features|captures|is|presents|portrays)\s+"
     r"(?:(?:a|an) (?:close-up |candid |portrait )?(?:photograph|photo|picture|image|shot) of\s+)?"
+    r"|(?:this|it) is (?:a|an) (?:close-up |candid |portrait |detailed |vintage |colou?r )?"
+    r"(?:photograph|photo|picture|image|shot) (?:of|showing|depicting)\s+"
     r"|(?:(?:a|an) )?(?:close-up |candid |portrait )?(?:photograph|photo|picture|image|shot) of\s+"
     r"|(?:here )?we (?:can )?see\s+)",
     re.I,
@@ -199,9 +201,13 @@ def split_sentences(text: str, *, semicolons: bool = False) -> list[str]:
 
 
 def end_sentence(body: str) -> str:
-    """Return *body* with a full stop, unless it already ends ``."`` / ``?)`` style."""
-    stripped = body.rstrip(_CLOSERS)
-    if stripped != body and stripped[-1:] in (".", "!", "?"):
+    """Return *body* with a full stop, unless it already ends ``.`` / ``?`` / ``."`` / ``?)`` style.
+
+    An empty or whitespace-only *body* is returned unchanged rather than as ``"."``.
+    """
+    if not body.strip():
+        return body
+    if body.rstrip(_CLOSERS)[-1:] in (".", "!", "?"):
         return body
     return body + "."
 

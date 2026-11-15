@@ -34,7 +34,11 @@ _NUMBER_WORDS: dict[str, int] = {
 }
 _GROUP_WORDS: frozenset[str] = frozenset({"group", "crowd", "several", "many", "few", "team", "family"})
 _PERSON_SINGULAR = r"(?:woman|man|girl|boy|person|lady|guy|child|kid|model|teen|teenager)"
-_PERSON_PLURAL = r"(?:women|men|girls|boys|people|persons|ladies|guys|children|kids|models|friends|teens|teenagers)"
+_PERSON_PLURAL = (
+    r"(?:women|men|girls|boys|people|persons|ladies|guys|children|kids|models|friends|teens|teenagers|"
+    r"soldiers|figures|officers|players|students|workers|musicians|dancers|athletes|scientists|adults|"
+    r"individuals|riders|monks|nuns|sailors|hikers|climbers|tourists|spectators)"
+)
 # Up to two adjectives between the quantity and the noun ("two young smiling women").
 _ADJ = r"(?:[\w-]+\s+){0,2}"
 _QUANTITY = "|".join(sorted({*_NUMBER_WORDS, *_GROUP_WORDS}))
@@ -170,3 +174,70 @@ def count_subjects(tags: list[str], prose: str = "") -> SubjectCount:
         agree=agree,
         evidence=tag_evidence + prose_evidence,
     )
+
+
+def exact_tag_count(tags: list[str]) -> int | None:
+    """Headcount the tags state exactly: numbered tags only (``1girl, 2boys`` -> 3).
+
+    ``multiple_*``, ``6+`` and ``solo_focus`` are lower bounds, so they make the
+    count inexact (``None``), as does the absence of numbered tags.
+    """
+    total = 0
+    for tag in tags:
+        key = _normalise_tag(tag)
+        if _MULTIPLE_TAG.match(key) or key == "solo_focus":
+            return None
+        if numbered := _NUMBERED_TAG.match(key):
+            if numbered.group(2):
+                return None
+            total += int(numbered.group(1))
+    return total or None
+
+
+def exact_prose_counts(prose: str) -> list[tuple[int, str]]:
+    """Every ``(count, phrase)`` where the prose states a number of people (``"six soldiers"``).
+
+    Only number words and digits count; "a group of people" or "a woman" are
+    not exact headcounts.
+    """
+    text = prose.lower()
+    found: list[tuple[int, str]] = [(int(m.group(1)), m.group(0)) for m in _PLURAL_DIGIT_RE.finditer(text)]
+    for match in _PLURAL_RE.finditer(text):
+        word = match.group(1)
+        if word in _NUMBER_WORDS and word not in {"both", "pair", "couple"}:
+            found.append((_NUMBER_WORDS[word], match.group(0)))
+    return found
+
+
+def number_word(n: int) -> str:
+    """``5`` -> ``"five"`` for 2-10, else the digits."""
+    for word, value in _NUMBER_WORDS.items():
+        if value == n and word not in {"both", "pair", "couple"}:
+            return word
+    return str(n)
+
+
+def rewrite_prose_count(prose: str, value: int) -> str:
+    """Replace each stated headcount in *prose* with *value* (``"six soldiers"`` -> ``"five soldiers"``).
+
+    Only plural phrases are rewritten, and only to a plural value (>= 2), so
+    the grammar stays intact; for a value below 2 the prose is returned as is.
+    """
+    if value < 2:
+        return prose
+    replacement = number_word(value)
+
+    def sub(match: re.Match[str]) -> str:
+        quantity = match.group(1)
+        if quantity.lower() not in _NUMBER_WORDS and not quantity.isdigit():
+            return match.group(0)
+        if quantity.lower() in {"both", "pair", "couple"}:
+            return match.group(0)
+        new = str(value) if quantity.isdigit() else replacement
+        if quantity[:1].isupper():
+            new = new.capitalize()
+        return new + match.group(0)[len(quantity) :]
+
+    flags = re.IGNORECASE
+    prose = re.sub(_PLURAL_DIGIT_RE.pattern, sub, prose, flags=flags)
+    return re.sub(_PLURAL_RE.pattern, sub, prose, flags=flags)

@@ -294,6 +294,32 @@ def test_rewriter_disables_reasoning_and_falls_back_on_400() -> None:
     assert ["reasoning_effort" in b for b in bodies] == [True, False, False]
 
 
+def test_rewriter_keeps_reasoning_effort_when_400_is_unrelated() -> None:
+    """A 400 the retry also gets (e.g. oversized request) must not disable ``reasoning_effort``."""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Reject every request."""
+        bodies.append(json.loads(request.content))
+        return httpx.Response(400, json={"error": "context length exceeded"})
+
+    client = httpx.Client(base_url="http://llm/v1", transport=httpx.MockTransport(handler))
+    rewriter = OpenAICompatRewriter(base_url="http://llm/v1", client=client)
+    result, profile = _result("flux")
+    Refiner(rewriter).refine(result, profile, trigger_word="sks")
+    assert rewriter.reasoning_effort == "none"
+    assert ["reasoning_effort" in b for b in bodies] == [True, False]
+
+
+def test_list_rewrite_keeps_underscored_trigger_word() -> None:
+    """De-underscoring a photo list caption leaves an ``ohwx_woman`` trigger intact."""
+    rewriter = _ScriptedRewriter({"training": "ohwx_woman, standing, red_dress, kitchen, holding cup"})
+    profile = resolve_target_profile(target_backend="flux")
+    result = compose_caption_result(trigger_word="ohwx_woman", tags=TAGS, prose=PROSE, target_profile=profile)
+    refined = Refiner(rewriter, variants=("training",)).refine(result, profile, trigger_word="ohwx_woman")
+    assert refined.caption_variants["training"] == "ohwx_woman, standing, red dress, kitchen, holding cup"
+
+
 def test_rewriter_reasoning_effort_can_be_disabled(monkeypatch) -> None:
     """An empty value never sends the parameter."""
     monkeypatch.setenv("ARGUS_REFINE_REASONING_EFFORT", "")
@@ -347,3 +373,14 @@ def test_space_separated_rewrite_accepted_once_fixed() -> None:
     refined = Refiner(rewriter, variants=("identity",)).refine(result, profile)
     assert refined.caption_variants["identity"] == "woman, brown hair"
     assert refined.metadata["refine"]["attempts"] == 2
+
+
+def test_empty_identity_rewrite_is_rejected() -> None:
+    """An empty identity answer keeps the deterministic variant instead of blanking the caption (#104)."""
+    result, profile = _result()
+    rewriter = _ScriptedRewriter({"identity": ""}, {"identity": ""})
+    refined = Refiner(rewriter, variants=("identity",)).refine(result, profile)
+    assert refined.caption_variants["identity"] == result.caption_variants["identity"]
+    assert refined.caption_variants["identity"]
+    assert "identity" not in refined.metadata["refine"]["accepted"]
+    assert refined.metadata["refine"]["rejected"]["identity"] == ["missing from response"]

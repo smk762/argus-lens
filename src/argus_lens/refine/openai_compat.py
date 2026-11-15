@@ -88,8 +88,8 @@ class OpenAICompatRewriter:
     *reasoning_effort* (``ARGUS_REFINE_REASONING_EFFORT``, default ``"none"``)
     turns off "thinking" on hybrid reasoning models such as Qwen3: left on,
     they spend the token budget reasoning and return empty content. A server
-    that rejects the parameter (HTTP 400) is retried once without it, and it
-    is not sent again. Pass ``""`` to never send it.
+    that rejects the parameter (HTTP 400) is retried once without it; if
+    that retry succeeds it is not sent again. Pass ``""`` to never send it.
     """
 
     name = "openai-compat"
@@ -149,10 +149,13 @@ class OpenAICompatRewriter:
             payload["reasoning_effort"] = self.reasoning_effort
         response = self._http().post("/chat/completions", json=payload)
         if response.status_code == 400 and "reasoning_effort" in payload:
-            # Server doesn't know the parameter: drop it for this and later calls.
-            self.reasoning_effort = None
-            del payload["reasoning_effort"]
-            response = self._http().post("/chat/completions", json=payload)
+            # Maybe the server doesn't know the parameter: retry without it, and drop it for
+            # later calls only if that worked. Any other 400 (oversized image, context length)
+            # fails the retry too and must not switch thinking back on for every later caption.
+            retry = {k: v for k, v in payload.items() if k != "reasoning_effort"}
+            response = self._http().post("/chat/completions", json=retry)
+            if response.is_success:
+                self.reasoning_effort = None
         response.raise_for_status()
         return parse_rewrite(_extract_content(response.json()))
 

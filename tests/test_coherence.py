@@ -9,6 +9,7 @@ from argus_lens.assembly.classifier import category_scores, classify_fragment, c
 from argus_lens.assembly.coherence import (
     check_caption,
     clean_prose,
+    end_sentence,
     repair_caption,
     repair_fragment,
     split_sentences,
@@ -376,3 +377,30 @@ def test_split_sentences_ignores_an_unclosed_inch_mark() -> None:
         "He smiles.",
         "The room is dark.",
     ]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("A red door", "A red door."),
+        ("A red door.", "A red door."),
+        ("Is it raining?", "Is it raining?"),
+        ("Stop!", "Stop!"),
+        ('the text "J.T. GUARDS."', 'the text "J.T. GUARDS."'),
+        ("", ""),
+    ],
+)
+def test_end_sentence_never_doubles_terminal_punctuation(body: str, expected: str) -> None:
+    """A body already ending ``.``/``?``/``!`` (bare or inside a closer) is left alone."""
+    assert end_sentence(body) == expected
+
+
+def test_prose_training_keeps_one_word_descriptor_clauses() -> None:
+    """``barefoot``/``smiling`` were in the prose all along: not orphans of identity excision."""
+    caption, removed = assemble_prose_training_variant(
+        "", "She stands in a field, barefoot, smiling.", token_budget=200
+    )
+    assert caption == "She stands in a field, barefoot, smiling."
+    assert removed == []
+    _, removed = assemble_prose_training_variant("", "She has green eyes, and stands in a field.", token_budget=200)
+    assert "She" in removed  # the bare subject excision leaves behind still goes

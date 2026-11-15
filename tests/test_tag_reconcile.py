@@ -49,6 +49,12 @@ def test_colour_images_are_not_monochrome() -> None:
     assert not is_monochrome(hand_coloured)
 
 
+@pytest.mark.parametrize("mode", ["I;16", "I;16B", "I;16L"])
+def test_sixteen_bit_greyscale_modes_are_monochrome(mode: str) -> None:
+    """Every single-band 16-bit greyscale mode takes the fast path (no RGB conversion)."""
+    assert is_monochrome(Image.new(mode, (16, 16)))
+
+
 # --- person nouns (#85) ---
 
 
@@ -270,6 +276,9 @@ def test_refine_accepts_a_hue_the_prose_states_with_modifiers_between() -> None:
         ("man, black hair", "man", "a white shirt and black trousers. his hair is short.", ["black hair"]),
         ("man, white hair", "man", "a man in a white shirt and black hair band.", ["white hair"]),
         ("man, white", "man, white", "", []),
+        ("His beard is white. The man smiles", "man, white beard", "", []),  # no "white the" across sentences
+        ("man, red hair", "man, bored hair", "", ["red hair"]),  # tag match is whole words
+        ("man, white hair", "man, white hairband", "", ["white hair"]),
     ],
 )
 def test_ungrounded_hue_pairs(text: str, tags: str, prose: str, ungrounded: list[str]) -> None:
@@ -327,3 +336,56 @@ def test_refine_allows_black_and_white_medium_after_folding_colour_tags() -> Non
         monochrome=True,
     )
     assert "suppressed terms" not in " ".join(refined.metadata["refine"].get("rejected", {}).get("identity", []))
+
+
+# --- expression (#87) ---
+
+
+def test_smile_dropped_when_prose_shows_tongue_out() -> None:
+    """Einstein sticking his tongue out: RAM++'s smile/laugh tags lose to the prose."""
+    result = reconcile_tags(
+        _tags("man, face, hair, smile, laugh"), "An older man with wild white hair, his tongue extended."
+    )
+    assert result.tags == ["man", "face", "hair"]
+    assert set(result.dropped) == {"smile", "laugh"}
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "A man frowning at the camera.",
+        "A woman with a serious expression.",
+        "A child crying in a stroller.",
+        "A man, not smiling, looks at the camera.",
+    ],
+)
+def test_smile_dropped_for_contrary_expressions(prose: str) -> None:
+    """Frowns, serious faces, tears and an explicit 'not smiling' all override the tag."""
+    assert "smile" not in reconcile_tags(_tags("person, smile"), prose).tags
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "A man smiling broadly, not frowning.",  # prose mentions a smile
+        "A woman laughing with her tongue out.",
+        "A man in a grey coat.",  # silent on expression
+        "",
+    ],
+)
+def test_smile_kept_without_contrary_evidence(prose: str) -> None:
+    """A smile in the prose, or silence, keeps the tag."""
+    assert "smile" in reconcile_tags(_tags("man, smile"), prose).tags
+
+
+def test_dropped_smile_stays_out_of_variants() -> None:
+    """The reconciled-away tag doesn't reach the identity variant."""
+    profile = resolve_target_profile(target_style="photo", target_category="identity", target_backend="sdxl")
+    result = compose_caption_result(
+        trigger_word="",
+        tags="man, smile, mustache",
+        prose="An older man with a mustache sticks his tongue out.",
+        target_profile=profile,
+    )
+    assert "smile" not in result.caption_variants["identity"]
+    assert "smile" in result.metadata["tag_reconcile"]["dropped"]

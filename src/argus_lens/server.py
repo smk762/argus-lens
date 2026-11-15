@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import os
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -23,14 +24,14 @@ import structlog
 from argus_cortex.xmp import XmpError
 from PIL import Image
 
-from argus_lens._version import __version__
+from argus_lens._pkg_version import __version__
 from argus_lens.assembly.profiles import available_profiles
 from argus_lens.backends.replay import ReplayMiss
 from argus_lens.connectors.base import AssetRef
 from argus_lens.connectors.filesystem import IMAGE_SUFFIXES
 from argus_lens.connectors.immich import ImmichSink, ImmichSource
 from argus_lens.connectors.xmp import XmpSink
-from argus_lens.engine import ArgusLens
+from argus_lens.engine import ArgusLens, _resolve_backend
 from argus_lens.openai_compat import create_openai_router
 from argus_lens.types import (
     BACKEND_TOKEN_BUDGETS,
@@ -40,6 +41,7 @@ from argus_lens.types import (
     CaptionResult,
     get_category_names,
 )
+from argus_lens.url_fetch import URLRefused
 
 logger = structlog.get_logger()
 
@@ -60,6 +62,7 @@ class CaptionURLRequest(BaseModel):
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
+    backend: str | None = None
     hybrid_preset: str | None = None
     prose_bias: float | None = None
     prose_enrichment: bool = True
@@ -77,6 +80,7 @@ class CaptionFolderRequest(BaseModel):
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
+    backend: str | None = None
     checkpoint: str | None = None
     hybrid_preset: str | None = None
     prose_bias: float | None = None
@@ -101,6 +105,7 @@ class ImmichCaptionRequest(BaseModel):
     target_style: str = "photo"
     target_category: str = "identity"
     target_backend: str = "sdxl"
+    backend: str | None = None
     checkpoint: str | None = None
     hybrid_preset: str | None = None
     prose_bias: float | None = None
@@ -172,6 +177,25 @@ def _parse_keywords(raw_tags: str) -> list[str]:
     return [t.strip() for t in raw_tags.split(",") if t.strip()]
 
 
+def _unique_names(names: list[str]) -> list[str]:
+    """Return *names* with repeats suffixed ``#2``, ``#3``, … so each is a distinct key.
+
+    The first occurrence of a name keeps it; a suffix never reuses a name that
+    appears literally in the input, so the output has no duplicates.
+    """
+    literal = set(names)
+    used: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        candidate, n = name, 1
+        while candidate in used or (candidate != name and candidate in literal):
+            n += 1
+            candidate = f"{name}#{n}"
+        used.add(candidate)
+        out.append(candidate)
+    return out
+
+
 def _resolve_within(root: Path, rel: str) -> Path:
     """Resolve ``rel`` under ``root`` and refuse path traversal escapes."""
     candidate = (root / rel).resolve()
@@ -225,7 +249,9 @@ def _parse_manifest(raw: bytes) -> list[dict[str, Any]]:
         raise HTTPException(status_code=400, detail=f"manifest not UTF-8: {exc}") from exc
 
     rows: list[dict[str, Any]] = []
-    for i, line in enumerate(text.splitlines()):
+    # Split on "\n" only: JSONL's row separator. str.splitlines() would also
+    # split inside rows on U+2028/U+2029/U+0085, which JSON strings may contain raw.
+    for i, line in enumerate(text.split("\n")):
         line = line.strip()
         if not line:
             continue
@@ -245,16 +271,17 @@ def _parse_manifest(raw: bytes) -> list[dict[str, Any]]:
     return rows
 
 
-def _manifest_export_root(export_root: str) -> Path | None:
+def _manifest_export_root(source_root: str | None, export_root: str) -> Path | None:
     """Validate the optional ``export_root`` form field into a directory path.
 
     An empty string (the field's default) means "not supplied" and returns
-    ``None``; anything else must be an existing directory, otherwise every row
-    would fail with an unhelpful per-image read error instead of one clear 400.
+    ``None``; anything else must be an existing directory inside the source
+    root (confined like ``/caption/folder``), otherwise every row would fail
+    with an unhelpful per-image read error instead of one clear 400.
     """
     if not export_root:
         return None
-    root = Path(export_root)
+    root = _confine_folder(source_root, export_root)
     if not root.is_dir():
         raise HTTPException(status_code=400, detail=f"export_root is not a directory: {export_root}")
     return root
@@ -370,10 +397,16 @@ def _caption_manifest_row(
     xmp_overwrite: bool,
     prose_enrichment: bool,
     written: set[Path],
+    source_root: Path,
     export_root: Path | None = None,
     include_buckets: bool = False,
 ) -> dict[str, Any]:
     """Caption one manifest row via its resolved image path and ``target_profile``.
+
+    Every image path is resolved and must sit inside *source_root* (as
+    ``/caption/folder`` requires); a row pointing anywhere else is a per-row
+    error, so a crafted manifest can neither read an arbitrary image back
+    through its caption nor write sidecars outside the dataset root.
 
     Manifest 2.0 rows carry ``exported_path`` — the path actually written
     under the export root (the normative locator; ``mode=move`` exports leave
@@ -408,6 +441,13 @@ def _caption_manifest_row(
         }
     else:
         return {"rel_path": rel_path, "error": "row missing abs_path"}
+    if not isinstance(image_path, str):
+        return {"rel_path": rel_path, "error": "abs_path must be a string"}
+    resolved = Path(image_path).resolve()
+    if not resolved.is_relative_to(source_root.resolve()):
+        return {"rel_path": rel_path, "error": "image path is outside the configured source root"}
+    # Caption (and place sidecars next to) the resolved path, the one checked.
+    image_path = str(resolved)
     profile = row.get("target_profile") or {}
     if not isinstance(profile, dict):
         return {"rel_path": rel_path, "error": "target_profile must be a JSON object"}
@@ -455,12 +495,19 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
         for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
             if entry.is_dir() and not entry.name.startswith("."):
                 sub_rel = str(Path(rel) / entry.name) if rel else entry.name
-                subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                try:
+                    subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                    abs_path = str(entry.resolve())
+                except OSError as exc:
+                    # One unreadable/vanished child (permissions, stale mount,
+                    # deleted mid-scan) must not hide its readable siblings.
+                    logger.info("browse_folder_skipped", path=str(entry), error=str(exc))
+                    continue
                 folders.append(
                     {
                         "name": entry.name,
                         "rel_path": sub_rel,
-                        "abs_path": str(entry.resolve()),
+                        "abs_path": abs_path,
                         "image_count": _count_images(entry),
                         "subfolder_count": subfolders,
                     }
@@ -503,6 +550,7 @@ def create_app(
     source_root: str | None = None,
     cors_allow_any: bool = False,
     read_only: bool | None = None,
+    allowed_backends: list[str] | None = None,
     **kwargs: Any,
 ) -> FastAPI:
     """Create a FastAPI application for image captioning.
@@ -518,6 +566,13 @@ def create_app(
     write: ``.txt``/``.xmp`` sidecars, Immich pulls to disk and Immich
     write-back are a 403, while captions returned in the response still work.
     ``/health`` advertises it so a UI can disable those controls up front.
+
+    *default_backend* captions every request that names no ``backend``. A
+    caption request may pick another one (``backend`` field, #107); it is
+    built lazily and kept. *allowed_backends* (or ``ARGUS_ALLOWED_BACKENDS``,
+    comma-separated) pins the names a request may pick (the default is always
+    allowed), so a shared/public deployment can stop clients loading a
+    second model onto its GPU; unset means any registered backend.
     """
 
     app = FastAPI(
@@ -573,6 +628,57 @@ def create_app(
 
         recorder = recorder_from_env()  # off unless LENS_RECORD_LINEAGE=1 (+ CORTEX_PG_URL)
     engine = ArgusLens(backend=default_backend, recorder=recorder, **kwargs)
+    # The name clients use for the default: the configured string, or the
+    # instance's own name when an embedder passed a backend object.
+    default_name = default_backend if isinstance(default_backend, str) else engine.backend.name
+    if allowed_backends is None and (env_allowed := os.environ.get("ARGUS_ALLOWED_BACKENDS", "").strip()):
+        allowed_backends = [b.strip() for b in env_allowed.split(",") if b.strip()]
+    # None = any registered backend may be requested; a list pins the set (the
+    # default is always usable, listed or not).
+    allowed: set[str] | None = {*allowed_backends, default_name} if allowed_backends is not None else None
+    # Per-request backends (#107): one engine per name, built on first request
+    # and kept (each gets the idle-unload reaper, so a one-off switch frees its
+    # VRAM again). Same recorder, so a switched-to backend's captions still
+    # land on the lineage tape.
+    engines: dict[str, ArgusLens] = {default_name: engine}
+    engines_lock = threading.Lock()
+
+    def _engine_for_sync(backend: str | None) -> ArgusLens:
+        """Return the engine for a requested *backend* (``None``/empty = the default).
+
+        A name that is unknown, not allowed on this server, or whose backend
+        reports itself unavailable is a 400 carrying the reason — never a
+        silent fall-back to another backend.
+        """
+        name = (backend or "").strip()
+        if not name or name == default_name:
+            return engine
+        if allowed is not None and name not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"backend {name!r} is not allowed on this server (allowed: {', '.join(sorted(allowed))})",
+            )
+        with engines_lock:
+            if name in engines:
+                return engines[name]
+            try:
+                resolved = _resolve_backend(name, **kwargs)
+            except Exception as exc:  # unknown name, bad hybrid spec, constructor failure
+                raise HTTPException(status_code=400, detail=f"backend {name!r} is unusable: {exc}") from exc
+            if not resolved.is_available():
+                reason = resolved.availability_reason() or "backend reports itself unavailable"
+                raise HTTPException(status_code=400, detail=f"backend {name!r} is not available: {reason}")
+            engines[name] = ArgusLens(backend=resolved, recorder=recorder, **kwargs)
+            logger.info("backend_engine_created", backend=name)
+            return engines[name]
+
+    async def _engine_for(backend: str | None) -> ArgusLens:
+        """Async :func:`_engine_for_sync`: a first-use backend import / availability probe runs off the event loop."""
+        name = (backend or "").strip()
+        if not name or name == default_name:
+            return engine
+        return await asyncio.to_thread(_engine_for_sync, name)
+
     # Root for GET /folders browsing + relative folder captioning (UI folder picker).
     default_source = source_root or os.environ.get("LENS_SOURCE_PATH")
     if read_only is None:
@@ -589,7 +695,7 @@ def create_app(
     # OpenAI-compatible /v1 endpoints (Frigate GenAI provider).
     # Always mounted — Frigate's genai block uses POST /v1/chat/completions.
     # Engine kwargs are forwarded so model_dir / florence_model_id are honoured.
-    app.include_router(create_openai_router(**kwargs), prefix="/v1")
+    app.include_router(create_openai_router(allowed_backends=allowed, **kwargs), prefix="/v1")
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -604,17 +710,27 @@ def create_app(
         Immich pulls and write-back are refused), ``immich`` (``IMMICH_URL`` and
         ``IMMICH_API_KEY`` are set) and ``immich_write_back`` (Immich is
         configured and the server is not read-only).
+
+        ``backend`` names the default caption backend (what a request without
+        ``backend`` uses) and ``allowed_backends`` the names a request may pick
+        (``null`` = any registered backend). ``gpu`` describes the default
+        engine; ``gpu.resident`` lists every backend whose model is loaded,
+        including ones a request switched to (#107).
         """
         immich = bool(os.environ.get("IMMICH_URL") and os.environ.get("IMMICH_API_KEY"))
+        gpu = await asyncio.to_thread(engine.vram_status)
+        gpu["resident"] = sorted(name for name, eng in list(engines.items()) if eng.loaded)
         return {
             "status": "ok",
             "service": "argus-lens",
             "version": __version__,
+            "backend": default_name,
+            "allowed_backends": sorted(allowed) if allowed is not None else None,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
             "read_only": read_only,
             "immich": immich,
             "immich_write_back": immich and not read_only,
-            "gpu": await asyncio.to_thread(engine.vram_status),
+            "gpu": gpu,
         }
 
     @app.post("/admin/unload")
@@ -624,9 +740,16 @@ def create_app(
         The model reloads lazily on the next caption. Set ``ARGUS_ADMIN_TOKEN``
         to require ``Authorization: Bearer <token>`` (otherwise the endpoint is open —
         keep it off untrusted networks to avoid unload/reload-thrash abuse).
+        Every engine is unloaded, including backends a request switched to;
+        ``unloaded`` is true when any of them freed a model.
         """
         _require_admin_token(authorization)
-        unloaded = await asyncio.to_thread(engine.unload)
+
+        def _unload_all() -> bool:
+            """Unload each pooled engine; True if any was resident."""
+            return any([eng.unload() for eng in list(engines.values())])
+
+        unloaded = await asyncio.to_thread(_unload_all)
         return {"unloaded": unloaded, "gpu": await asyncio.to_thread(engine.vram_status)}
 
     @app.get("/profiles")
@@ -649,8 +772,35 @@ def create_app(
 
     @app.get("/backends")
     async def list_backends() -> dict[str, Any]:
-        """List all registered captioning backends with availability status."""
-        return {"backends": engine.available_backends()}
+        """List the registered captioning backends with availability status.
+
+        ``default`` names the backend a caption request without ``backend``
+        uses; each entry's ``allowed`` says whether a request may pick it on
+        this server (``ARGUS_ALLOWED_BACKENDS``), and ``allowed`` at the top is
+        that list (``null`` = no pin). A request for a backend that is not
+        ``available`` or not ``allowed`` is refused with 400 (#107).
+        """
+        backends = await asyncio.to_thread(engine.available_backends)
+        if default_name not in backends:
+            # A shorthand (hybrid:ram+florence2) or an injected instance: list
+            # the default too, so a picker can always show what is active.
+            b = engine.backend
+            available, reason = await asyncio.to_thread(lambda: (b.is_available(), b.availability_reason()))
+            backends[default_name] = {
+                "name": default_name,
+                "kind": getattr(getattr(b, "kind", None), "value", "composite"),
+                "style": getattr(b, "style", None),
+                "requires_gpu": getattr(b, "requires_gpu", False),
+                "available": available,
+                "reason": reason,
+            }
+        for name, info in backends.items():
+            info["allowed"] = allowed is None or name in allowed
+        return {
+            "default": default_name,
+            "allowed": sorted(allowed) if allowed is not None else None,
+            "backends": backends,
+        }
 
     @app.post("/caption")
     async def caption_image(
@@ -659,10 +809,16 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        backend: str | None = Form(None),
         hybrid_preset: str | None = Form(None),
         prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
-        """Caption a single uploaded image and return the structured result."""
+        """Caption a single uploaded image and return the structured result.
+
+        ``backend`` picks the caption backend for this request (default: the
+        server's); an unknown/unavailable/disallowed one is a 400.
+        """
+        eng = await _engine_for(backend)
         data = await file.read()
         try:
             Image.open(io.BytesIO(data)).convert("RGB")
@@ -673,7 +829,7 @@ def create_app(
         # replay lookup on the file's sha256 — the content id cortex records.
         try:
             result = await asyncio.to_thread(
-                engine.caption,
+                eng.caption,
                 data,
                 trigger_word=trigger_word,
                 target_style=target_style,
@@ -688,10 +844,18 @@ def create_app(
 
     @app.post("/caption/url")
     async def caption_url(req: CaptionURLRequest) -> dict[str, Any]:
-        """Caption an image from a URL (JSON body, no file upload needed)."""
+        """Caption an image from a URL (JSON body, no file upload needed).
+
+        Only ``http(s)://`` URLs are accepted (anything else would be read as a
+        server-side path). Non-public hosts are refused unless
+        ``LENS_URL_ALLOWED_HOSTS`` names them (#110).
+        """
+        if not req.image_url.lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="image_url must be an http(s):// URL")
+        eng = await _engine_for(req.backend)
         try:
             result = await asyncio.to_thread(
-                engine.caption,
+                eng.caption,
                 req.image_url,
                 trigger_word=req.trigger_word,
                 target_style=req.target_style,
@@ -703,8 +867,21 @@ def create_app(
             )
         except ReplayMiss as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except Exception as exc:
+        except URLRefused as exc:
+            # url_fetch's refusals are written to be returned as-is.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=400, detail=f"image_url returned HTTP {exc.response.status_code}") from exc
+        except (Image.UnidentifiedImageError, Image.DecompressionBombError) as exc:
+            raise HTTPException(status_code=400, detail="image_url did not return a decodable image") from exc
+        except (httpx.HTTPError, OSError) as exc:
+            # Raw transport/OS errors can name internal hosts, ports and
+            # addresses; log them, return a generic message (no probing oracle).
+            logger.warning("caption_url_fetch_failed", error=repr(exc))
+            raise HTTPException(status_code=400, detail="could not fetch image_url") from exc
+        except Exception as exc:
+            logger.exception("caption_url_failed")
+            raise HTTPException(status_code=500, detail="captioning failed (see server log)") from exc
         return _result_to_dict(result)
 
     @app.post("/caption/batch")
@@ -714,6 +891,7 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        backend: str | None = Form(None),
         hybrid_preset: str | None = Form(None),
         prose_bias: float | None = Form(None),
     ) -> dict[str, Any]:
@@ -723,6 +901,7 @@ def create_app(
         (``{name: reason}``) rather than failing the whole request, so one
         un-recorded image doesn't discard the captions that did resolve (#48).
         """
+        eng = await _engine_for(backend)
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
@@ -733,6 +912,9 @@ def create_app(
                 continue
             payloads.append(data)
             names.append(f.filename or "image")
+        # Results/errors are keyed by name: two uploads sharing a filename (or
+        # both sent without one) must not collapse into a single entry.
+        names = _unique_names(names)
 
         errors: dict[str, str] = {}
 
@@ -743,7 +925,7 @@ def create_app(
         # Original bytes (not decoded PILs) so replay can key on each file's
         # sha256; explicit names keep results from collapsing under one key.
         results = await asyncio.to_thread(
-            engine.caption_batch,
+            eng.caption_batch,
             payloads,
             names=names,
             on_miss=_record_miss,
@@ -766,10 +948,12 @@ def create_app(
         target_style: str = Form("photo"),
         target_category: str = Form("identity"),
         target_backend: str = Form("sdxl"),
+        backend: str | None = Form(None),
         hybrid_preset: str | None = Form(None),
         prose_bias: float | None = Form(None),
     ) -> StreamingResponse:
         """Caption uploaded images, streaming one NDJSON result line per image."""
+        eng = await _engine_for(backend)  # before streaming starts, so a bad name is a 400
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
@@ -780,11 +964,13 @@ def create_app(
                 continue
             payloads.append(data)
             names.append(f.filename or "image")
+        # As in /caption/batch: duplicate filenames get distinct line names.
+        names = _unique_names(names)
 
         async def _ndjson():
             """Yield one JSON line per captioned image, running inference off the event loop."""
             # Original bytes so replay can key on each file's sha256.
-            stream = engine.caption_stream(
+            stream = eng.caption_stream(
                 payloads,
                 names=names,
                 trigger_word=trigger_word,
@@ -821,6 +1007,7 @@ def create_app(
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
         include_buckets: bool = Form(False),
+        backend: str | None = Form(None),
     ) -> dict[str, Any]:
         """Batch-caption an argus-curator JSONL manifest.
 
@@ -841,10 +1028,16 @@ def create_app(
         that carry no ``exported_path``) images are read from ``abs_path``,
         which assumes a volume shared with the curator. Rows declaring a
         ``manifest_version`` outside the 1.x/2.x majors are rejected with 400.
+
+        Like ``/caption/folder``, this needs a configured source root (400
+        otherwise): ``export_root`` must lie inside it, and a row whose image
+        resolves outside it is a per-row error, never read or written.
         """
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
+        eng = await _engine_for(backend)
+        source = _confine_folder(default_source, ".")  # 400 when no source root is configured
         rows = _parse_manifest(await manifest.read())
-        root = _manifest_export_root(export_root)
+        root = _manifest_export_root(default_source, export_root)
 
         def _run() -> dict[str, Any]:
             """Caption every manifest row sequentially, collecting results and per-row errors."""
@@ -853,7 +1046,7 @@ def create_app(
             errors: list[dict[str, Any]] = []
             for row in rows:
                 outcome = _caption_manifest_row(
-                    engine,
+                    eng,
                     row,
                     trigger_word=trigger_word,
                     write_sidecar=write_sidecar,
@@ -861,6 +1054,7 @@ def create_app(
                     xmp_overwrite=xmp_overwrite,
                     prose_enrichment=prose_enrichment,
                     written=written,
+                    source_root=source,
                     export_root=root,
                     include_buckets=include_buckets,
                 )
@@ -886,6 +1080,7 @@ def create_app(
         prose_enrichment: bool = Form(True),
         export_root: str = Form(""),
         include_buckets: bool = Form(False),
+        backend: str | None = Form(None),
     ) -> StreamingResponse:
         """Streaming variant of /caption/manifest for live progress.
 
@@ -900,8 +1095,10 @@ def create_app(
         to each by default.
         """
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
+        eng = await _engine_for(backend)
+        source = _confine_folder(default_source, ".")  # 400 when no source root is configured
         rows = _parse_manifest(await manifest.read())
-        root = _manifest_export_root(export_root)
+        root = _manifest_export_root(default_source, export_root)
         total = len(rows)
         written: set[Path] = set()
 
@@ -915,7 +1112,7 @@ def create_app(
                 # stream flushes each line promptly.
                 outcome = await asyncio.to_thread(
                     _caption_manifest_row,
-                    engine,
+                    eng,
                     row,
                     trigger_word=trigger_word,
                     write_sidecar=write_sidecar,
@@ -923,6 +1120,7 @@ def create_app(
                     xmp_overwrite=xmp_overwrite,
                     prose_enrichment=prose_enrichment,
                     written=written,
+                    source_root=source,
                     export_root=root,
                     include_buckets=include_buckets,
                 )
@@ -977,6 +1175,7 @@ def create_app(
         ``/caption/manifest``.
         """
         _refuse_if_read_only(req.write_sidecar or req.write_xmp, "sidecar writes")
+        eng = await _engine_for(req.backend)
         root = _confine_folder(default_source, req.folder)
         if not root.is_dir():
             raise HTTPException(status_code=400, detail=f"not a directory: {req.folder}")
@@ -990,7 +1189,7 @@ def create_app(
             errors: list[dict[str, Any]] = []
             for p in images:
                 outcome = _caption_and_write(
-                    engine,
+                    eng,
                     str(p),
                     str(p.relative_to(root)),
                     trigger_word=req.trigger_word,
@@ -1200,6 +1399,7 @@ def create_app(
                 ),
             )
         _refuse_if_read_only(req.write_back, "Immich write-back")
+        eng = await _engine_for(req.backend)
         url, api_key = _immich_config()
         source = ImmichSource(url, api_key)
         sink = ImmichSink(url, api_key) if req.write_back else None
@@ -1239,7 +1439,7 @@ def create_app(
                 # fetch_original() + a decode, so this is identical for every
                 # other backend but keeps the replay backend reachable here (#47).
                 data = source.fetch_original(ref)
-                result = engine.caption(
+                result = eng.caption(
                     data,
                     trigger_word=req.trigger_word,
                     target_style=req.target_style,

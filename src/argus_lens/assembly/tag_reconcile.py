@@ -40,6 +40,19 @@ _FEMALE_WORDS = frozenset({"woman", "women", "lady", "ladies", "she", "her", "he
 _MALE_WORDS = frozenset({"man", "men", "gentleman", "gentlemen", "he", "him", "his", "himself", "boy", "boys"})
 _MUSTACHE_WORDS = frozenset({"mustache", "moustache", "mustaches", "moustaches", "mustached", "moustached"})
 _BEARD_WORDS = frozenset({"beard", "beards", "bearded", "goatee", "stubble"})
+# Expression (#87): a smile/laugh tag beside prose that describes a different
+# expression ("his tongue extended", "frowning") is the tagger's guess, not
+# what the face shows. The prose wins unless it also mentions smiling.
+SMILE_TAGS = frozenset({"smile", "smiling", "laugh", "laughing", "grin", "grinning", "happy"})
+_CONTRARY_EXPRESSION = re.compile(
+    r"\b(?:tongue|frown\w*|scowl\w*|grimac\w*|pout\w*|crying|cries|tears|weeping|sobbing|"
+    r"shouting|screaming|yelling|not smiling|without (?:a )?smil\w*|"
+    r"(?:serious|stern|neutral|solemn|somber|sombre|blank|angry|sad|pensive) (?:expression|face|look)|"
+    r"expressionless)\b",
+    re.I,
+)
+_SMILE_PROSE = re.compile(r"\b(?:smil\w*|laugh\w*|grin\w*)\b", re.I)
+_NEGATED_SMILE = re.compile(r"\b(?:not|without|no)\s+(?:a\s+)?(?:smil\w*|laugh\w*|grin\w*)\b", re.I)
 # Bare colour tags a monochrome image produces; folded into ``monochrome``.
 # Compared against :func:`_key`, which already turns ``black_and_white`` into ``black and white``.
 MONOCHROME_COLOUR_TAGS = frozenset({"black", "white", "grey", "gray", "black and white"})
@@ -93,7 +106,8 @@ def is_monochrome(image: Image.Image) -> bool:
     few levels of the median Cb/Cr chroma, and that the median itself is at
     most a tint. Pure Pillow, a millisecond or two per image.
     """
-    if image.mode in ("1", "L", "LA", "I", "I;16", "F"):
+    # Every single-channel greyscale mode, incl. the 16-bit "I;16B"/"I;16L"/"I;16N" variants (not "P": a palette).
+    if image.mode in ("1", "L", "LA", "La", "I", "F") or image.mode.startswith("I;16"):
         return True
     # Downscale first (as thumbnail() would): converting the full-size image copies it for nothing.
     scale = min(1.0, _MONOCHROME_SAMPLE_SIDE / max(1, *image.size))
@@ -159,7 +173,7 @@ def _key(tag: str) -> str:
 
 
 def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False) -> TagReconciliation:
-    """Settle conflicting person nouns, facial hair and monochrome colour tags.
+    """Settle conflicting person nouns, facial hair, expression and monochrome colour tags.
 
     Rules (each needs evidence; without prose the tags are trusted):
 
@@ -170,6 +184,9 @@ def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False
       the other noun is dropped.
     * ``beard`` becomes ``mustache`` when the prose names a moustache and no
       beard; a prose silent on facial hair keeps ``beard``.
+    * ``smile``/``laugh``/``grin`` is dropped when the prose describes a
+      different expression (tongue out, frowning, a serious face) and never
+      mentions smiling (#87).
     * *monochrome*: bare ``black``/``white``/``grey`` tags are folded into a
       single ``monochrome`` tag (added even when the tagger gave no colour).
     """
@@ -215,6 +232,12 @@ def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False
     # Only an explicit moustache overrides the tag; silence keeps ``beard``.
     if "beard" in keys and words & _MUSTACHE_WORDS and not words & _BEARD_WORDS:
         replace("beard", "mustache", "'beard' -> 'mustache': the prose names a moustache, not a beard")
+
+    # --- expression (#87) ---
+    # Only an explicit contrary expression overrides the tag; silence keeps it.
+    if prose and _CONTRARY_EXPRESSION.search(prose) and not _SMILE_PROSE.search(_NEGATED_SMILE.sub("", prose)):
+        for key in sorted(keys & SMILE_TAGS):
+            drop(key, f"dropped {key!r}: the prose describes a different expression and no smile")
 
     # --- monochrome (#83) ---
     if monochrome:

@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 class AttributeDispute:
     """A single attribute where prose and tags disagree.
 
-    ``kind`` is ``"color"`` or ``"pose"``; ``subject`` is the thing in question
-    (``"dress"``, ``"posture"``); ``tags_say`` / ``prose_says`` are the
+    ``kind`` is ``"color"``, ``"pose"`` or ``"count"``; ``subject`` is the thing
+    in question (``"dress"``, ``"posture"``, ``"people"``); ``tags_say`` / ``prose_says`` are the
     conflicting values from each signal.
     """
 

@@ -43,9 +43,9 @@ def _png(path: Path, size: int = 64) -> None:
 
 
 @pytest.fixture
-def client() -> TestClient:
-    """FastAPI test client wired to the stub caption backend."""
-    return TestClient(create_app(default_backend=_StubBackend()))
+def client(tmp_path: Path) -> TestClient:
+    """FastAPI test client wired to the stub caption backend, rooted at the test's tmp_path."""
+    return TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
 
 
 def _manifest_bytes(rows: list[dict]) -> bytes:
@@ -559,3 +559,94 @@ def test_manifest_v2_nonstring_exported_path_falls_back_to_abs_path(client: Test
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["captioned"] == 1
+
+
+# ── Source-root confinement (audit pack-argus-lens-02858f2bfe) ────────────────
+
+
+def _post_manifest(client: TestClient, rows: list[dict], path: str = "/caption/manifest", **data: str):
+    """POST *rows* as a manifest upload to *path* with extra form fields."""
+    return client.post(
+        path,
+        files={"manifest": ("manifest.jsonl", io.BytesIO(_manifest_bytes(rows)), "application/x-ndjson")},
+        data=data,
+    )
+
+
+def test_manifest_requires_a_source_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a configured source root the manifest endpoints refuse, like /caption/folder."""
+    monkeypatch.delenv("LENS_SOURCE_PATH", raising=False)
+    img = tmp_path / "01.jpg"
+    _png(img)
+    rows = [{"rel_path": "01.jpg", "abs_path": str(img), "target_profile": {}}]
+    bare = TestClient(create_app(default_backend=_StubBackend()))
+    for path in ("/caption/manifest", "/caption/manifest/stream"):
+        resp = _post_manifest(bare, rows, path)
+        assert resp.status_code == 400
+        assert "source root" in resp.json()["detail"]
+    assert not img.with_suffix(".txt").exists()
+
+
+@pytest.mark.parametrize("path", ["/caption/manifest", "/caption/manifest/stream"])
+def test_manifest_row_outside_source_root_is_neither_read_nor_written(tmp_path: Path, path: str) -> None:
+    """A row pointing outside the root is a per-row error; no sidecar lands beside it."""
+    root = tmp_path / "root"
+    inside = root / "01.jpg"
+    outside = tmp_path / "elsewhere" / "02.jpg"
+    _png(inside)
+    _png(outside)
+    (outside.with_suffix(".txt")).write_text("existing caption")
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(root)))
+    rows = [
+        {"rel_path": "01.jpg", "abs_path": str(inside), "target_profile": {}},
+        {"rel_path": "02.jpg", "abs_path": str(outside), "target_profile": {}},
+        {"rel_path": "03.jpg", "abs_path": str(root / ".." / "elsewhere" / "02.jpg"), "target_profile": {}},
+    ]
+    resp = _post_manifest(client, rows, path)
+    assert resp.status_code == 200, resp.text
+    if path.endswith("stream"):
+        lines = [json.loads(line) for line in resp.text.splitlines()]
+        errors = [line for line in lines if line.get("error")]
+        assert lines[-1]["captioned"] == 1
+    else:
+        errors = resp.json()["errors"]
+        assert resp.json()["captioned"] == 1
+    assert len(errors) == 2
+    assert all("outside the configured source root" in e["error"] for e in errors)
+    assert inside.with_suffix(".txt").exists()
+    assert outside.with_suffix(".txt").read_text() == "existing caption"  # not clobbered
+
+
+def test_manifest_symlink_out_of_the_root_is_refused(tmp_path: Path) -> None:
+    """An image symlinked from inside the root to outside it is judged by its target."""
+    root = tmp_path / "root"
+    root.mkdir()
+    target = tmp_path / "secret.jpg"
+    _png(target)
+    (root / "link.jpg").symlink_to(target)
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(root)))
+    rows = [{"rel_path": "link.jpg", "abs_path": str(root / "link.jpg"), "target_profile": {}}]
+    body = _post_manifest(client, rows).json()
+    assert body["failed"] == 1
+    assert not target.with_suffix(".txt").exists()
+
+
+def test_manifest_export_root_outside_source_root_is_a_400(tmp_path: Path) -> None:
+    """export_root is confined to the source root like a /caption/folder folder."""
+    root = tmp_path / "root"
+    root.mkdir()
+    export = tmp_path / "export"
+    _png(export / "01.jpg")
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(root)))
+    resp = _post_manifest(client, [_v2_row("01.jpg", "")], export_root=str(export))
+    assert resp.status_code == 400
+    assert not (export / "01.txt").exists()
+
+
+def test_parse_manifest_keeps_rows_with_unicode_line_separators() -> None:
+    """U+2028/U+2029/U+0085 inside a JSON string don't split a JSONL row (only '\\n' does)."""
+    from argus_lens.server import _parse_manifest
+
+    rows = [{"rel_path": f"a{sep}b.jpg"} for sep in ("\u2028", "\u2029", "\x85")]
+    raw = ("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\r\n").encode("utf-8")
+    assert _parse_manifest(raw) == rows
