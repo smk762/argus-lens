@@ -89,8 +89,18 @@ def test_admin_unload_requires_token_when_configured(monkeypatch) -> None:
     """With ARGUS_ADMIN_TOKEN set, /admin/unload rejects unauthenticated calls (#42)."""
     monkeypatch.setenv("ARGUS_ADMIN_TOKEN", "secret")
     client = TestClient(create_app(default_backend=_StubBackend()))
-    assert client.post("/admin/unload").status_code == 401
+    missing = client.post("/admin/unload")
+    assert missing.status_code == 401
+    assert missing.headers["www-authenticate"] == "Bearer"
+    assert client.post("/admin/unload", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert client.post("/admin/unload", headers={"Authorization": "Bearer secret"}).status_code == 200
+
+
+def test_admin_unload_stays_open_when_token_unset(monkeypatch) -> None:
+    """With ARGUS_ADMIN_TOKEN unset, /admin/unload stays open (open_when_unset=True, as before)."""
+    monkeypatch.delenv("ARGUS_ADMIN_TOKEN", raising=False)
+    client = TestClient(create_app(default_backend=_StubBackend()))
+    assert client.post("/admin/unload").status_code == 200
 
 
 def test_profiles_exposes_taxonomy_from_sources_of_truth() -> None:

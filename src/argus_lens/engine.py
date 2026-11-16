@@ -171,8 +171,8 @@ def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, I
     """Load an image from various source types.
 
     Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs. URLs go
-    through :func:`argus_lens.url_fetch.fetch_url`, which refuses non-public
-    addresses unless ``LENS_URL_ALLOWED_HOSTS`` names the host (#110).
+    through :func:`argus_lens.url_fetch.fetch_url` (``argus_cortex.net``), which
+    refuses non-public addresses unless ``LENS_URL_ALLOWED_HOSTS`` names the host (#110).
     Returns ``(asset, pil_image)`` — the asset carries the original-bytes sha256
     when it is recoverable (everything except a pre-decoded PIL input).
     """

@@ -34,30 +34,33 @@ dependencies = [
     "Pillow>=10.0",
     "structlog>=24.0",
     "httpx>=0.27",
-    # argus_cortex.xmp (sidecars, shared with argus-curator) and argus_cortex.gpu
-    # (the GPU lease: host-local, or the argus-iris broker). Capped below 0.7:
-    # cortex is pre-1.0, where a minor bump may break. The GPU extras add
-    # [remote] (the broker client, httpx) and [yaml] (reads gpu-tenant.yaml).
-    "argus-cortex>=0.6,<0.7",
+    # argus_cortex.xmp (sidecars, shared with argus-curator), argus_cortex.gpu
+    # (the GPU lease: host-local, or the argus-iris broker) and argus_cortex.net
+    # (URL fetches; [remote] brings httpx). Capped below 0.9: cortex is pre-1.0,
+    # where a minor bump may break. The GPU extras add [remote] (the broker
+    # client, httpx) and [yaml] (reads gpu-tenant.yaml).
+    "argus-cortex[remote]>=0.8,<0.9",
 ]
 
 [project.optional-dependencies]
 wd14 = ["onnxruntime>=1.16", "numpy>=1.24"]
-wd14-gpu = ["onnxruntime-gpu>=1.16", "numpy>=1.24", "argus-cortex[gpu,remote,yaml]>=0.6,<0.7"]
-torch = ["torch>=2.1", "transformers>=4.46", "safetensors>=0.4", "argus-cortex[gpu,remote,yaml]>=0.6,<0.7"]
-local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46", "safetensors>=0.4", "argus-cortex[gpu,remote,yaml]>=0.6,<0.7"]
+wd14-gpu = ["onnxruntime-gpu>=1.16", "numpy>=1.24", "argus-cortex[gpu,remote,yaml]>=0.8,<0.9"]
+torch = ["torch>=2.1", "transformers>=4.46", "safetensors>=0.4", "argus-cortex[gpu,remote,yaml]>=0.8,<0.9"]
+local = ["onnxruntime>=1.16", "numpy>=1.24", "torch>=2.1", "transformers>=4.46", "safetensors>=0.4", "argus-cortex[gpu,remote,yaml]>=0.8,<0.9"]
 openai = ["openai>=1.30"]
 replicate = ["replicate>=0.25"]
 replay = ["psycopg[binary]>=3.1"]
 # Record captions into the cortex lineage store (LENS_RECORD_LINEAGE=1); the S3
 # extra lets it also put the original bytes in the blob store.
-lineage = ["argus-cortex[postgres,s3]>=0.6,<0.7"]
+lineage = ["argus-cortex[postgres,s3]>=0.8,<0.9"]
 cli = ["typer>=0.12", "rich>=13.0"]
 eval = ["torch>=2.1", "transformers>=4.46"]
-# argus-cortex[server]: the shared cross-site write guard (argus_cortex.server).
-server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7", "argus-cortex[server]>=0.6,<0.7"]
+# argus-cortex[server]: the shared cross-site write guard (argus_cortex.server)
+# and the admin bearer check (argus_cortex.auth); uploads are capped with
+# argus_cortex.limits.
+server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7", "argus-cortex[server]>=0.8,<0.9"]
 all = [
-    "argus-cortex[gpu,remote,yaml]>=0.6,<0.7",
+    "argus-cortex[gpu,remote,yaml]>=0.8,<0.9",
     "onnxruntime>=1.16",
     "numpy>=1.24",
     "torch>=2.1",
@@ -68,13 +71,13 @@ all = [
     "psycopg[binary]>=3.1",
     "typer>=0.12",
     "rich>=13.0",
-    "argus-cortex[server]>=0.6,<0.7",
-    "argus-cortex[postgres,s3]>=0.6,<0.7",
+    "argus-cortex[server]>=0.8,<0.9",
+    "argus-cortex[postgres,s3]>=0.8,<0.9",
     "fastapi>=0.110",
     "uvicorn>=0.27",
     "python-multipart>=0.0.7",
 ]
-dev = ["pytest>=8.0", "argus-cortex[remote,yaml]>=0.6,<0.7", "pytest-asyncio>=0.23", "ruff==0.15.16", "interrogate>=1.7", "httpx2>=2.7"]
+dev = ["pytest>=8.0", "argus-cortex[remote,yaml]>=0.8,<0.9", "pytest-asyncio>=0.23", "ruff==0.15.16", "interrogate>=1.7", "httpx2>=2.7"]
 
 [project.scripts]
 argus-lens = "argus_lens.cli:app"
