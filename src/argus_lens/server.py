@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import io
 import json
 import os
@@ -540,7 +541,8 @@ def _require_admin_token(authorization: str | None) -> None:
     default); setting it locks them down for a networked deployment.
     """
     token = os.environ.get("ARGUS_ADMIN_TOKEN")
-    if token and authorization != f"Bearer {token}":
+    # Constant-time: a plain != returns sooner the earlier the first wrong byte, which leaks the token.
+    if token and not hmac.compare_digest((authorization or "").encode(), f"Bearer {token}".encode()):
         raise HTTPException(status_code=401, detail="admin token required")
 
 

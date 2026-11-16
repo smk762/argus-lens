@@ -91,6 +91,8 @@ def test_admin_unload_requires_token_when_configured(monkeypatch) -> None:
     client = TestClient(create_app(default_backend=_StubBackend()))
     assert client.post("/admin/unload").status_code == 401
     assert client.post("/admin/unload", headers={"Authorization": "Bearer secret"}).status_code == 200
+    assert client.post("/admin/unload", headers={"Authorization": "Bearer wrong!"}).status_code == 401
+    assert client.post("/admin/unload", headers={"Authorization": "secret"}).status_code == 401
 
 
 def test_profiles_exposes_taxonomy_from_sources_of_truth() -> None:
