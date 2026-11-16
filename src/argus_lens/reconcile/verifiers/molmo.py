@@ -12,7 +12,7 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from argus_lens.reconcile.questions import build_question, parse_answer
+from argus_lens.reconcile.questions import answer_budget, build_question, parse_answer
 from argus_lens.reconcile.types import Verdict
 
 if TYPE_CHECKING:
@@ -39,7 +39,7 @@ class MolmoVerifier:
         self._processor = None
         self._load_lock = threading.Lock()
 
-    def _answer(self, image: Image.Image, question: str) -> str:
+    def _answer(self, image: Image.Image, question: str, max_new_tokens: int = 20) -> str:
         """Return Molmo's free-text answer to *question* about *image*."""
         if self._answer_fn is not None:
             return self._answer_fn(image, question)
@@ -50,7 +50,7 @@ class MolmoVerifier:
         inputs = {k: v.to(self._model.device).unsqueeze(0) for k, v in inputs.items()}
         with torch.no_grad():
             out = self._model.generate_from_batch(
-                inputs, max_new_tokens=20, stop_strings="<|endoftext|>", tokenizer=self._processor.tokenizer
+                inputs, max_new_tokens=max_new_tokens, stop_strings="<|endoftext|>", tokenizer=self._processor.tokenizer
             )
         tokens = out[0, inputs["input_ids"].size(1) :]
         return self._processor.tokenizer.decode(tokens, skip_special_tokens=True)
@@ -75,5 +75,5 @@ class MolmoVerifier:
 
     def verify(self, image: Image.Image, dispute: AttributeDispute) -> Verdict:
         """Ask Molmo the dispute's question and map the answer to the vocabulary."""
-        answer = self._answer(image, build_question(dispute))
+        answer = self._answer(image, build_question(dispute), max(20, answer_budget(dispute.kind)))
         return Verdict(subject=dispute.subject, value=parse_answer(answer, dispute.kind), source=self.name)

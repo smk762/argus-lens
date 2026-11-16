@@ -20,6 +20,10 @@ def build_question(dispute: AttributeDispute) -> str:
     """A single-answer question that adjudicates *dispute*."""
     if dispute.kind == "color":
         return f"What is the main colour of the {dispute.subject} in this image? Answer with a single colour word."
+    if dispute.kind == "text":
+        return (
+            "Transcribe all the text written in this image, exactly as it appears. If no text is legible, answer NONE."
+        )
     if dispute.kind == "count":
         return (
             "How many people are visible in this image, including partially visible people? "
@@ -28,12 +32,21 @@ def build_question(dispute: AttributeDispute) -> str:
     return f"What is the person's posture: {_POSE_CHOICES}? Answer with a single word."
 
 
+def answer_budget(kind: str) -> int:
+    """Max tokens for the answer to a *kind* question: a transcription needs room, a word doesn't."""
+    return 200 if kind == "text" else 10
+
+
 def parse_answer(answer: str, kind: str) -> str | None:
-    """Extract a palette colour, posture term or headcount from a free-text VQA *answer*.
+    """Extract a palette colour, posture term, headcount or transcription from a free-text VQA *answer*.
 
     Returns the canonical value, or ``None`` if the answer names none (so the
-    verifier abstains rather than inventing a value).
+    verifier abstains rather than inventing a value). A ``text`` answer is the
+    transcription itself, whitespace-collapsed; "NONE" or an empty one abstains.
     """
+    if kind == "text":
+        text = " ".join(answer.split())
+        return None if text.strip(".").lower() in {"", "none", "no text", "n/a"} else text
     words = [w.strip(".,!?:;'\"()").lower() for w in answer.split()]
     if kind == "count":
         for w in words:

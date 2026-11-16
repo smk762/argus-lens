@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from argus_lens.reconcile.questions import build_question, parse_answer
+from argus_lens.reconcile.questions import answer_budget, build_question, parse_answer
 from argus_lens.reconcile.types import Verdict
 
 if TYPE_CHECKING:
@@ -48,12 +48,12 @@ class OpenAICompatVQAVerifier:
         self.api_key = api_key
         self.timeout = timeout
 
-    def _ask(self, image: Image.Image, question: str) -> str:
+    def _ask(self, image: Image.Image, question: str, max_tokens: int = 10) -> str:
         """POST a single-image chat completion and return the raw answer text."""
         payload = {
             "model": self.model_id,
             "temperature": 0,
-            "max_tokens": 10,
+            "max_tokens": max_tokens,
             "messages": [
                 {
                     "role": "user",
@@ -74,5 +74,5 @@ class OpenAICompatVQAVerifier:
 
     def verify(self, image: Image.Image, dispute: AttributeDispute) -> Verdict:
         """Ask the model and map its answer onto the palette/pose vocabulary."""
-        answer = self._ask(image, build_question(dispute))
+        answer = self._ask(image, build_question(dispute), answer_budget(dispute.kind))
         return Verdict(subject=dispute.subject, value=parse_answer(answer, dispute.kind), source=self.name)

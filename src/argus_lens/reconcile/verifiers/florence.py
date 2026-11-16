@@ -2,9 +2,10 @@
 
 Uses Florence-2's ``<CAPTION_TO_PHRASE_GROUNDING>`` task (which the captioning
 backend never calls) to find the subject's bounding box, then reads the actual
-pixels for the colour — grounded truth rather than free-form prose. Colour only;
-posture isn't a grounding task, so pose disputes abstain. The model call is
-guarded; inject *ground_fn* to unit-test the box→colour path without a GPU.
+pixels for the colour — grounded truth rather than free-form prose. Text claims
+(#87) are answered with Florence's ``<OCR>`` task. Posture and headcount aren't
+grounding tasks, so those abstain. The model calls are guarded; inject
+*ground_fn* / *ocr_fn* to unit-test without a GPU.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from argus_lens.reconcile.types import AttributeDispute
 
 _TASK = "<CAPTION_TO_PHRASE_GROUNDING>"
+_OCR_TASK = "<OCR>"
 
 
 class FlorenceGroundingVerifier:
@@ -34,10 +36,12 @@ class FlorenceGroundingVerifier:
         model_id: str = "florence-community/Florence-2-base",
         device: str = "cpu",
         ground_fn: Callable[[Image.Image, str], list[Box]] | None = None,
+        ocr_fn: Callable[[Image.Image], str] | None = None,
     ) -> None:
         self.model_id = model_id
         self.device = device
         self._ground_fn = ground_fn
+        self._ocr_fn = ocr_fn
         self._model = None
         self._processor = None
         self._load_lock = threading.Lock()
@@ -60,6 +64,23 @@ class FlorenceGroundingVerifier:
         parsed = self._processor.post_process_generation(text, task=_TASK, image_size=(image.width, image.height))
         return [tuple(b) for b in parsed.get(_TASK, {}).get("bboxes", [])]
 
+    def _ocr(self, image: Image.Image) -> str:
+        """Return the text Florence's ``<OCR>`` task reads in *image*."""
+        if self._ocr_fn is not None:
+            return self._ocr_fn(image)
+        self._ensure_model()
+        inputs = self._processor(text=_OCR_TASK, images=image, return_tensors="pt").to(self.device)
+        generated = self._model.generate(
+            input_ids=inputs["input_ids"],
+            pixel_values=inputs["pixel_values"],
+            max_new_tokens=512,
+            do_sample=False,
+            num_beams=3,
+        )
+        text = self._processor.batch_decode(generated, skip_special_tokens=False)[0]
+        parsed = self._processor.post_process_generation(text, task=_OCR_TASK, image_size=(image.width, image.height))
+        return str(parsed.get(_OCR_TASK, ""))
+
     def _ensure_model(self) -> None:
         """Lazily load the Florence model/processor (needs the ``torch`` extra).
 
@@ -80,7 +101,10 @@ class FlorenceGroundingVerifier:
             self._model = model
 
     def verify(self, image: Image.Image, dispute: AttributeDispute) -> Verdict:
-        """Ground the subject and name its dominant colour; abstain on pose."""
+        """Ground the subject and name its dominant colour, or OCR a text claim; abstain otherwise."""
+        if dispute.kind == "text":
+            text = " ".join(self._ocr(image).split())
+            return Verdict(subject=dispute.subject, value=text or None, source=self.name)
         if dispute.kind != "color":
             return Verdict(subject=dispute.subject, value=None, source=self.name)
         boxes = self._ground(image, f"the {dispute.subject}")
