@@ -43,6 +43,10 @@ _PERSON_PLURAL = (
 _ADJ = r"(?:[\w-]+\s+){0,2}"
 _QUANTITY = "|".join(sorted({*_NUMBER_WORDS, *_GROUP_WORDS}))
 _PLURAL_RE = re.compile(rf"\b({_QUANTITY})\s+(?:of\s+)?{_ADJ}{_PERSON_PLURAL}\b")
+# Exact counts only (number words, not "group"/"several"), so "a group of six soldiers" yields "six soldiers"
+# rather than _PLURAL_RE's "group of six soldiers", which reads "six" as an adjective.
+_EXACT_QUANTITY = "|".join(sorted(w for w in _NUMBER_WORDS if w not in {"both", "pair", "couple"}))
+_EXACT_PLURAL_RE = re.compile(rf"\b({_EXACT_QUANTITY})\s+{_ADJ}{_PERSON_PLURAL}\b")
 _PLURAL_DIGIT_RE = re.compile(rf"\b(\d+)\s+{_ADJ}{_PERSON_PLURAL}\b")
 _SINGULAR_RE = re.compile(rf"\b(?:a|an|one|the)\s+{_ADJ}{_PERSON_SINGULAR}\b")
 _PAIR_RE = re.compile(
@@ -202,10 +206,7 @@ def exact_prose_counts(prose: str) -> list[tuple[int, str]]:
     """
     text = prose.lower()
     found: list[tuple[int, str]] = [(int(m.group(1)), m.group(0)) for m in _PLURAL_DIGIT_RE.finditer(text)]
-    for match in _PLURAL_RE.finditer(text):
-        word = match.group(1)
-        if word in _NUMBER_WORDS and word not in {"both", "pair", "couple"}:
-            found.append((_NUMBER_WORDS[word], match.group(0)))
+    found += [(_NUMBER_WORDS[m.group(1)], m.group(0)) for m in _EXACT_PLURAL_RE.finditer(text)]
     return found
 
 
@@ -240,4 +241,34 @@ def rewrite_prose_count(prose: str, value: int) -> str:
 
     flags = re.IGNORECASE
     prose = re.sub(_PLURAL_DIGIT_RE.pattern, sub, prose, flags=flags)
-    return re.sub(_PLURAL_RE.pattern, sub, prose, flags=flags)
+    return re.sub(_EXACT_PLURAL_RE.pattern, sub, prose, flags=flags)
+
+
+# "a group of six soldiers": the collective noun already says "more than one", so the number just goes.
+_COLLECTIVE = r"(?:group|row|line|team|party|band|crowd|squad|unit|company|formation|lineup|set)"
+_COLLECTIVE_COUNT_RE = re.compile(
+    rf"\b({_COLLECTIVE})\s+of\s+(?:{_EXACT_QUANTITY}|\d+)\s+(?={_ADJ}{_PERSON_PLURAL}\b)", re.IGNORECASE
+)
+# "the six soldiers": after a determiner the number drops ("the soldiers"), as "the several" isn't English.
+_DETERMINED_COUNT_RE = re.compile(
+    rf"\b(the|these|those|all|its|their|his|her)\s+(?:{_EXACT_QUANTITY}|\d+)\s+(?={_ADJ}{_PERSON_PLURAL}\b)",
+    re.IGNORECASE,
+)
+_BARE_COUNT_RE = re.compile(rf"\b(?:{_EXACT_QUANTITY}|\d+)(?=\s+{_ADJ}{_PERSON_PLURAL}\b)", re.IGNORECASE)
+
+
+def hedge_prose_count(prose: str) -> str:
+    """Drop each exact headcount from *prose*, keeping the grammar (#87).
+
+    ``"A group of six soldiers"`` -> ``"A group of soldiers"``; ``"the six
+    soldiers"`` -> ``"the soldiers"``; ``"Six soldiers stand"`` -> ``"Several
+    soldiers stand"``. For a count nothing can confirm:
+    leaving it out beats stating a wrong one. Only plural phrases are touched.
+    """
+    prose = _COLLECTIVE_COUNT_RE.sub(lambda m: f"{m.group(1)} of ", prose)
+    prose = _DETERMINED_COUNT_RE.sub(lambda m: f"{m.group(1)} ", prose)
+
+    def several(match: re.Match[str]) -> str:
+        return "Several" if match.group(0)[:1].isupper() else "several"
+
+    return _BARE_COUNT_RE.sub(several, prose)

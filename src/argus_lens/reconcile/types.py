@@ -22,12 +22,20 @@ class AttributeDispute:
     ``kind`` is ``"color"``, ``"pose"`` or ``"count"``; ``subject`` is the thing
     in question (``"dress"``, ``"posture"``, ``"people"``); ``tags_say`` / ``prose_says`` are the
     conflicting values from each signal.
+
+    An empty ``tags_say`` makes it a *claim* (#87): something the prose states
+    that no tag speaks to, so only a verifier that looks at the image can rule.
     """
 
     kind: str
     subject: str
     tags_say: tuple[str, ...]
     prose_says: tuple[str, ...]
+
+    @property
+    def is_claim(self) -> bool:
+        """True for an unchecked prose claim (no tag evidence either way)."""
+        return not self.tags_say
 
 
 @dataclass(frozen=True)
@@ -63,10 +71,15 @@ class AttributeVerifier(Protocol):
 
 @dataclass(frozen=True)
 class ReconcileChange:
-    """A record of one prose edit the reconciler made."""
+    """A record of one prose edit the reconciler made.
+
+    ``now`` is the value written into the prose, or ``"unstated"`` when an
+    unconfirmed claim was dropped; ``verified`` is what the verifier answered.
+    """
 
     kind: str
     subject: str
     was: tuple[str, ...]
     now: str
     source: str
+    verified: str | None = None
