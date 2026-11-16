@@ -8,9 +8,11 @@ from PIL import Image
 from argus_lens.assembly.subjects import hedge_prose_count
 from argus_lens.engine import ArgusLens
 from argus_lens.reconcile import Reconciler, build_verifier, detect_claims, detect_disputes
+from argus_lens.reconcile.affiliation import contradicted_side
 from argus_lens.reconcile.color_sample import dominant_color_name, nearest_color_name
-from argus_lens.reconcile.questions import build_question, parse_answer
+from argus_lens.reconcile.questions import answer_budget, build_question, parse_answer
 from argus_lens.reconcile.rewrite import apply_fix
+from argus_lens.reconcile.text_claims import detect_text_claims, is_confirmed
 from argus_lens.reconcile.types import AttributeDispute, Verdict
 from argus_lens.reconcile.verifiers.florence import FlorenceGroundingVerifier
 from argus_lens.reconcile.verifiers.molmo import MolmoVerifier
@@ -156,7 +158,7 @@ def test_molmo_verifier_parses_answer() -> None:
 def test_openai_compat_verifier_parses_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     """A mocked HTTP answer flows through parsing into a verdict."""
     v = OpenAICompatVQAVerifier(base_url="http://x/v1", model_id="m")
-    monkeypatch.setattr(v, "_ask", lambda image, q: "The dress is red.")
+    monkeypatch.setattr(v, "_ask", lambda image, q, max_tokens=10: "The dress is red.")
     verdict = v.verify(Image.new("RGB", (4, 4)), AttributeDispute("color", "dress", ("red",), ("blue",)))
     assert verdict.value == "red"
     assert verdict.source == "openai-compat"
@@ -417,3 +419,135 @@ def test_count_inside_a_collective_phrase_is_found_and_rewritten() -> None:
     assert [(d.kind, d.prose_says) for d in disputes] == [("count", ("6",))]
     res = Reconciler(TagPriorVerifier()).reconcile(Image.new("RGB", (8, 8)), "5boys", _NORWAY)
     assert res.prose.startswith("A group of five soldiers")
+
+
+# --- text claims (#87): names and quotes the prose says it read ---------------------------------------------
+
+_DIPLOMA = (
+    "An ornate Nobel diploma with two facing pages. "
+    "The right-hand page details an event for Professor Henrik Bohr. "
+    "Gold borders frame the text."
+)
+
+
+@pytest.mark.parametrize(
+    ("prose", "claims"),
+    [
+        (_DIPLOMA, ["Professor Henrik Bohr"]),
+        ('A library stamp reads "N.Y. PUBLIC LIBRARY" in the corner.', ["N.Y. PUBLIC LIBRARY"]),
+        ("A letter signed by Henri Becquerel lies on the desk.", ["Henri Becquerel"]),
+        ("A sign labelled Café Rouge hangs over Dr. Smith's door. A man stands outside.", ["Café Rouge"]),
+    ],
+)
+def test_detect_text_claims(prose: str, claims: list[str]) -> None:
+    """Quoted strings, names after a reading verb, and titled names near written material are text claims."""
+    assert detect_text_claims(prose) == claims
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "Professor Albert Einstein sticks out his tongue.",  # a titled name with no written material
+        "A soldier's cap and the men's coats.",  # apostrophes are not quotes
+        "A portrait of a woman in a blue dress.",
+    ],
+)
+def test_no_text_claim(prose: str) -> None:
+    """A famous face named from memory, or prose with no text, makes no text claim."""
+    assert detect_text_claims(prose) == []
+    assert all(c.kind != "text" for c in detect_claims("man", prose))
+
+
+@pytest.mark.parametrize(
+    ("claim", "transcript", "confirmed"),
+    [
+        ("Professor Henrik Bohr", "PROFESSEUR HENRI BECQUEREL", False),
+        ("Professor Henri Becquerel", "PROFESSEUR HENRI BECQUERE1", True),  # OCR noise
+        ("Henri Becquerel", "HENRIBECQUEREL", True),  # OCR ran the words together
+        ("N.Y. PUBLIC LIBRARY", "THE N.Y. PUBLIC LIBRARY", True),
+        ("CALIFORNIA PUBLIC LIBRARY", "THE N.Y. PUBLIC LIBRARY", False),
+    ],
+)
+def test_text_claim_matching(claim: str, transcript: str, confirmed: bool) -> None:
+    """Every significant word of the claim must appear in the transcription, allowing OCR noise."""
+    assert is_confirmed(claim, transcript) is confirmed
+
+
+def test_unread_name_is_dropped_with_its_sentence() -> None:
+    """A transcription without the claimed name drops the sentence that states it (#87, 556344c411724aaa)."""
+    verifier = _CountVerifier("Prix Nobel ... Monsieur Henri Becquerel ... Stockholm 1903")
+    res = Reconciler(verifier).reconcile(Image.new("RGB", (8, 8)), "document, paper", _DIPLOMA)
+    assert res.prose == "An ornate Nobel diploma with two facing pages. Gold borders frame the text."
+    assert [(c.kind, c.was, c.now) for c in res.changes] == [("text", ("Professor Henrik Bohr",), "unstated")]
+    assert res.changes[0].verified.startswith("Prix Nobel")
+    assert "Transcribe" in build_question(verifier.asked[0])
+
+
+@pytest.mark.parametrize("answer", ["Monsieur le Professeur Henrik Bohr", None])
+def test_read_or_unreadable_name_is_kept(answer: str | None) -> None:
+    """A transcription containing the name, or none at all (abstain), keeps the prose."""
+    res = Reconciler(_CountVerifier(answer)).reconcile(Image.new("RGB", (8, 8)), "document", _DIPLOMA)
+    assert res.prose == _DIPLOMA and res.changes == []
+
+
+def test_one_sentence_prose_keeps_an_unread_name() -> None:
+    """Dropping the only sentence would leave nothing, so the prose stays."""
+    prose = "A diploma for Professor Henrik Bohr."
+    res = Reconciler(_CountVerifier("Henri Becquerel")).reconcile(Image.new("RGB", (8, 8)), "document", prose)
+    assert res.prose == prose and res.changes == []
+
+
+def test_text_answer_parsing_and_budget() -> None:
+    """A transcription passes through whitespace-collapsed; NONE abstains; text gets a longer answer budget."""
+    assert parse_answer("  PRIX\n NOBEL ", "text") == "PRIX NOBEL"
+    assert parse_answer("NONE.", "text") is None
+    assert answer_budget("text") > answer_budget("color")
+
+
+def test_florence_ocrs_text_claims() -> None:
+    """Florence answers a text claim with its OCR task."""
+    v = FlorenceGroundingVerifier(ocr_fn=lambda image: "HENRI\nBECQUEREL")
+    claim = AttributeDispute("text", "text", (), ("Henrik Bohr",))
+    assert v.verify(Image.new("RGB", (4, 4)), claim).value == "HENRI BECQUEREL"
+
+
+# --- affiliation (#87): a side the prose's own uniform colour contradicts -----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("prose", "fixed"),
+    [
+        (
+            "A Union Army soldier in a gray uniform poses for a tintype.",
+            "A soldier in a gray uniform poses for a tintype.",
+        ),
+        ("Union soldiers wear grey wool coats.", "Soldiers wear grey wool coats."),
+        (
+            "An officer of the Confederate Army in a dark blue uniform.",
+            "An officer of the army in a dark blue uniform.",
+        ),
+        ("A Confederate officer wears a blue frock coat.", "An officer wears a blue frock coat."),
+    ],
+)
+def test_contradicted_side_is_dropped(prose: str, fixed: str) -> None:
+    """A side the prose's uniform colour contradicts is dropped, model-free, even with tag-prior (#87)."""
+    res = Reconciler(TagPriorVerifier()).reconcile(Image.new("RGB", (8, 8)), "soldier, uniform", prose)
+    assert res.prose == fixed
+    assert [(c.kind, c.now, c.source) for c in res.changes] == [("affiliation", "unstated", "prose")]
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "A Union soldier in a blue uniform.",  # consistent
+        "A Confederate corporal in a gray uniform.",  # consistent
+        "A Union soldier holds a rifle.",  # no uniform colour
+        "A Confederate soldier in blue trousers and a gray coat.",  # both colours: ambiguous
+        "A map of the Soviet Union beside a gray coat.",  # not a Civil War side
+    ],
+)
+def test_consistent_or_unclear_side_is_kept(prose: str) -> None:
+    """Without a clean clash between one side and one colour family, the prose stays."""
+    assert contradicted_side(prose) is None
+    res = Reconciler(TagPriorVerifier()).reconcile(Image.new("RGB", (8, 8)), "soldier", prose)
+    assert res.prose == prose

@@ -22,7 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the number instead of swapping in the verifier's ("a group of six soldiers" -> "a group of soldiers"), since
   neither model reading can be trusted over the other. New `detect_claims()`,
   `AttributeDispute.is_claim`, `ReconcileChange.verified` and `assembly.subjects.hedge_prose_count()`.
-  `tag-prior` and `florence` abstain on claims; `openai-compat` and `molmo` check them.
+  `tag-prior` and `florence` abstain on count claims; `openai-compat` and `molmo` check them.
+- **Unchecked text claims (#87).** Names and quoted strings the prose says it read (a quoted string, a name
+  after a reading verb such as "signed by", or a titled name in a sentence about a diploma, sign or page)
+  become one `text` claim. The verifier transcribes the image's text: `florence` runs its `<OCR>` task, and
+  `openai-compat` and `molmo` are asked to transcribe. A claimed name the transcription doesn't contain, allowing
+  for OCR noise, is dropped with its sentence ("details an event for Professor Henrik Bohr" on a diploma that
+  reads Henri Becquerel). No legible text abstains, and one-sentence prose is kept. `tag-prior` abstains.
+- **Self-contradicting Civil War side (#87).** Prose that names one side and the other side's uniform colour
+  ("a Union Army soldier in a gray uniform") loses the side ("a soldier in a gray uniform"). It runs before
+  the verifier with no model call, so it works with `tag-prior` too. The change is recorded as
+  `kind: "affiliation"`, `source: "prose"`.
 - **The argus-iris GPU broker (#118).** `ARGUS_GPU_COORDINATOR=broker` with `ARGUS_GPU_BROKER_URL`,
   `ARGUS_GPU_BROKER_TOKEN`, `ARGUS_GPU_TENANT_MANIFEST` (or `ARGUS_GPU_TENANT`) and
   `ARGUS_GPU_BROKER_FALLBACK` (`lease` by default) leases the GPU from iris. The `local`/`torch`/`wd14-gpu`
