@@ -232,7 +232,7 @@ def test_cloud_hybrid_bypasses_lease() -> None:
         name = "rec"
 
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
             events.append("leased")
             yield
 
@@ -257,7 +257,7 @@ def test_coordinator_lease_wraps_inference() -> None:
         name = "rec"
 
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
             events.append(("enter", caller, min_vram_mb))
             try:
                 yield
@@ -278,7 +278,7 @@ def test_resident_model_leases_without_vram_wait() -> None:
         name = "rec"
 
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
             requested.append(min_vram_mb)
             yield
 
@@ -310,7 +310,7 @@ def test_engine_honors_min_vram_override(monkeypatch) -> None:
         name = "rec"
 
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
             requested.append(min_vram_mb)
             yield
 
@@ -331,7 +331,7 @@ def test_cloud_backend_bypasses_lease() -> None:
         name = "rec"
 
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
             events.append("leased")
             yield
 

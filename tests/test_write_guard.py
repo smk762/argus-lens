@@ -38,6 +38,7 @@ def _clean_env(monkeypatch) -> None:
     """Keep host env from leaking into the allow-list or the admin gate."""
     monkeypatch.delenv("LENS_CORS_ORIGINS", raising=False)
     monkeypatch.delenv("ARGUS_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("LENS_TRUSTED_HOSTS", raising=False)
 
 
 def _client(**kwargs) -> TestClient:
@@ -50,11 +51,17 @@ def _post(client: TestClient, origin: str | None = None) -> int:
     return client.post("/admin/unload", headers=headers).status_code
 
 
-def test_originless_and_same_host_writes_pass_without_cors() -> None:
-    """curl/curator/Frigate send no Origin, and a UI proxied onto this host matches Host: both write."""
-    client = _client()
-    assert _post(client) == 200
-    assert _post(client, "http://testserver") == 200  # TestClient's Host
+def test_originless_writes_pass_without_cors() -> None:
+    """curl/curator/Frigate (and the iris broker) send no Origin: they write."""
+    assert _post(_client()) == 200
+
+
+def test_same_host_write_by_dns_name_needs_trusted_hosts(monkeypatch) -> None:
+    """A same-host Origin by DNS name is what rebinding forges: refused unless the host is trusted."""
+    assert _post(_client(), "http://testserver") == 403  # TestClient's Host
+    assert _post(_client(trusted_hosts=["testserver"]), "http://testserver") == 200
+    monkeypatch.setenv("LENS_TRUSTED_HOSTS", "other, testserver")
+    assert _post(_client(), "http://testserver") == 200
 
 
 def test_cross_site_write_refused_even_with_cors_off() -> None:

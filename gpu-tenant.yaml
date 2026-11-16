@@ -1,0 +1,51 @@
+# argus-iris GPU tenant manifest for argus-lens (#118).
+# Validated by argus-cortex's TenantManifest (gpu-tenant-schema.json,
+# tenant_version 1.0); tests/test_gpu_tenant.py fails if it stops validating.
+#
+# With ARGUS_GPU_COORDINATOR=broker, lens registers this with the broker on its
+# first lease (ARGUS_GPU_TENANT_MANIFEST points at it; the Docker image ships it
+# at /app/gpu-tenant.yaml). Tokens never go here: ARGUS_GPU_BROKER_TOKEN and
+# ARGUS_ADMIN_TOKEN live in the host's .env.
+#
+# VRAM figures are MiB, for the default backend (hybrid = wd14 + florence2), and
+# match gpu/capacity.py. The broker uses its learned p95 when that is larger, so
+# a heavier backend (blip2, florence2-large) is caught after a few leases.
+tenant: argus-lens
+description: Structured image captions (tags + prose) and .txt/XMP sidecars.
+repo: smk762/argus-lens
+node: morpheus
+
+kinds:
+  # One image someone is waiting on: /caption, /caption/url, the /v1 shim.
+  - kind: caption
+    target: in-process
+    vram_mb: 4000
+    model_mb: 3500
+    priority: interactive
+    preemptible: false
+    description: A single caption request.
+
+  # Multi-image jobs: /caption/batch, /caption/stream, folder, manifest and
+  # Immich runs, caption_directory. Each image takes its own lease, so a yield
+  # is honoured at the next image boundary.
+  - kind: caption-batch
+    target: in-process
+    vram_mb: 4000
+    model_mb: 3500
+    priority: batch
+    preemptible: true
+    description: A batch, stream, folder, manifest or Immich captioning job.
+
+residents:
+  # The captioning model(s) the server keeps loaded between requests. Lens has
+  # no evict (GPU to CPU) or wake route: an unload frees VRAM and host RAM, and
+  # the next caption reloads the model lazily.
+  - name: lens-captioner
+    adapter: argus-http
+    target: in-process
+    vram_mb: 4000
+    base_url: http://morpheus:8100
+    container: argus-lens
+    health_path: /health
+    unload_path: /admin/unload
+    admin_auth: true
