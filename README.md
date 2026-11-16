@@ -227,7 +227,7 @@ argus-lens eval eval/golden.jsonl --clip --baseline baseline.json --fail-on-regr
 
 Metrics: **tag↔prose contradiction** (colour/pose — reference-free), **token-budget adherence**, **redundancy/filler rate**, **tag-coverage recall** (labelled), and optional **CLIPScore**. A labelled golden set is a JSONL manifest — see [eval/README.md](https://github.com/smk762/argus-lens/blob/dev/eval/README.md) for the format.
 
-### Reconciliation (colour/pose/headcount fixes)
+### Reconciliation (colour/pose/headcount/text fixes)
 
 Florence-2 sometimes hallucinates a colour or hand position, and a small VLM can state the wrong number of people. Reconciliation finds the attributes where the prose *contradicts* the tags (the same detector the eval harness uses) and asks a pluggable **verifier** to adjudicate each, then rewrites the prose to match:
 
@@ -250,7 +250,13 @@ engine = ArgusLens(backend="hybrid", verifier=build_verifier(
 | `florence` | grounds the subject to a box, samples the pixels | `[torch]` (reuses Florence-2's unused grounding task) |
 | `molmo` | asks Molmo, which can point at pixels | `[torch]` + ~8–17 GB VRAM |
 
-**Headcount disputes** (`kind: "count"`) need an exact count on both sides: numbered headcount tags (`1girl, 2boys`; not `multiple_girls` or `6+boys`) and exactly one stated headcount in the prose ("six soldiers", "3 people"). `tag-prior` resolves to the tag count, and the VQA verifiers ask "how many people are visible". The rewrite changes only the number ("six soldiers" → "three soldiers") and never to a singular. Photo taggers such as RAM++ emit no headcount tags, so with them a count dispute never fires; use a VQA verifier and a bigger VLM for counts there.
+**Headcount disputes** (`kind: "count"`) need an exact count on both sides: numbered headcount tags (`1girl, 2boys`; not `multiple_girls` or `6+boys`) and exactly one stated headcount in the prose ("six soldiers", "3 people"). `tag-prior` resolves to the tag count, and the VQA verifiers ask "how many people are visible". The rewrite changes only the number ("six soldiers" → "three soldiers") and never to a singular. A count inside a collective phrase counts too ("a group of six soldiers").
+
+**Unchecked headcounts** (#87). Photo taggers such as RAM++ emit no headcount tags, so there is nothing to dispute. When the prose states exactly one headcount and the tags state none, that count becomes a *claim* (an `AttributeDispute` with empty `tags_say`, from `detect_claims`) and the verifier is asked "how many people are visible". If it agrees or abstains, the prose stands. If it disagrees, the number is **dropped**, not replaced: "a group of six soldiers" becomes "a group of soldiers", "the six soldiers" becomes "the soldiers", and "six soldiers" becomes "several soldiers". With no tag to break the tie, two model readings that disagree mean neither count is trustworthy. The change records `now: "unstated"` and the verifier's answer in `verified`. `tag-prior` and `florence` abstain on count claims, so this needs a VQA verifier (`openai-compat` or `molmo`). Claims are not contradictions, so the eval contradiction rate does not count them.
+
+**Unchecked text** (#87). A small VLM misreads text and fills the gap with a plausible name: a Nobel diploma for Henri Becquerel came out as "an event for Professor Henrik Bohr". Names and quoted strings the prose says it read become one `text` claim: a quoted string (`reads "N.Y. PUBLIC LIBRARY"`), a capitalised name after a reading verb (`signed by`, `titled`, `inscribed with`, …), or a titled name (`Professor`, `Dr.`, `General`, …) in a sentence about written material (a diploma, sign, page, inscription, …). A possessive (`Dr. Smith's door`) or a famous face named without any written material is not a claim. The verifier transcribes the image's text once: `florence` runs its `<OCR>` task, and `openai-compat` and `molmo` are asked to transcribe. A claim is confirmed when each of its words, titles aside, appears in the transcription, allowing for OCR noise. An unconfirmed claim drops **its sentence**, since rewriting a name in place rarely reads well. No legible text abstains, and one-sentence prose is kept. `tag-prior` abstains.
+
+**Self-contradicting affiliation** (#87). Prose that names one Civil War side and describes the other side's uniform colour (Union blue, Confederate grey or butternut) loses the side: "a Union Army soldier in a gray uniform" becomes "a soldier in a gray uniform". It needs no model and runs with any verifier, `tag-prior` included. Prose naming both sides or both colours, or a side not attached to a military noun ("the Soviet Union"), is left alone. The change is recorded as `kind: "affiliation"` with `source: "prose"`.
 
 Measure the effect with the eval harness — `--reconcile` runs the verifier before scoring, so the contradiction rate shows the improvement directly:
 
@@ -327,6 +333,7 @@ The server exposes `GET /health` (now includes a `gpu` block) and `POST /admin/u
 |---|---|---|
 | `none` (default) | no gating | — |
 | `lease` | one argus GPU job at a time via a host-wide file lock, started only once the card has room | POSIX; NVML (`nvidia-ml-py`, pulled in by the `local`/`torch`/`wd14-gpu` extras) for the VRAM wait |
+| `broker` | [argus-iris](https://github.com/smk762/argus-iris), the suite's GPU broker, grants each lease: it queues by priority, places the work on a node and evicts idle models first; falls back to `ARGUS_GPU_BROKER_FALLBACK` when iris is unreachable | `ARGUS_GPU_BROKER_URL`; httpx + PyYAML (`argus-cortex[remote,yaml]`, pulled in by the same extras) |
 
 ```bash
 # Share the GPU with argus-curator: both name the same lock file
@@ -338,6 +345,18 @@ The lease takes the lock, then waits until NVML reports enough free VRAM, which 
 The default lock is `<tempdir>/argus-gpu.lock`, the same file argus-curator uses. Containers each have their own `/tmp`, so in Docker point `ARGUS_GPU_LEASE_PATH` at a directory every GPU service mounts (see `docker-compose.yaml`).
 
 Extra knobs (all optional, and host-wide: every argus service should agree on them): `ARGUS_GPU_MIN_VRAM_MB` overrides the per-backend footprint the lease waits for (e.g. for Florence-2-large or a non-default hybrid); `ARGUS_GPU_LEASE_TIMEOUT_S` caps how long the lease waits (default 300 s, raising `GpuLeaseTimeout`, a `TimeoutError`); `ARGUS_GPU_LEASE_PATH` sets the lock file; `ARGUS_GPU_DEVICE` picks the card the VRAM wait probes. `ARGUS_ADMIN_TOKEN` protects `POST /admin/unload`.
+
+**The argus-iris broker.** With `ARGUS_GPU_COORDINATOR=broker`, each lease is a request to iris rather than a local lock (#118):
+
+| Variable | Value |
+|---|---|
+| `ARGUS_GPU_BROKER_URL` | where iris listens, e.g. `http://<GPU_BROKER_HOST>:8120`; an IP in Docker, which does not resolve LAN host names |
+| `ARGUS_GPU_BROKER_TOKEN` | the suite's shared caller token, sent as `Authorization: Bearer` (host `.env`, never a repo) |
+| `ARGUS_GPU_TENANT_MANIFEST` | path to the committed [`gpu-tenant.yaml`](gpu-tenant.yaml) (the image ships it at `/app/gpu-tenant.yaml`, compose's default), or name the tenant alone with `ARGUS_GPU_TENANT=argus-lens` |
+| `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none`: the coordinator used when iris is unreachable or answers 5xx |
+| `ARGUS_ADMIN_TOKEN` | the suite's shared admin token, so iris can call `POST /admin/unload` to evict lens's model |
+
+`gpu-tenant.yaml` declares two kinds of work. `caption` (one image someone waits on: `/caption`, `/caption/url`, the `/v1` shim) is `interactive`. `caption-batch` (`/caption/batch`, `/caption/stream`, folder, manifest and Immich runs, `caption_directory`) is `batch` and preemptible. Every image takes its own lease, so a yield lands at the next image boundary. Library callers pass `lease_kind=LEASE_KIND_BATCH` to `caption()` when they loop. The manifest also lists the loaded model as an `argus-http` resident that iris evicts through `/admin/unload`; lens has no evict-to-CPU or wake route, so the next caption reloads it. Leave `ARGUS_IDLE_UNLOAD_S` unset on the broker: iris owns idle eviction.
 
 ### Replay backend (recorded captions, no GPU)
 
@@ -403,7 +422,7 @@ The `/immich/*` endpoints read `IMMICH_URL` and `IMMICH_API_KEY` from the enviro
 
 **CORS and cross-site writes.** `--cors` allows only the localhost dev frontend (`http://localhost:3000`, `http://127.0.0.1:3000`). Allow-list other origins with `--cors-origin <origin>` (repeatable) or `LENS_CORS_ORIGINS` (comma-separated), or use `--cors-any` for a credential-less wildcard on public demos. A literal `*` in the allow-list is treated as `--cors-any`.
 
-The caption endpoints have no auth and write sidecars, and CORS is not a write boundary: a `multipart/form-data` POST needs no preflight, so any page a browser visits could drive one. So every unsafe request (POST/PUT/PATCH/DELETE) is checked by Origin, with or without `--cors`: no `Origin` (curl, argus-curator, Frigate) passes, the same host as the request (a UI proxied onto this host) passes, and so does an allow-listed origin; anything else is a `403`. `--cors-any` therefore grants reads, not writes: name an origin with `--cors-origin` to let it write. The guard is the suite's shared [`argus_cortex.server.WriteGuard`](https://github.com/smk762/argus-cortex), as in argus-curator, argus-forge and argus-proof.
+The caption endpoints have no auth and write sidecars, and CORS is not a write boundary: a `multipart/form-data` POST needs no preflight, so any page a browser visits could drive one. So every unsafe request (POST/PUT/PATCH/DELETE) is checked by Origin, with or without `--cors`: no `Origin` (curl, argus-curator, Frigate) passes, the same host as the request (a UI proxied onto this host) passes when that host is an IP address, `localhost`, or listed in `LENS_TRUSTED_HOSTS` (comma-separated host names, no port; a bare DNS-name match is what DNS rebinding forges, so a server reached as `http://morpheus:8100` must list `morpheus`), and so does an allow-listed origin; anything else is a `403`. `--cors-any` therefore grants reads, not writes: name an origin with `--cors-origin` to let it write. The guard is the suite's shared [`argus_cortex.server.WriteGuard`](https://github.com/smk762/argus-cortex), as in argus-curator, argus-forge and argus-proof.
 
 ### Immich
 
@@ -469,9 +488,15 @@ Copy or create a `.env` file for the Docker deployment:
 | `HF_HOME` | `~/.cache/huggingface` | HuggingFace model cache (auto-downloads on first use) |
 | `HF_TRUST_REMOTE_CODE` | `false` | Only needed for legacy `microsoft/Florence-2-*` weights. See [Security](#security) |
 | `ARGUS_ALLOWED_BACKENDS` | -- | Comma-separated backends a caption request may pick with `backend` (the default is always allowed; unset: any registered backend) |
-| `ARGUS_IDLE_UNLOAD_S` | -- | Free the model's VRAM after this many idle seconds; it reloads on the next caption (unset: stay loaded) |
+| `ARGUS_IDLE_UNLOAD_S` | -- | Free the model's VRAM after this many idle seconds; it reloads on the next caption (unset: stay loaded). Leave unset with the broker |
+| `ARGUS_GPU_COORDINATOR` | `none` | `none`, `lease` or `broker`; see [GPU sharing](#gpu-sharing-lifecycle--coordinator) |
+| `ARGUS_GPU_BROKER_URL` / `ARGUS_GPU_BROKER_TOKEN` | -- | The argus-iris broker and its caller token (`broker` only) |
+| `ARGUS_GPU_TENANT_MANIFEST` | `/app/gpu-tenant.yaml` | The tenant manifest the broker registers (`broker` only) |
+| `ARGUS_GPU_BROKER_FALLBACK` | `lease` | Coordinator used when the broker is unreachable (`lease` or `none`) |
+| `ARGUS_ADMIN_TOKEN` | -- | Bearer token for `POST /admin/unload` (unset: open) |
 | `ARGUS_MODEL_IDLE_SECONDS` | `300` | Idle seconds before the shared WD14/RAM++/BLIP-2 model cache evicts an unused model |
 | `LENS_CORS_ORIGINS` | -- | Comma-separated origins allowed CORS and cross-site writes (the image runs `--cors`, which trusts only `localhost:3000`) |
+| `LENS_TRUSTED_HOSTS` | -- | Comma-separated host names (no port) this server is reached by; a page served from this host may write only when it is an IP, `localhost`, or listed here |
 | `LENS_READ_ONLY` | -- | `1` refuses sidecar/XMP writes, Immich pulls and write-back with a 403 (advertised as `read_only` on `/health`) |
 | `LENS_URL_ALLOWED_HOSTS` | -- | Comma-separated hostnames `POST /caption/url` may fetch even when they resolve to a private/LAN address, e.g. `immich.lan` (unset: only public addresses) |
 | `LENS_URL_FETCH` | `on` | `off` refuses every `POST /caption/url` fetch (clients upload bytes to `/caption` instead) |

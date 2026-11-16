@@ -10,7 +10,7 @@ VQA endpoint). The eval harness then measures the drop in contradiction rate.
 
 from __future__ import annotations
 
-from argus_lens.reconcile.detect import detect_disputes
+from argus_lens.reconcile.detect import detect_claims, detect_disputes
 from argus_lens.reconcile.reconciler import Reconciler, ReconcileResult
 from argus_lens.reconcile.types import (
     AttributeDispute,
@@ -29,5 +29,6 @@ __all__ = [
     "Reconciler",
     "Verdict",
     "build_verifier",
+    "detect_claims",
     "detect_disputes",
 ]

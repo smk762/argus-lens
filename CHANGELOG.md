@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-16
+
+### Upgrading
+- **argus-cortex 0.6.** Every cortex pin is now `>=0.6,<0.7`. A browser page served from lens's own
+  host:port may write only when that host is an IP literal or `localhost`. A server reached by a DNS name
+  (`http://morpheus:8100`) must list that name in the new `LENS_TRUSTED_HOSTS` (comma-separated, no port),
+  because a bare hostname match is what DNS rebinding forges. Origin-less callers (curl, curator, the iris
+  broker) and origins in `LENS_CORS_ORIGINS` are unaffected.
+
+### Added
+- **Unchecked headcount claims (#87).** When the prose states one headcount and the tags state none (RAM++
+  and other photo taggers), reconcile asks the verifier how many people are visible. On disagreement it drops
+  the number instead of swapping in the verifier's ("a group of six soldiers" -> "a group of soldiers"), since
+  neither model reading can be trusted over the other. New `detect_claims()`,
+  `AttributeDispute.is_claim`, `ReconcileChange.verified` and `assembly.subjects.hedge_prose_count()`.
+  `tag-prior` and `florence` abstain on count claims; `openai-compat` and `molmo` check them.
+- **Unchecked text claims (#87).** Names and quoted strings the prose says it read (a quoted string, a name
+  after a reading verb such as "signed by", or a titled name in a sentence about a diploma, sign or page)
+  become one `text` claim. The verifier transcribes the image's text: `florence` runs its `<OCR>` task, and
+  `openai-compat` and `molmo` are asked to transcribe. A claimed name the transcription doesn't contain, allowing
+  for OCR noise, is dropped with its sentence ("details an event for Professor Henrik Bohr" on a diploma that
+  reads Henri Becquerel). No legible text abstains, and one-sentence prose is kept. `tag-prior` abstains.
+- **Self-contradicting Civil War side (#87).** Prose that names one side and the other side's uniform colour
+  ("a Union Army soldier in a gray uniform") loses the side ("a soldier in a gray uniform"). It runs before
+  the verifier with no model call, so it works with `tag-prior` too. The change is recorded as
+  `kind: "affiliation"`, `source: "prose"`.
+- **The argus-iris GPU broker (#118).** `ARGUS_GPU_COORDINATOR=broker` with `ARGUS_GPU_BROKER_URL`,
+  `ARGUS_GPU_BROKER_TOKEN`, `ARGUS_GPU_TENANT_MANIFEST` (or `ARGUS_GPU_TENANT`) and
+  `ARGUS_GPU_BROKER_FALLBACK` (`lease` by default) leases the GPU from iris. The `local`/`torch`/`wd14-gpu`
+  extras pull in `argus-cortex[remote,yaml]` for the client. While iris has no lease routes, the lease comes
+  from the fallback.
+- **`gpu-tenant.yaml`**, lens's tenant manifest, shipped in the image at `/app/gpu-tenant.yaml`. It declares
+  the `caption` kind (`interactive`) and `caption-batch` kind (`batch`, preemptible), plus the loaded model as
+  an `argus-http` resident evicted through `POST /admin/unload` (`admin_auth`).
+- Every GPU lease names its kind. Batch, stream, folder, manifest and Immich runs lease as `caption-batch`;
+  `ArgusLens.caption()` takes `lease_kind=` (default `caption`).
+- `docker-compose.yaml` passes the broker variables, `ARGUS_ADMIN_TOKEN`, `LENS_CORS_ORIGINS` and
+  `LENS_TRUSTED_HOSTS`, and names the container `argus-lens` (`LENS_CONTAINER_NAME`) so iris's node agent can
+  match it.
+
+### Fixed
+- The broker URL examples (`.env.example`, README) gave `http://morpheus:8120`, which a container cannot
+  resolve; they now ask for an IP.
+- A headcount inside a collective phrase ("a group of six soldiers") was not read as a count, so the
+  tag-vs-prose `count` dispute and its rewrite skipped it (#87).
+
 ## [0.12.0] - 2026-11-15
 
 ### Upgrading
@@ -707,7 +753,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/smk762/argus-lens/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-lens/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/smk762/argus-lens/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/smk762/argus-lens/compare/v0.9.0...v0.10.0

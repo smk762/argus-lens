@@ -116,7 +116,7 @@ class _NoLease:
     name = "none"
 
     @contextlib.contextmanager
-    def lease(self, *, caller: str, min_vram_mb: int):
+    def lease(self, *, caller: str, min_vram_mb: int, **_):
         yield
 
 
@@ -128,7 +128,7 @@ def test_prefetch_runs_before_the_lease_and_only_once():
         name = "rec"
 
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
             events.append("lease")
             try:
                 yield
@@ -151,7 +151,7 @@ def test_failed_prefetch_takes_no_lease_and_retries():
         name = "rec"
 
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
             leases.append(caller)
             yield
 

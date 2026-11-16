@@ -31,7 +31,7 @@ from argus_lens.connectors.base import AssetRef
 from argus_lens.connectors.filesystem import IMAGE_SUFFIXES
 from argus_lens.connectors.immich import ImmichSink, ImmichSource
 from argus_lens.connectors.xmp import XmpSink
-from argus_lens.engine import ArgusLens, _resolve_backend
+from argus_lens.engine import LEASE_KIND_BATCH, ArgusLens, _resolve_backend
 from argus_lens.openai_compat import create_openai_router
 from argus_lens.types import (
     BACKEND_TOKEN_BUDGETS,
@@ -326,6 +326,7 @@ def _caption_and_write(
     try:
         result = engine.caption(
             image_path,
+            lease_kind=LEASE_KIND_BATCH,
             trigger_word=trigger_word,
             target_style=target_style,
             target_category=target_category,
@@ -551,6 +552,7 @@ def create_app(
     cors_allow_any: bool = False,
     read_only: bool | None = None,
     allowed_backends: list[str] | None = None,
+    trusted_hosts: list[str] | None = None,
     **kwargs: Any,
 ) -> FastAPI:
     """Create a FastAPI application for image captioning.
@@ -560,7 +562,11 @@ def create_app(
     *cors_allow_any* is a credential-less wildcard. Whatever CORS allows, a
     cross-site write (POST from a browser page on another origin) is refused
     unless that origin is named: the caption endpoints write sidecars and have
-    no auth.
+    no auth. A browser page served from this server's own host:port may write
+    when that host is an IP literal or ``localhost``; a server reached by a DNS
+    name (``http://morpheus:8100``) must name it in *trusted_hosts* (or
+    ``LENS_TRUSTED_HOSTS``, comma-separated host names, no port), because a
+    bare hostname match is what DNS rebinding forges.
 
     *read_only* (or ``LENS_READ_ONLY=1``) refuses every request that would
     write: ``.txt``/``.xmp`` sidecars, Immich pulls to disk and Immich
@@ -583,6 +589,8 @@ def create_app(
 
     if cors_origins is None and (env_origins := os.environ.get("LENS_CORS_ORIGINS")):
         cors_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+    if trusted_hosts is None:
+        trusted_hosts = [h.strip() for h in os.environ.get("LENS_TRUSTED_HOSTS", "").split(",") if h.strip()]
 
     # A "*" in the allow-list means --cors-any: anonymous reads from anywhere,
     # never credentials (with credentials Starlette reflects any Origin back,
@@ -598,8 +606,10 @@ def create_app(
     # page a user visits could drive /caption/folder into the source root. The
     # guard refuses unsafe methods from an untrusted Origin; same-host (a UI
     # proxied onto this host) and Origin-less (curl, curator, Frigate) callers
-    # pass. Added before CORS so CORS is the outer layer and annotates a 403.
-    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins))
+    # pass; a same-host Origin by DNS name only when it is in trusted_hosts
+    # (DNS rebinding). Added before CORS so CORS is the outer layer and
+    # annotates a 403.
+    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins, trusted_hosts))
 
     if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
@@ -1441,6 +1451,7 @@ def create_app(
                 data = source.fetch_original(ref)
                 result = eng.caption(
                     data,
+                    lease_kind=LEASE_KIND_BATCH,
                     trigger_word=req.trigger_word,
                     target_style=req.target_style,
                     target_category=req.target_category,
