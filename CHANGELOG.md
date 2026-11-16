@@ -7,17 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **Unchecked headcount claims (#87).** When the prose states one headcount and the tags state none (RAM++
-  and other photo taggers), reconcile asks the verifier how many people are visible. On disagreement it drops
-  the number instead of swapping in the verifier's ("a group of six soldiers" -> "a group of soldiers"), since
-  neither model reading can be trusted over the other. New `detect_claims()`,
-  `AttributeDispute.is_claim`, `ReconcileChange.verified` and `assembly.subjects.hedge_prose_count()`.
-  `tag-prior` and `florence` abstain on claims; `openai-compat` and `molmo` check them.
-
-### Fixed
-- A headcount inside a collective phrase ("a group of six soldiers") was not read as a count, so the
-  tag-vs-prose `count` dispute and its rewrite skipped it (#87).
+## [0.13.0] - 2026-11-16
 
 ### Upgrading
 - **argus-cortex 0.6.** Every cortex pin is now `>=0.6,<0.7`. A browser page served from lens's own
@@ -27,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   broker) and origins in `LENS_CORS_ORIGINS` are unaffected.
 
 ### Added
+- **Unchecked headcount claims (#87).** When the prose states one headcount and the tags state none (RAM++
+  and other photo taggers), reconcile asks the verifier how many people are visible. On disagreement it drops
+  the number instead of swapping in the verifier's ("a group of six soldiers" -> "a group of soldiers"), since
+  neither model reading can be trusted over the other. New `detect_claims()`,
+  `AttributeDispute.is_claim`, `ReconcileChange.verified` and `assembly.subjects.hedge_prose_count()`.
+  `tag-prior` and `florence` abstain on claims; `openai-compat` and `molmo` check them.
 - **The argus-iris GPU broker (#118).** `ARGUS_GPU_COORDINATOR=broker` with `ARGUS_GPU_BROKER_URL`,
   `ARGUS_GPU_BROKER_TOKEN`, `ARGUS_GPU_TENANT_MANIFEST` (or `ARGUS_GPU_TENANT`) and
   `ARGUS_GPU_BROKER_FALLBACK` (`lease` by default) leases the GPU from iris. The `local`/`torch`/`wd14-gpu`
@@ -40,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docker-compose.yaml` passes the broker variables, `ARGUS_ADMIN_TOKEN`, `LENS_CORS_ORIGINS` and
   `LENS_TRUSTED_HOSTS`, and names the container `argus-lens` (`LENS_CONTAINER_NAME`) so iris's node agent can
   match it.
+
+### Fixed
+- The broker URL examples (`.env.example`, README) gave `http://morpheus:8120`, which a container cannot
+  resolve; they now ask for an IP.
+- A headcount inside a collective phrase ("a group of six soldiers") was not read as a count, so the
+  tag-vs-prose `count` dispute and its rewrite skipped it (#87).
 
 ## [0.12.0] - 2026-11-15
 
@@ -741,7 +743,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/smk762/argus-lens/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-lens/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/smk762/argus-lens/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/smk762/argus-lens/compare/v0.9.0...v0.10.0

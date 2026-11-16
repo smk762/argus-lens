@@ -346,7 +346,7 @@ Extra knobs (all optional, and host-wide: every argus service should agree on th
 
 | Variable | Value |
 |---|---|
-| `ARGUS_GPU_BROKER_URL` | where iris listens, e.g. `http://morpheus:8120` |
+| `ARGUS_GPU_BROKER_URL` | where iris listens, e.g. `http://<GPU_BROKER_HOST>:8120`; an IP in Docker, which does not resolve LAN host names |
 | `ARGUS_GPU_BROKER_TOKEN` | the suite's shared caller token, sent as `Authorization: Bearer` (host `.env`, never a repo) |
 | `ARGUS_GPU_TENANT_MANIFEST` | path to the committed [`gpu-tenant.yaml`](gpu-tenant.yaml) (the image ships it at `/app/gpu-tenant.yaml`, compose's default), or name the tenant alone with `ARGUS_GPU_TENANT=argus-lens` |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none`: the coordinator used when iris is unreachable or answers 5xx |
