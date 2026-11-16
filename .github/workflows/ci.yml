@@ -17,3 +17,8 @@ jobs:
       ruff-version: "0.15.16"
       test-extras: "dev"
       post-test: "uv run --no-sync interrogate src/ tests/"
+
+  suite-rules:
+    # argus-ci suite rules: lint rules that each eliminate a finding class. New violations fail;
+    # existing ones are in .suite-rules-baseline.json, which may only shrink.
+    uses: smk762/argus-ci/.github/workflows/suite-rules.yml@v1

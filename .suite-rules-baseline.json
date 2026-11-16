@@ -1,0 +1,21 @@
+{
+ "version": 1,
+ "tools": {
+  "ruff": "0.15.16",
+  "semgrep": "1.180.0"
+ },
+ "entries": [
+  {
+   "rule": "silent-except",
+   "path": "src/argus_lens/retry.py",
+   "text": "except Exception:",
+   "count": 1
+  },
+  {
+   "rule": "silent-except",
+   "path": "src/argus_lens/server.py",
+   "text": "except Exception:",
+   "count": 2
+  }
+ ]
+}
