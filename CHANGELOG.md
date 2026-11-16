@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Unchecked headcount claims (#87).** When the prose states one headcount and the tags state none (RAM++
+  and other photo taggers), reconcile asks the verifier how many people are visible. On disagreement it drops
+  the number instead of swapping in the verifier's ("a group of six soldiers" -> "a group of soldiers"), since
+  neither model reading can be trusted over the other. New `detect_claims()`,
+  `AttributeDispute.is_claim`, `ReconcileChange.verified` and `assembly.subjects.hedge_prose_count()`.
+  `tag-prior` and `florence` abstain on claims; `openai-compat` and `molmo` check them.
+
+### Fixed
+- A headcount inside a collective phrase ("a group of six soldiers") was not read as a count, so the
+  tag-vs-prose `count` dispute and its rewrite skipped it (#87).
+
 ### Upgrading
 - **argus-cortex 0.6.** Every cortex pin is now `>=0.6,<0.7`. A browser page served from lens's own
   host:port may write only when that host is an IP literal or `localhost`. A server reached by a DNS name

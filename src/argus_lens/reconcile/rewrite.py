@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-from argus_lens.assembly.subjects import rewrite_prose_count
+from argus_lens.assembly.subjects import hedge_prose_count, rewrite_prose_count
 from argus_lens.eval.metrics import _COLORS, _canon_color, _noun_variants
 from argus_lens.reconcile.types import AttributeDispute
 
@@ -75,4 +75,16 @@ def apply_fix(prose: str, dispute: AttributeDispute, value: str) -> str:
         # "six soldiers" -> "five soldiers"; a non-integer or < 2 verdict leaves the prose alone.
         return rewrite_prose_count(prose, int(value)) if value.isdigit() else prose
 
+    return prose
+
+
+def hedge_claim(prose: str, claim: AttributeDispute) -> str:
+    """Return *prose* with an unconfirmed *claim* left out (#87).
+
+    Used when a verifier contradicts a claim no tag backs: two model readings
+    disagree, so neither value is trusted and the exact figure goes
+    ("six soldiers" -> "several soldiers").
+    """
+    if claim.kind == "count":
+        return hedge_prose_count(prose)
     return prose
