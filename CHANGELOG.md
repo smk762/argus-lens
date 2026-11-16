@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+- **argus-cortex 0.6.** Every cortex pin is now `>=0.6,<0.7`. A browser page served from lens's own
+  host:port may write only when that host is an IP literal or `localhost`. A server reached by a DNS name
+  (`http://morpheus:8100`) must list that name in the new `LENS_TRUSTED_HOSTS` (comma-separated, no port),
+  because a bare hostname match is what DNS rebinding forges. Origin-less callers (curl, curator, the iris
+  broker) and origins in `LENS_CORS_ORIGINS` are unaffected.
+
+### Added
+- **The argus-iris GPU broker (#118).** `ARGUS_GPU_COORDINATOR=broker` with `ARGUS_GPU_BROKER_URL`,
+  `ARGUS_GPU_BROKER_TOKEN`, `ARGUS_GPU_TENANT_MANIFEST` (or `ARGUS_GPU_TENANT`) and
+  `ARGUS_GPU_BROKER_FALLBACK` (`lease` by default) leases the GPU from iris. The `local`/`torch`/`wd14-gpu`
+  extras pull in `argus-cortex[remote,yaml]` for the client. While iris has no lease routes, the lease comes
+  from the fallback.
+- **`gpu-tenant.yaml`**, lens's tenant manifest, shipped in the image at `/app/gpu-tenant.yaml`. It declares
+  the `caption` kind (`interactive`) and `caption-batch` kind (`batch`, preemptible), plus the loaded model as
+  an `argus-http` resident evicted through `POST /admin/unload` (`admin_auth`).
+- Every GPU lease names its kind. Batch, stream, folder, manifest and Immich runs lease as `caption-batch`;
+  `ArgusLens.caption()` takes `lease_kind=` (default `caption`).
+- `docker-compose.yaml` passes the broker variables, `ARGUS_ADMIN_TOKEN`, `LENS_CORS_ORIGINS` and
+  `LENS_TRUSTED_HOSTS`, and names the container `argus-lens` (`LENS_CONTAINER_NAME`) so iris's node agent can
+  match it.
+
 ## [0.12.0] - 2026-11-15
 
 ### Upgrading

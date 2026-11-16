@@ -30,6 +30,14 @@ from argus_lens.types import (
 
 logger = structlog.get_logger()
 
+# GPU lease kinds, declared in gpu-tenant.yaml. The argus-iris broker reads each
+# kind's priority and preemptibility from that manifest: one image someone is
+# waiting on is ``interactive``; a multi-image job is ``batch`` and yields to it.
+# Every lease is per image, so a yield lands at the next image boundary. The
+# local coordinators ignore the kind.
+LEASE_KIND_CAPTION = "caption"
+LEASE_KIND_BATCH = "caption-batch"
+
 # Backend string -> constructor lookup
 _BACKEND_REGISTRY: dict[str, type] = {}
 
@@ -417,13 +425,13 @@ class ArgusLens:
                 self._backend.prefetch()
                 self._prefetched = True
 
-    def _infer(self, pil: Image.Image) -> tuple[str, str]:
+    def _infer(self, pil: Image.Image, kind: str = LEASE_KIND_CAPTION) -> tuple[str, str]:
         """Run backend inference behind the GPU capacity lease (#38).
 
         Marks the engine busy (so the idle reaper / ``unload`` won't free the
         model mid-inference) and stamps idleness at both boundaries. The lease
         serialises heavy GPU work against other tenants; cloud backends (no GPU
-        footprint) bypass it.
+        footprint) bypass it. *kind* names the work for the broker (#118).
         """
         from argus_lens.gpu import resolve_min_vram_mb  # noqa: PLC0415
 
@@ -435,7 +443,7 @@ class ArgusLens:
         # weights. Only a load needs room; a resident model just takes the lock.
         min_vram_mb = 0 if self._loaded else footprint
         lease = (
-            self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb)
+            self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb, kind=kind)
             if use_lease
             else contextlib.nullcontext()
         )
@@ -526,6 +534,7 @@ class ArgusLens:
         hybrid_preset: str | None = None,
         prose_bias: float | None = None,
         prose_enrichment: bool = True,
+        lease_kind: str = LEASE_KIND_CAPTION,
     ) -> CaptionResult:
         """Caption a single image.
 
@@ -538,6 +547,10 @@ class ArgusLens:
         *hybrid_preset* (e.g. ``"keywords"``, ``"balanced"``, ``"descriptive"``)
         or a continuous *prose_bias* (0.0 = pure tags, 1.0 = full prose) tunes
         how much prose survives the tag/prose fusion.
+
+        *lease_kind* names the GPU work for the broker: a caller looping over
+        many images passes :data:`LEASE_KIND_BATCH` so a single interactive
+        caption can go first.
         """
         asset, pil = _load_image(image)
         if isinstance(self._backend, ReplayBackend):
@@ -554,7 +567,7 @@ class ArgusLens:
             categories=self._categories,
         )
 
-        tags, prose = self._infer(pil)
+        tags, prose = self._infer(pil, lease_kind)
 
         result = compose_caption_result(
             trigger_word=trigger_word,
@@ -660,7 +673,7 @@ class ArgusLens:
                 h = _image_hash(buf.getvalue())
 
                 if h not in caption_cache:
-                    caption_cache[h] = self._infer(pil)
+                    caption_cache[h] = self._infer(pil, LEASE_KIND_BATCH)
 
                 cached_tags, cached_prose = caption_cache[h]
                 composed = compose_caption_result(
@@ -731,7 +744,7 @@ class ArgusLens:
                     yield name, miss
                 continue
 
-            tags, prose = self._infer(pil)
+            tags, prose = self._infer(pil, LEASE_KIND_BATCH)
             result = compose_caption_result(
                 trigger_word=trigger_word,
                 tags=tags,

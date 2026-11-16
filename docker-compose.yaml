@@ -1,6 +1,9 @@
 services:
   argus-lens:
     build: .
+    # The argus-iris broker's node agent matches GPU processes to the
+    # lens-captioner resident by this name (gpu-tenant.yaml).
+    container_name: ${LENS_CONTAINER_NAME:-argus-lens}
     ports:
       - "${ARGUS_PORT:-8080}:8080"
     environment:
@@ -22,10 +25,19 @@ services:
       - ARGUS_REFINE_VARIANTS=${ARGUS_REFINE_VARIANTS:-}
       # Share the GPU politely with ComfyUI etc. on the same host. With `lease`,
       # every argus GPU service (argus-curator too) must name the same lock file
-      # on the same host directory, mounted below.
+      # on the same host directory, mounted below. With `broker`, argus-iris
+      # grants the lease (and `lease` below is the fallback when it is down).
       - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR:-none}
       - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
+      - ARGUS_GPU_BROKER_URL=${ARGUS_GPU_BROKER_URL:-}
+      - ARGUS_GPU_BROKER_TOKEN=${ARGUS_GPU_BROKER_TOKEN:-}
+      - ARGUS_GPU_BROKER_FALLBACK=${ARGUS_GPU_BROKER_FALLBACK:-lease}
+      - ARGUS_GPU_TENANT_MANIFEST=${ARGUS_GPU_TENANT_MANIFEST:-/app/gpu-tenant.yaml}
+      - ARGUS_GPU_TENANT=${ARGUS_GPU_TENANT:-}
+      # Leave unset on the broker: iris owns idle eviction.
       - ARGUS_IDLE_UNLOAD_S=${ARGUS_IDLE_UNLOAD_S:-}
+      # Bearer token for POST /admin/unload; the broker calls it to evict.
+      - ARGUS_ADMIN_TOKEN=${ARGUS_ADMIN_TOKEN:-}
       # Record live captions into the cortex lineage store (the replay tape).
       - LENS_RECORD_LINEAGE=${LENS_RECORD_LINEAGE:-}
       - CORTEX_PG_URL=${CORTEX_PG_URL:-}
@@ -39,6 +51,8 @@ services:
       # Folder browsing / folder captioning root inside the container (fixed);
       # the host side is LENS_SOURCE_PATH, mounted below.
       - LENS_SOURCE_PATH=/data/images
+      - LENS_CORS_ORIGINS=${LENS_CORS_ORIGINS:-}
+      - LENS_TRUSTED_HOSTS=${LENS_TRUSTED_HOSTS:-}
     volumes:
       # Image library for GET /folders and POST /caption/folder. Read-write:
       # .txt (and optional .xmp) sidecars are written next to the images.

@@ -9,6 +9,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" && \
     python -m pip install "certifi>=2026.10.19" "$1[server,local,openai,replicate,lineage]" && \
     rm -rf /tmp/wheels
+# The argus-iris tenant manifest; ARGUS_GPU_TENANT_MANIFEST points here (#118).
+COPY gpu-tenant.yaml /app/gpu-tenant.yaml
 
 EXPOSE 8080
 CMD ["argus-lens", "serve", "--host", "0.0.0.0", "--port", "8080", "--cors"]
