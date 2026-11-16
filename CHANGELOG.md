@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+- **argus-cortex 0.8.** Every cortex pin is now `>=0.8,<0.9`, and the base install takes
+  `argus-cortex[remote]` (for `argus_cortex.net`).
+
+### Changed
+- Uploads are capped (`LENS_MAX_UPLOAD_MB`, default 50, per file): images on `/caption`,
+  `/caption/batch` and `/caption/stream`, and the manifest on `/caption/manifest[/stream]`. A larger
+  file is a 413.
+- URL fetches and the admin token check now use argus-cortex 0.8's shared helpers (`argus_cortex.net`,
+  `argus_cortex.auth`), and uploads are read through `argus_cortex.limits`. `LENS_URL_ALLOWED_HOSTS`
+  keeps its meaning and also accepts `host:port` entries. `/admin/unload` is still open when
+  `ARGUS_ADMIN_TOKEN` is unset; a missing or wrong token is still a 401, now with
+  `WWW-Authenticate: Bearer` and the detail "bearer token required". A non-2xx answer from
+  `argus_lens.url_fetch.fetch_url` / `_load_image` now raises `argus_cortex.net.FetchFailed` instead of
+  `httpx.HTTPStatusError`, and refusals raise `argus_cortex.net.UrlRefused` (lens's `URLRefused` is gone).
+
 ## [0.13.0] - 2026-11-16
 
 ### Upgrading

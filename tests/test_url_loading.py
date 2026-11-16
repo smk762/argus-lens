@@ -1,10 +1,13 @@
 """Tests for URL-based image loading in _load_image."""
 
+import functools
 import hashlib
 import io
 
 import httpx
 import pytest
+from argus_cortex import net as cortex_net
+from argus_cortex.net import FetchFailed, UrlRefused
 from PIL import Image
 
 from argus_lens import url_fetch
@@ -26,6 +29,8 @@ _PNG = _make_test_png()
 def net(monkeypatch):
     """Stub DNS and HTTP: ``net.dns`` maps host -> IPs, ``net.routes`` maps URL -> handler.
 
+    Wired in through ``argus_cortex.net.fetch``'s own injection points
+    (``resolve=`` and ``transport=``), so the real policy runs end to end.
     Every request that reaches the transport is recorded in ``net.seen`` as
     ``(connected_url, host_header, sni)``, so a test can assert no connection
     was made, or that it went to the checked IP.
@@ -42,7 +47,7 @@ def net(monkeypatch):
 
     def fake_resolve(host, port):
         if host not in state.dns:
-            raise url_fetch.URLRefused(f"cannot resolve host {host!r}")
+            raise OSError(f"cannot resolve host {host!r}")
         return state.dns[host]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -56,14 +61,11 @@ def net(monkeypatch):
             return httpx.Response(404)
         return state.routes[key]
 
-    real_client = httpx.Client
-
-    def client_factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(url_fetch, "_resolve", fake_resolve)
-    monkeypatch.setattr(httpx, "Client", client_factory)
+    monkeypatch.setattr(
+        cortex_net,
+        "fetch",
+        functools.partial(cortex_net.fetch, resolve=fake_resolve, transport=httpx.MockTransport(handler)),
+    )
     monkeypatch.delenv("LENS_URL_ALLOWED_HOSTS", raising=False)
     monkeypatch.delenv("LENS_URL_FETCH", raising=False)
     return state
@@ -102,10 +104,11 @@ def test_load_image_url_trailing_slash(net):
 
 
 def test_load_image_url_http_error(net):
-    """Propagates httpx.HTTPStatusError when the URL fetch fails."""
+    """Raises FetchFailed (carrying the status) when the URL answers with an error."""
     net.dns["example.com"] = ["93.184.215.14"]
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(FetchFailed) as excinfo:
         _load_image("https://example.com/missing.jpg")
+    assert excinfo.value.status == 404
 
 
 @pytest.mark.parametrize(
@@ -128,7 +131,7 @@ def test_load_image_url_http_error(net):
 def test_internal_address_refused_without_connecting(net, ip):
     """A host resolving to a non-public address is refused before any connection (#110)."""
     net.dns["internal.example"] = [ip]
-    with pytest.raises(url_fetch.URLRefused):
+    with pytest.raises(UrlRefused):
         _load_image("http://internal.example/latest/meta-data")
     assert net.seen == []
 
@@ -136,7 +139,7 @@ def test_internal_address_refused_without_connecting(net, ip):
 def test_ip_literal_refused(net):
     """An internal IP literal is refused the same way as a hostname."""
     net.dns["169.254.169.254"] = ["169.254.169.254"]
-    with pytest.raises(url_fetch.URLRefused):
+    with pytest.raises(UrlRefused):
         _load_image("http://169.254.169.254/latest/meta-data/")
     assert net.seen == []
 
@@ -144,7 +147,7 @@ def test_ip_literal_refused(net):
 def test_mixed_resolution_refused(net):
     """One internal address among public ones is enough to refuse (no rebinding lottery)."""
     net.dns["sneaky.example"] = ["93.184.215.14", "127.0.0.1"]
-    with pytest.raises(url_fetch.URLRefused):
+    with pytest.raises(UrlRefused):
         _load_image("https://sneaky.example/a.png")
     assert net.seen == []
 
@@ -156,7 +159,7 @@ def test_redirect_to_internal_refused(net):
     net.routes["https://example.com/a.png"] = httpx.Response(
         302, headers={"location": "http://metadata.internal/latest/"}
     )
-    with pytest.raises(url_fetch.URLRefused):
+    with pytest.raises(UrlRefused):
         _load_image("https://example.com/a.png")
     assert [s[1] for s in net.seen] == ["example.com"]
 
@@ -176,7 +179,7 @@ def test_redirect_loop_capped(net):
     """More than MAX_REDIRECTS hops is refused."""
     net.dns["example.com"] = ["93.184.215.14"]
     net.routes["https://example.com/a.png"] = httpx.Response(302, headers={"location": "/a.png"})
-    with pytest.raises(url_fetch.URLRefused, match="redirects"):
+    with pytest.raises(UrlRefused, match="redirects"):
         _load_image("https://example.com/a.png")
 
 
@@ -190,28 +193,40 @@ def test_allowed_host_bypasses_private_check(net, monkeypatch):
     assert net.seen == [("http://192.168.1.20:2283/thumb.png", "immich.lan:2283", "immich.lan")]
 
 
+def test_allowed_host_with_port_only_allows_that_port(net, monkeypatch):
+    """A ``host:port`` entry in LENS_URL_ALLOWED_HOSTS allows that port and no other."""
+    monkeypatch.setenv("LENS_URL_ALLOWED_HOSTS", "immich.lan:2283")
+    net.dns["immich.lan"] = ["192.168.1.20"]
+    net.routes["http://immich.lan:2283/thumb.png"] = httpx.Response(200, content=_PNG)
+    _, pil = _load_image("http://immich.lan:2283/thumb.png")
+    assert pil.size == (64, 64)
+    with pytest.raises(UrlRefused):
+        _load_image("http://immich.lan:8080/thumb.png")
+    assert [s[0] for s in net.seen] == ["http://192.168.1.20:2283/thumb.png"]
+
+
 def test_url_fetch_off(net, monkeypatch):
     """LENS_URL_FETCH=off refuses every URL."""
     monkeypatch.setenv("LENS_URL_FETCH", "off")
     net.dns["example.com"] = ["93.184.215.14"]
-    with pytest.raises(url_fetch.URLRefused, match="disabled"):
+    with pytest.raises(UrlRefused, match="disabled"):
         _load_image("https://example.com/a.png")
     assert net.seen == []
 
 
 def test_oversized_body_refused(net, monkeypatch):
-    """A body over MAX_BYTES is refused rather than buffered."""
+    """A body over url_fetch.MAX_BYTES (passed to cortex as max_bytes) is refused rather than buffered."""
     monkeypatch.setattr(url_fetch, "MAX_BYTES", 100)
     net.dns["example.com"] = ["93.184.215.14"]
     net.routes["https://example.com/big.png"] = httpx.Response(200, content=b"x" * 1000)
-    with pytest.raises(url_fetch.URLRefused, match="larger"):
+    with pytest.raises(UrlRefused, match="larger"):
         _load_image("https://example.com/big.png")
 
 
 def test_credentials_in_url_refused(net):
     """userinfo in the URL is refused."""
     net.dns["example.com"] = ["93.184.215.14"]
-    with pytest.raises(url_fetch.URLRefused):
+    with pytest.raises(UrlRefused):
         _load_image("https://user:pw@example.com/a.png")
 
 
@@ -259,9 +274,9 @@ def test_uppercase_scheme_is_fetched_as_a_url(net):
 
 
 def test_total_deadline_caps_a_slow_body(net, monkeypatch):
-    """A body still arriving after TOTAL_TIMEOUT_S is refused (per-read timeouts alone never fire)."""
+    """A fetch past TOTAL_TIMEOUT_S (cortex's deadline) is refused (per-read timeouts alone never fire)."""
     net.dns["example.com"] = ["93.184.215.14"]
     net.routes["https://example.com/slow.png"] = httpx.Response(200, content=_PNG)
     monkeypatch.setattr(url_fetch, "TOTAL_TIMEOUT_S", -1.0)
-    with pytest.raises(url_fetch.URLRefused, match="longer than"):
+    with pytest.raises(UrlRefused, match="longer than"):
         url_fetch.fetch_url("https://example.com/slow.png")

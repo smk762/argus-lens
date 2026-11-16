@@ -99,14 +99,14 @@ wheels = [
 
 [[package]]
 name = "argus-cortex"
-version = "0.6.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7a/25/cb4c4cabcac3987e56576008a6ae882f9a5c426d603f473c6f31dd1f4450/argus_cortex-0.6.0.tar.gz", hash = "sha256:1439b2f98f587d917ae29f9fe95a3e6644b8230a42341e90de39b15e34927723", size = 145324, upload-time = "2026-11-15T19:32:36.226Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/3a/31193a0d5ea43aae655d52c803597ef60c5f94dd3934d65b84c1f636650a/argus_cortex-0.8.0.tar.gz", hash = "sha256:85c82d50219f3bf00e0d7dfe9838f4da86ceeefe2b0eca479a7b2a53a0003d9b", size = 183014, upload-time = "2026-11-16T15:38:05.96Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/a8/87d11dfecc9aede7adf6a8a1a287c61daa6f97a252668c38ab513ed5858a/argus_cortex-0.6.0-py3-none-any.whl", hash = "sha256:eedcf1577b2a333f8c1f30bfe69215642326f15d4df4f5624f81b54a2edbb69c", size = 91730, upload-time = "2026-11-15T19:32:35.044Z" },
+    { url = "https://files.pythonhosted.org/packages/44/17/5c985db1566aba4a9f0b3a9d1704123e5c78a1377f6ec3e15f51e7fd3306/argus_cortex-0.8.0-py3-none-any.whl", hash = "sha256:d981ac7de96c5985f5b032dbc85981e4fcd54d1e3e227fc7ea3b15d540543d57", size = 107214, upload-time = "2026-11-16T15:38:04.604Z" },
 ]
 
 [package.optional-dependencies]
@@ -135,7 +135,7 @@ yaml = [
 name = "argus-lens"
 source = { editable = "." }
 dependencies = [
-    { name = "argus-cortex" },
+    { name = "argus-cortex", extra = ["remote"] },
     { name = "certifi" },
     { name = "httpx" },
     { name = "pillow" },
@@ -223,16 +223,16 @@ wd14-gpu = [
 
 [package.metadata]
 requires-dist = [
-    { name = "argus-cortex", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["gpu", "remote", "yaml"], marker = "extra == 'all'", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["gpu", "remote", "yaml"], marker = "extra == 'local'", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["gpu", "remote", "yaml"], marker = "extra == 'torch'", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["gpu", "remote", "yaml"], marker = "extra == 'wd14-gpu'", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["postgres", "s3"], marker = "extra == 'all'", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["postgres", "s3"], marker = "extra == 'lineage'", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["remote", "yaml"], marker = "extra == 'dev'", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["server"], marker = "extra == 'all'", specifier = ">=0.6,<0.7" },
-    { name = "argus-cortex", extras = ["server"], marker = "extra == 'server'", specifier = ">=0.6,<0.7" },
+    { name = "argus-cortex", extras = ["gpu", "remote", "yaml"], marker = "extra == 'all'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["gpu", "remote", "yaml"], marker = "extra == 'local'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["gpu", "remote", "yaml"], marker = "extra == 'torch'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["gpu", "remote", "yaml"], marker = "extra == 'wd14-gpu'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["postgres", "s3"], marker = "extra == 'all'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["postgres", "s3"], marker = "extra == 'lineage'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["remote"], specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["remote", "yaml"], marker = "extra == 'dev'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["server"], marker = "extra == 'all'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["server"], marker = "extra == 'server'", specifier = ">=0.8,<0.9" },
     { name = "certifi", specifier = ">=2026.10.19" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.110" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.110" },
