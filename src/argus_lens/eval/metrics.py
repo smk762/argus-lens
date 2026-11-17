@@ -149,10 +149,30 @@ def _tag_color_map(tags: str) -> dict[str, set[str]]:
     return dict(mapping)
 
 
+_SIBILANT_ENDINGS = ("s", "x", "z", "ch", "sh")
+_VOWELS = frozenset("aeiou")
+
+
 def _noun_variants(noun: str) -> set[str]:
-    """Singular/plural surface forms of *noun* for prose matching."""
-    variants = {noun, noun + "s", noun + "es"}
-    if noun.endswith("s"):
+    """Singular/plural surface forms of *noun* for prose matching.
+
+    Regular English plurals only, so a variant is never a different real word:
+    ``-es`` follows a sibilant (dress → dresses, never cap → capes), consonant +
+    ``y`` becomes ``-ies`` (sky → skies). The reverse direction recovers the
+    singular of a plural tag noun (skies → sky, glasses → glass, eyes → eye).
+    """
+    variants = {noun}
+    if noun.endswith(_SIBILANT_ENDINGS):
+        variants.add(noun + "es")  # dress → dresses
+    elif len(noun) > 1 and noun.endswith("y") and noun[-2] not in _VOWELS:
+        variants.add(noun[:-1] + "ies")  # sky → skies
+    else:
+        variants.add(noun + "s")  # boy → boys, eye → eyes
+    if len(noun) > 3 and noun.endswith("ies"):
+        variants.update({noun[:-3] + "y", noun[:-1]})  # skies → sky; ties → tie
+    elif len(noun) > 2 and noun.endswith("es") and noun[:-2].endswith(_SIBILANT_ENDINGS):
+        variants.update({noun[:-2], noun[:-1]})  # glasses → glass; horses → horse
+    elif len(noun) > 1 and noun.endswith("s") and not noun.endswith("ss"):
         variants.add(noun[:-1])  # eyes → eye
     return variants
 
