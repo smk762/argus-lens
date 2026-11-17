@@ -81,6 +81,7 @@ class DescriptionWriter:
         self.max_tokens = max_tokens
         self.timeout = timeout
         self._client = client
+        self._owns_client = client is None  # never close (or replace) a caller's client
 
     def _http(self) -> httpx.Client:
         if self._client is None:
@@ -133,7 +134,7 @@ class DescriptionWriter:
         return result
 
     def close(self) -> None:
-        """Close the HTTP client."""
-        if self._client is not None:
+        """Close the HTTP client this writer created; a caller-supplied client is left to its owner."""
+        if self._client is not None and self._owns_client:
             self._client.close()
             self._client = None

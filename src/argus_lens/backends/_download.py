@@ -11,6 +11,33 @@ import structlog
 logger = structlog.get_logger()
 
 
+def _umask() -> int:
+    """The process umask, read without changing it where the OS allows (Linux ``/proc``)."""
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("Umask:"):
+                return int(line.split()[1], 8)
+    except (OSError, ValueError, IndexError):
+        pass
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Best-effort fsync of *directory* so a rename into it survives a crash (no-op where unsupported)."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def stream_download(url: str, dest: Path, *, event: str, chunk_size: int = 1024 * 1024) -> None:
     """Stream *url* to *dest*, atomically.
 
@@ -37,7 +64,14 @@ def stream_download(url: str, dest: Path, *, event: str, chunk_size: int = 1024 
                 downloaded += len(chunk)
                 if total:
                     logger.debug(f"{event}.progress", file=dest.name, pct=downloaded * 100 // total)
+            # Durable before it becomes visible: a crash after the rename must not leave
+            # an empty/partial file under the real name (callers treat existence as done).
+            fh.flush()
+            os.fsync(fh.fileno())
+        # mkstemp creates 0600; give the file the mode a plain open() would (shared caches).
+        os.chmod(tmp, 0o666 & ~_umask())
         tmp.replace(dest)
+        _fsync_dir(dest.parent)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

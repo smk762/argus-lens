@@ -93,12 +93,18 @@ def _extract_content(data: Any) -> str:
     try:
         choice = data["choices"][0]
         message = choice["message"]
-        content = message.get("content")
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"unexpected chat-completions response shape: {exc!r}") from exc
+    if not isinstance(choice, dict) or not isinstance(message, dict):
+        # e.g. ``"message": null`` on some servers' content-filter / error paths.
+        raise RuntimeError(f"unexpected chat-completions response shape: message is {message!r}")
+    content = message.get("content")
     if isinstance(content, list):
-        # Some vision servers return content as a list of typed parts.
-        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        # Some vision servers return content as a list of typed parts; non-text parts may carry
+        # ``"text": null`` (image / refusal parts), so only string text is joined.
+        content = "".join(
+            text for part in content if isinstance(part, dict) and isinstance(text := part.get("text"), str)
+        )
     if not isinstance(content, str) or not content.strip():
         if message.get("reasoning") and choice.get("finish_reason") == "length":
             raise RuntimeError(
