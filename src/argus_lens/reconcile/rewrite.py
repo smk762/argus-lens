@@ -27,8 +27,11 @@ _WORD = re.compile(r"\b[a-z]+\b", re.IGNORECASE)
 
 def _cased(replacement: str, original: str) -> str:
     """Match *replacement*'s case to the *original* token it replaces."""
+    if len(original) > 1 and original.isupper():
+        return replacement.upper()
     if original[:1].isupper():
-        return replacement.capitalize()
+        # Only the first letter: str.capitalize() would lowercase the rest ("LoRA" -> "Lora").
+        return replacement[:1].upper() + replacement[1:]
     return replacement
 
 
@@ -73,7 +76,8 @@ def apply_fix(prose: str, dispute: AttributeDispute, value: str) -> str:
 
     if dispute.kind == "count":
         # "six soldiers" -> "five soldiers"; a non-integer or < 2 verdict leaves the prose alone.
-        return rewrite_prose_count(prose, int(value)) if value.isdigit() else prose
+        # isascii(): str.isdigit() also accepts "²", which int() rejects.
+        return rewrite_prose_count(prose, int(value)) if value.isascii() and value.isdigit() else prose
 
     return prose
 
