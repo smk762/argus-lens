@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from argus_lens.backends.base import CaptionBackend  # noqa: E402
 from argus_lens.server import create_app  # noqa: E402
+from tests._netguard import block_outbound  # noqa: E402
 
 
 class _StubBackend(CaptionBackend):
@@ -55,12 +56,11 @@ def client(monkeypatch):
 )
 def test_internal_url_is_400_without_connecting(client, monkeypatch, url):
     """A loopback/link-local/private URL is a 400 and no HTTP request is sent."""
-    sent = []
-    monkeypatch.setattr("httpx.Client.send", lambda *a, **k: sent.append(a) or pytest.fail("connected"))
+    attempts = block_outbound(monkeypatch)
     resp = client.post("/caption/url", json={"image_url": url})
     assert resp.status_code == 400
     assert "non-public" in resp.json()["detail"]
-    assert sent == []
+    assert attempts == []
 
 
 def test_local_path_is_400(client, tmp_path: Path):

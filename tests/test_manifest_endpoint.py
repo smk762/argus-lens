@@ -628,6 +628,12 @@ def test_manifest_symlink_out_of_the_root_is_refused(tmp_path: Path) -> None:
     rows = [{"rel_path": "link.jpg", "abs_path": str(root / "link.jpg"), "target_profile": {}}]
     body = _post_manifest(client, rows).json()
     assert body["failed"] == 1
+    assert body["captioned"] == 0
+    # Failed for the confinement refusal, not some incidental decode/backend error.
+    assert len(body["errors"]) == 1
+    assert "outside the configured source root" in body["errors"][0]["error"]
+    # No sidecar at either the symlink's location or its target.
+    assert not (root / "link.txt").exists()
     assert not target.with_suffix(".txt").exists()
 
 
