@@ -226,6 +226,14 @@ def test_all_variants_are_refined_when_unrestricted() -> None:
     assert set(rewriter.requests[0][0].rules) == set(result.caption_variants)
 
 
+def test_empty_variants_refines_nothing() -> None:
+    """``variants=()`` means no variants, not every variant (``None`` is the 'all' spelling)."""
+    result, profile = _result()
+    rewriter = _ScriptedRewriter()
+    assert Refiner(rewriter, variants=()).refine(result, profile, trigger_word="sks") is result
+    assert rewriter.requests == []
+
+
 def test_unreachable_endpoint_is_skipped_during_cooldown() -> None:
     """A refused connection pauses refinement instead of stalling every image."""
     result, profile = _result()
