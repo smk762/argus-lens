@@ -217,6 +217,18 @@ def _words(text: str) -> list[str]:
     return _WORD.findall(text.lower().replace("_", " "))
 
 
+def _grounded(word: str, vocabulary: frozenset[str] | set[str]) -> bool:
+    """True when *word*, or its singular ("dresses" -> "dress", "berries" -> "berry"), is in *vocabulary*."""
+    candidates = [word]
+    if word.endswith("s"):
+        candidates.append(word[:-1])
+    if word.endswith("es"):
+        candidates.append(word[:-2])
+    if word.endswith("ies"):
+        candidates.append(word[:-3] + "y")
+    return any(c in vocabulary for c in candidates)
+
+
 def _list_fragment_problem(fragment: str) -> str | None:
     """Describe what is wrong with one list fragment beyond what repair fixes, or ``None``.
 
@@ -322,7 +334,8 @@ def _repair_sentence(sentence: str) -> str:
 def _split_trigger(text: str, trigger_word: str) -> tuple[str, str]:
     """Separate a leading ``trigger, `` prefix so repairs never touch it."""
     tw = trigger_word.strip()
-    if tw and text.startswith(tw):
+    # Only a whole word: trigger "art" must not split "artistic portrait" into "art" + "istic portrait".
+    if tw and text.startswith(tw) and (len(text) == len(tw) or text[len(tw)] in " ,"):
         return tw, text[len(tw) :].lstrip(" ,")
     return "", text
 
@@ -448,7 +461,7 @@ def check_caption(
         problems.append(f"over token budget ({estimate_tokens(text, target_backend)} > {token_budget})")
     if allowed_vocabulary is not None:
         content = [w for w in words if w not in _TRAILING_FUNCTION_WORDS and len(w) > 2]
-        novel = sorted({w for w in content if w not in allowed_vocabulary and w.rstrip("s") not in allowed_vocabulary})
+        novel = sorted({w for w in content if not _grounded(w, allowed_vocabulary)})
         if content and len(novel) / len(set(content)) > max_novel_ratio:
             problems.append(f"too many words not grounded in the inputs: {', '.join(novel[:10])}")
     return problems

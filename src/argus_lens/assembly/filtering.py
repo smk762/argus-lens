@@ -113,6 +113,7 @@ def filter_redundant_clauses_detailed(
             continue
         cw = _content_words(clause)
         if not cw:
+            removed.append(clause)  # no content words: nothing to keep, but still accounted for
             continue
         overlap = len(cw & tag_words) / len(cw)
         if overlap < threshold:
@@ -283,7 +284,10 @@ def extract_prose_tokens(
     Pulls compound noun phrases (e.g. "gray sweater", "lace pattern",
     "wooden door") that don't overlap with existing WD14 tags. Standalone
     words are not extracted: on their own they read as disjointed noise
-    ("wearing", "next", "cream"). Returns at most *max_tokens* results.
+    ("wearing", "next", "cream"). The one exception is a specific pattern
+    noun after a stopword ("the sweater" -> ``sweater``), which is emitted
+    bare; a generic one ("the background") is skipped. Returns at most
+    *max_tokens* results.
     """
     seen: set[str] = set()
     tokens: list[str] = []
