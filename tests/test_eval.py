@@ -319,3 +319,21 @@ def test_compare_to_baseline_ok_within_tolerance() -> None:
     cmp = compare_to_baseline(current, baseline)
     assert cmp["regressed"] is False
     assert cmp["regressions"] == []
+
+
+def test_noun_variants_do_not_match_unrelated_es_words() -> None:
+    """'cap' must not match 'capes' (nor 'hat' → 'hates'): no false contradiction."""
+    r = CaptionResult(final_caption="x", raw_tags="red_cap", raw_prose="wearing blue capes")
+    assert tag_prose_contradiction(r)["count"] == 0
+    r = CaptionResult(final_caption="x", raw_tags="red_hat", raw_prose="a blue hates sign")
+    assert tag_prose_contradiction(r)["count"] == 0
+
+
+def test_noun_variants_cover_ies_plurals_both_ways() -> None:
+    """sky ↔ skies and glasses ↔ glass are matched in prose."""
+    r = CaptionResult(final_caption="x", raw_tags="blue_sky", raw_prose="under grey skies")
+    assert tag_prose_contradiction(r)["count"] == 1
+    r = CaptionResult(final_caption="x", raw_tags="blue_skies", raw_prose="a grey sky")
+    assert tag_prose_contradiction(r)["count"] == 1
+    r = CaptionResult(final_caption="x", raw_tags="red_glasses", raw_prose="a blue glass")
+    assert tag_prose_contradiction(r)["count"] == 1
