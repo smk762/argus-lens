@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `argus_lens.url_fetch.fetch_url` / `_load_image` now raises `argus_cortex.net.FetchFailed` instead of
   `httpx.HTTPStatusError`, and refusals raise `argus_cortex.net.UrlRefused` (lens's `URLRefused` is gone).
 
+### Fixed
+- Reconcile no longer crashes when a verifier returns `None` for a text claim (a name or quote the
+  prose says it read); the claim is left as written, as for an empty transcript.
+
 ## [0.13.0] - 2026-11-16
 
 ### Upgrading

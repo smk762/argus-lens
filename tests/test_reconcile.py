@@ -497,6 +497,20 @@ def test_one_sentence_prose_keeps_an_unread_name() -> None:
     assert res.prose == prose and res.changes == []
 
 
+def test_text_claim_survives_verifier_returning_none() -> None:
+    """A verifier that returns None for a text claim abstains rather than crashing reconcile."""
+
+    class _NoneVerifier:
+        name = "none"
+
+        def verify(self, image, dispute):
+            return None
+
+    res = Reconciler(_NoneVerifier()).reconcile(Image.new("RGB", (8, 8)), "document", _DIPLOMA)
+    assert res.prose == _DIPLOMA
+    assert res.changes == [] and res.errors == 0
+
+
 def test_text_answer_parsing_and_budget() -> None:
     """A transcription passes through whitespace-collapsed; NONE abstains; text gets a longer answer budget."""
     assert parse_answer("  PRIX\n NOBEL ", "text") == "PRIX NOBEL"
