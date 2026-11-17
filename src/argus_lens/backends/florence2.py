@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 from typing import Any
 
@@ -12,6 +13,22 @@ from argus_lens.registry import ModelRegistry, get_default_registry
 
 _NATIVE_MODEL_ID = "florence-community/Florence-2-base"
 _LEGACY_MODEL_ID = "microsoft/Florence-2-base"
+# Tasks whose post-processed result is plain text. The rest (<OD>, <DENSE_REGION_CAPTION>,
+# <OCR_WITH_REGION>, ...) return boxes/regions, which is not a caption.
+CAPTION_TASKS = ("<CAPTION>", "<DETAILED_CAPTION>", "<MORE_DETAILED_CAPTION>", "<OCR>")
+# The legacy remote-code weights break on transformers >= 4.52.
+_LEGACY_MAX_TRANSFORMERS = (4, 52)
+
+
+def _version_tuple(version: str) -> tuple[int, int]:
+    """``(major, minor)`` of a version string such as ``4.51.3`` or ``5.0.0.dev0`` (unparseable -> (0, 0))."""
+    parts = []
+    for piece in version.split(".")[:2]:
+        digits = "".join(itertools.takewhile(str.isdigit, piece))
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 2:
+        parts.append(0)
+    return parts[0], parts[1]
 
 
 class Florence2Backend(LocalBackend):
@@ -36,7 +53,12 @@ class Florence2Backend(LocalBackend):
         trust_remote_code: bool | None = None,
         registry: ModelRegistry | None = None,
     ) -> None:
-        """Pick native or legacy weights based on *trust_remote_code* and set the caption task."""
+        """Pick native or legacy weights based on *trust_remote_code* and set the caption task.
+
+        *task* must be one of :data:`CAPTION_TASKS`; region/detection tasks don't yield a caption.
+        """
+        if task not in CAPTION_TASKS:
+            raise ValueError(f"Florence-2 task {task!r} does not produce a caption; use one of {CAPTION_TASKS}")
         if trust_remote_code is None:
             trust_remote_code = os.environ.get(
                 "HF_TRUST_REMOTE_CODE",
@@ -126,22 +148,34 @@ class Florence2Backend(LocalBackend):
         prefetch_hf_snapshot(self._model_id)
 
     def is_available(self) -> bool:
-        """Return True if torch and transformers are importable."""
-        try:
-            __import__("torch")
-            __import__("transformers")
-        except ImportError:
-            return False
-        return True
+        """Return True if torch and a transformers suited to the selected weights are importable."""
+        return self.availability_reason() is None
 
     def availability_reason(self) -> str | None:
-        """Name the missing package (torch or transformers), or None if usable."""
+        """Name the missing package, or the transformers mismatch for the selected weights, or None if usable."""
         try:
             __import__("torch")
         except ImportError:
             return "Missing package: torch (pip install argus-lens[torch])"
         try:
-            __import__("transformers")
+            transformers = __import__("transformers")
         except ImportError:
             return "Missing package: transformers (pip install argus-lens[torch])"
+        version = str(getattr(transformers, "__version__", "0"))
+        if self._trust_remote_code:
+            if _version_tuple(version) >= _LEGACY_MAX_TRANSFORMERS:
+                return (
+                    f"legacy Florence-2 weights ({self._model_id}, trust_remote_code) need transformers<4.52; "
+                    f"found {version}. Use the native weights or pin transformers<4.52"
+                )
+            return None
+        try:
+            native = getattr(transformers, "Florence2ForConditionalGeneration", None)
+        except Exception:  # noqa: BLE001 - transformers' lazy module can fail importing the class
+            native = None
+        if native is None:
+            return (
+                f"transformers {version} has no native Florence-2 (Florence2ForConditionalGeneration); "
+                "upgrade transformers or set HF_TRUST_REMOTE_CODE=true with transformers<4.52"
+            )
         return None

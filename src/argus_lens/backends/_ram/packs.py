@@ -64,8 +64,14 @@ class PackManifest:
             raise PackError(f"not a RAM++ vocabulary pack (format {self.format!r})")
         if self.version != PACK_VERSION:
             raise PackError(f"pack {self.name!r} is format version {self.version}; this lens reads {PACK_VERSION}")
+        if not isinstance(self.name, str) or not isinstance(self.tags, list) or not isinstance(self.thresholds, list):
+            raise PackError("a pack's name must be a string and its tags and thresholds lists")
         if not self.name or not self.tags:
             raise PackError("a pack needs a name and at least one tag")
+        if not all(isinstance(t, str) for t in self.tags):
+            raise PackError(f"pack {self.name!r}: every tag must be a string")
+        if not all(isinstance(t, int | float) and not isinstance(t, bool) for t in self.thresholds):
+            raise PackError(f"pack {self.name!r}: thresholds must be numbers")
         if len(self.tags) != len(self.thresholds):
             raise PackError(f"pack {self.name!r}: {len(self.tags)} tags but {len(self.thresholds)} thresholds")
         if len(set(self.tags)) != len(self.tags):
@@ -92,8 +98,14 @@ class PackManifest:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
             raise PackError(f"no {MANIFEST_FILE} in {pack_dir}") from exc
+        except OSError as exc:
+            raise PackError(f"cannot read {path}: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise PackError(f"{path} is not UTF-8: {exc}") from exc
         except json.JSONDecodeError as exc:
             raise PackError(f"{path} is not valid JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise PackError(f"{path} must hold a JSON object, not {type(data).__name__}")
         known = {f for f in cls.__dataclass_fields__}
         try:
             manifest = cls(**{k: v for k, v in data.items() if k in known})

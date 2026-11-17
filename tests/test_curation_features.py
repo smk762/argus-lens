@@ -108,6 +108,7 @@ def test_wd14_model_repo_selects_file_and_cache(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(wd14_mod, "_DEFAULT_CACHE_DIR", tmp_path)
     monkeypatch.delenv("WD14_MODEL_DIR", raising=False)
+    monkeypatch.delenv("WD14_MODEL_REPO", raising=False)  # "default" must not depend on the caller's env
     eva = WD14Backend(model_repo="SmilingWolf/wd-eva02-large-tagger-v3")
     assert eva._model_filename == "wd-eva02-large-tagger-v3.onnx"
     assert eva._search_dirs()[-1] == tmp_path / "wd-eva02-large-tagger-v3"
