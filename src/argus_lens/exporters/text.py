@@ -36,9 +36,16 @@ def export_txt(results: dict[str, CaptionResult], output_dir: Path) -> None:
     sub-directory of *output_dir*. An absolute name, a ``..`` part, or a
     sidecar resolving outside *output_dir* raises ``ValueError``. Every name
     is checked before anything is written, so a bad key writes nothing.
+    Two names that map to one sidecar (``IMG_1.jpg`` and ``IMG_1.png``) raise
+    ``ValueError`` too, rather than one caption silently replacing the other.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     planned = [(_sidecar_path(output_dir, name), result) for name, result in results.items()]
+    owners: dict[Path, str] = {}
+    for (txt_path, _), name in zip(planned, results, strict=True):
+        other = owners.setdefault(txt_path, name)
+        if other != name:
+            raise ValueError(f"{other!r} and {name!r} would share the sidecar {txt_path}")
     for txt_path, result in planned:
         txt_path.parent.mkdir(parents=True, exist_ok=True)
         txt_path.write_text(result.final_caption, encoding="utf-8")
