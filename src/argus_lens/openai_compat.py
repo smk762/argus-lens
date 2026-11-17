@@ -22,7 +22,9 @@ import binascii
 import io
 import threading
 import time
-from typing import Any
+from typing import Any, NoReturn
+
+import structlog
 
 try:
     from fastapi import APIRouter, HTTPException
@@ -34,6 +36,8 @@ from PIL import Image
 
 from argus_lens.engine import ArgusLens
 from argus_lens.types import CaptionResult
+
+logger = structlog.get_logger(__name__)
 
 # ── Model ID registry ──────────────────────────────────────────────────────────
 # Keys are the strings Frigate sends in the "model" field.
@@ -120,6 +124,22 @@ def _extract_image_bytes(content: list[dict[str, Any]]) -> bytes:
                 param="messages",
             )
     return b""
+
+
+def _decode_image(content: list[dict[str, Any]]) -> Image.Image:
+    """Decode the inline image in *content* to RGB, raising the OpenAI-shaped 4xx on failure.
+
+    Blocking (base64 + full PIL decode); callers run it in a worker thread.
+    """
+    img_bytes = _extract_image_bytes(content)
+    if not img_bytes:
+        _openai_error(422, "No image found in message content", "invalid_request_error", "no_image")
+    try:
+        return Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    except Exception as exc:
+        # PIL's message can echo internals; the client only needs to know it was undecodable.
+        logger.info("v1_invalid_image", error=repr(exc))
+        _openai_error(400, "Invalid image data", "invalid_request_error", "invalid_image")
 
 
 # ── Lazy engine pool ───────────────────────────────────────────────────────────
@@ -238,28 +258,27 @@ def create_openai_router(*, allowed_backends: set[str] | None = None, **engine_k
                 "model_not_found",
             )
 
-        # Gather content parts from the last user message (Frigate sends one message)
+        # The image comes from the last *user* message (Frigate sends one); a
+        # multimodal system/assistant turn is never captioned in its place.
+        user_msg = next((m for m in reversed(req.messages) if m.role == "user"), None)
         raw_parts: list[dict[str, Any]] = []
-        for msg in req.messages:
-            if isinstance(msg.content, list):
-                raw_parts = [part.model_dump() for part in msg.content]
+        if user_msg is not None and isinstance(user_msg.content, list):
+            raw_parts = [part.model_dump() for part in user_msg.content]
 
-        img_bytes = _extract_image_bytes(raw_parts)
-        if not img_bytes:
-            _openai_error(422, "No image found in message content", "invalid_request_error", "no_image")
-
-        try:
-            pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        except Exception as exc:
-            _openai_error(400, f"Invalid image data: {exc}", "invalid_request_error", "invalid_image")
+        # base64 + full image decode is CPU-bound (seconds for a near-limit
+        # image): run it off the event loop like the caption call.
+        pil = await asyncio.to_thread(_decode_image, raw_parts)
 
         try:
             # First use constructs the engine (backend imports); keep that
             # off the event loop too, not just the caption call.
             engine = await asyncio.to_thread(pool.get, req.model)
             result: CaptionResult = await asyncio.to_thread(engine.caption, pil)
-        except Exception as exc:
-            _openai_error(503, f"Caption backend error: {exc}", "server_error", "backend_unavailable")
+        except Exception:
+            # Backend errors can carry model paths, CUDA/driver details or
+            # library internals: log them, keep the client message generic.
+            logger.exception("v1_caption_failed", model=req.model)
+            _openai_error(503, "Caption backend error (see server log)", "server_error", "backend_unavailable")
 
         content = _assemble_content(result)
         ts = int(time.time())
@@ -290,7 +309,7 @@ def _openai_error(
     error_type: str,
     code: str,
     param: str | None = None,
-) -> None:
+) -> NoReturn:
     """Raise an HTTPException whose detail matches the OpenAI error envelope."""
     body: dict[str, Any] = {
         "error": {

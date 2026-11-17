@@ -7,6 +7,7 @@ import io
 import json
 import os
 import threading
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -1302,12 +1303,17 @@ def create_app(
 
             A direct write would leave a truncated file on ENOSPC/kill, which
             the exists()-skip below would then treat as complete on every
-            later pull.
+            later pull. The temp name is unique per call, so concurrent pulls
+            into the same folder, or an asset that is itself named
+            ``<other>.part``, never share or clobber each other's temp file.
             """
             data = source.fetch_original(AssetRef(id=asset["id"]))
-            tmp = target.with_name(target.name + ".part")
+            # uuid rather than mkstemp: mkstemp's 0600 mode would survive the
+            # rename, while a plain create keeps the umask-derived permissions.
+            tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
             try:
-                tmp.write_bytes(data)
+                with tmp.open("xb") as fh:
+                    fh.write(data)
                 tmp.replace(target)
             finally:
                 tmp.unlink(missing_ok=True)
