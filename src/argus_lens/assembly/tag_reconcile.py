@@ -241,7 +241,8 @@ def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False
 
     # --- monochrome (#83) ---
     if monochrome:
-        colour_tags = [k for k in keys if k in MONOCHROME_COLOUR_TAGS]
+        # In tag order, not set order: hash order would move ``monochrome`` between runs.
+        colour_tags = [k for k in dict.fromkeys(_key(t) for t in result.tags) if k in MONOCHROME_COLOUR_TAGS]
         for key in colour_tags:
             if MONOCHROME_TAG in keys:
                 drop(key, f"dropped {key!r}: the image is monochrome, so it is the medium, not a colour")
