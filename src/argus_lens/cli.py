@@ -33,13 +33,16 @@ def _make_verifier(
         return None
     from argus_lens.reconcile import build_verifier
 
-    return build_verifier(
-        reconcile,
-        base_url=verifier_url,
-        model_id=verifier_model,
-        api_key=verifier_key,
-        device=verifier_device,
-    )
+    try:
+        return build_verifier(
+            reconcile,
+            base_url=verifier_url,
+            model_id=verifier_model,
+            api_key=verifier_key,
+            device=verifier_device,
+        )
+    except ValueError as exc:  # an unknown name, or a model that needs HF_TRUST_REMOTE_CODE
+        raise typer.BadParameter(str(exc), param_hint="--reconcile") from exc
 
 
 @app.command()

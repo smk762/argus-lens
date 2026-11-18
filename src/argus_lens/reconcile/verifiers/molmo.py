@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from argus_lens.reconcile.questions import answer_budget, build_question, parse_answer
 from argus_lens.reconcile.types import Verdict
+from argus_lens.remote_code import ENV_VAR, RemoteCodeRefused, resolve_trust_remote_code
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -31,7 +32,19 @@ class MolmoVerifier:
         model_id: str = "allenai/Molmo-7B-D-0924",
         device: str = "cuda",
         answer_fn: Callable[[Image.Image, str], str] | None = None,
+        trust_remote_code: bool | None = None,
     ) -> None:
+        """Refuse up front unless remote code is allowed: Molmo's repo ships its own model code.
+
+        *trust_remote_code* defaults to ``HF_TRUST_REMOTE_CODE`` (off). The check runs here,
+        not at first use, because the reconciler turns a load error into a silent abstain.
+        An injected *answer_fn* loads nothing, so it needs no permission.
+        """
+        if answer_fn is None and not resolve_trust_remote_code(trust_remote_code):
+            raise RemoteCodeRefused(
+                f"the molmo verifier runs Python from {model_id}; set {ENV_VAR}=true to allow it, "
+                "or use the florence or openai-compat verifier"
+            )
         self.model_id = model_id
         self.device = device
         self._answer_fn = answer_fn
@@ -68,6 +81,7 @@ class MolmoVerifier:
                 return
             from transformers import AutoModelForCausalLM, AutoProcessor  # noqa: PLC0415
 
+            # Only reachable once the constructor saw remote code allowed.
             processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
             model = AutoModelForCausalLM.from_pretrained(self.model_id, trust_remote_code=True, device_map=self.device)
             self._processor = processor

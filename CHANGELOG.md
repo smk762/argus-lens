@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `httpx.HTTPStatusError`, and refusals raise `argus_cortex.net.UrlRefused` (lens's `URLRefused` is gone).
 
 ### Fixed
+- **Reconcile verifiers no longer run model-repo code without `HF_TRUST_REMOTE_CODE` (#131).** The
+  `florence` verifier passed `trust_remote_code=True` even for the native weights; it now loads them
+  natively, through the same loader as the Florence-2 caption backend. `molmo` needs remote code, so
+  without `HF_TRUST_REMOTE_CODE=true` it is refused when built (a CLI usage error), instead of loading
+  anyway. Set the flag to keep using it.
 - Reconcile no longer crashes when a verifier returns `None` for a text claim (a name or quote the
   prose says it read); the claim is left as written, as for an empty transcript.
 

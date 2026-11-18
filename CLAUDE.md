@@ -42,7 +42,7 @@ Each row names the check that enforces it. A rule marked **UNENFORCED** or **Par
 | `/admin/unload` runs without the token when `ARGUS_ADMIN_TOKEN` is set, or leaves a pooled engine loaded | `test_meta_endpoints::test_admin_unload_requires_token_when_configured`, `test_backend_selection::test_admin_unload_frees_switched_engines_too` |
 | The Immich API key is sent on a cross-origin redirect | `test_immich_connector::test_fetch_original_drops_api_key_on_cross_origin_redirect` |
 | A CSV export cell starts a formula | `test_export_file::test_csv_escapes_formula_triggers` |
-| Model-repo Python runs without `HF_TRUST_REMOTE_CODE` | Partial: `test_florence2_backend::test_remote_code_is_off_by_default` covers the caption backend; the reconcile verifiers hardcode it on (#131) |
+| Model-repo Python runs without `HF_TRUST_REMOTE_CODE` | `test_remote_code` (every loader, plus a source scan for a hardcoded `trust_remote_code=True`), `test_florence2_backend::test_remote_code_is_off_by_default` |
 | **Backends** | |
 | A bad per-request `backend` falls back to the default, or fails after streaming starts (it must be a 400 first) | `test_backend_selection::test_unknown_backend_is_a_400`, `::test_stream_refuses_a_bad_backend_before_streaming` |
 | Replay re-runs assembly, or falls back to a live model on a miss (`ReplayMiss`) | `test_replay_backend::test_lookup_by_sha256_returns_recorded_result_verbatim`, `::test_engine_raises_replay_miss_for_unknown_asset` |
