@@ -54,3 +54,16 @@ def test_legacy_weights_need_old_transformers(monkeypatch: pytest.MonkeyPatch) -
 
     _fake_stack(monkeypatch, "4.51.3", native=False)
     assert backend.is_available() is True
+
+
+def test_remote_code_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no argument and no ``HF_TRUST_REMOTE_CODE``, the backend never runs model-repo Python."""
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+    backend = Florence2Backend()
+    assert backend._trust_remote_code is False
+    assert backend._model_id == "florence-community/Florence-2-base"
+
+    monkeypatch.setenv("HF_TRUST_REMOTE_CODE", "true")
+    legacy = Florence2Backend()
+    assert legacy._trust_remote_code is True
+    assert legacy._model_id == "microsoft/Florence-2-base"
