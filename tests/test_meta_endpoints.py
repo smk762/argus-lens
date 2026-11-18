@@ -94,6 +94,8 @@ def test_admin_unload_requires_token_when_configured(monkeypatch) -> None:
     assert missing.headers["www-authenticate"] == "Bearer"
     assert client.post("/admin/unload", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert client.post("/admin/unload", headers={"Authorization": "Bearer secret"}).status_code == 200
+    assert client.post("/admin/unload", headers={"Authorization": "Bearer wrong!"}).status_code == 401
+    assert client.post("/admin/unload", headers={"Authorization": "secret"}).status_code == 401
 
 
 def test_admin_unload_stays_open_when_token_unset(monkeypatch) -> None:
