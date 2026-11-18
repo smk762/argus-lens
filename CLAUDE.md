@@ -22,7 +22,7 @@ Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 
 ## Must never happen
 
-Each row names the check that enforces it. A rule marked **UNENFORCED** or **Partial** needs a check, not more prose. Tests are `tests/<file>::<test>`. CI installs `dev,server,cli,lineage`. Without the `server` extra the server tests skip, and so do most of the rows below.
+Each row names the check that enforces it. A rule marked **UNENFORCED** or **Partial** needs a check, not more prose. Tests are `tests/<file>::<test>`. CI runs the suite twice: torch-free with `dev,server,cli,lineage`, and again with CPU torch added (the `torch` job), so torch-gated tests run too. Without the `server` extra the server tests skip, and so do most of the rows below.
 
 | Must never happen | Enforced by |
 |---|---|
@@ -49,9 +49,9 @@ Each row names the check that enforces it. A rule marked **UNENFORCED** or **Par
 | Lineage records without `LENS_RECORD_LINEAGE=1`, records a replay, fails a caption on a store error, or records `/v1` captions | `test_lineage::test_recorder_from_env_is_opt_in`, `::test_replay_never_records`, `::test_a_failed_write_never_fails_the_caption`, `::test_server_records_captions_but_not_the_v1_router` |
 | A GPU lease names a `kind` that `gpu-tenant.yaml` doesn't declare | `test_gpu_tenant::test_manifest_validates_and_declares_every_lease_kind` |
 | **RAM++ port** (`backends/_ram/`, vendored from upstream) | |
-| A module or parameter name stops matching the upstream checkpoint | Partial: `test_ram_backend::test_ram_plus_forward_shape_and_checkpoint_layout` needs torch and skips in CI (#130) |
+| A module or parameter name stops matching the upstream checkpoint | `test_ram_backend::test_ram_plus_matches_every_checkpoint_tensor` against `tests/fixtures/ram_plus_checkpoint_layout.json` (every tensor's name and shape, recorded from the real file; regenerate it only from the real checkpoint) |
 | `_ram/vocab.py` or `_ram/packs.py` imports torch | `test_ram_backend` and `test_ram_vocab_packs` import them at module level, so collection fails in torch-free CI |
-| A vocabulary pack's embeddings aren't 51 × 512 per tag (CLIP ViT-B/16) | Partial: the manifest checks in `test_ram_vocab_packs` run in CI; the tensor-shape test needs torch (#130) |
+| A vocabulary pack's embeddings aren't 51 × 512 per tag (CLIP ViT-B/16) | `test_ram_vocab_packs` (manifest checks, and `::test_build_pack_and_apply_it_to_a_model` for the tensor), `test_ram_backend::test_bundled_vocabulary_matches_the_checkpoint_label_embed` |
 
 ## Conventions the code doesn't show
 
@@ -72,4 +72,4 @@ Each row names the check that enforces it. A rule marked **UNENFORCED** or **Par
 
 ## CI / release
 
-CI uses argus-ci's `python-ci.yml@v1` (ruff 0.15.16, test extras `dev,server,cli,lineage`, `interrogate` after the tests). `release.yml` publishes to PyPI and GHCR on `v*` tags.
+CI uses argus-ci's `python-ci.yml@v1` (ruff 0.15.16, test extras `dev,server,cli,lineage`, `interrogate` after the tests), plus a local `torch` job with CPU torch. `release.yml` publishes to PyPI and GHCR on `v*` tags.

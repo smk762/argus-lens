@@ -22,3 +22,26 @@ jobs:
     # argus-ci suite rules: lint rules that each eliminate a finding class. New violations fail;
     # existing ones are in .suite-rules-baseline.json, which may only shrink.
     uses: smk762/argus-ci/.github/workflows/suite-rules.yml@v1
+
+  torch:
+    # The RAM++ port's checkpoint layout and the vocabulary-pack tensor shapes are only testable
+    # with torch, which the shared job doesn't install (#130). CPU wheels keep this to ~200 MB;
+    # the real 3 GB checkpoint is never downloaded (its layout is in tests/fixtures).
+    # The shared job stays torch-free on purpose: it is what proves _ram/vocab.py and packs.py
+    # import without torch.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # hatch-vcs derives the dev version from git history
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv venv --python 3.12
+      # CPU torch first, so the [torch] extra finds it satisfied and doesn't pull the CUDA build.
+      - run: uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: uv pip install -e ".[dev,server,cli,lineage,torch]"
+      - run: uv run --no-sync python -c "import torch; assert torch.__version__.endswith('+cpu'), torch.__version__"
+      - run: uv run --no-sync pytest --tb=short -q
