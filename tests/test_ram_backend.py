@@ -7,6 +7,7 @@ needs the real checkpoint on disk (``RAM_MODEL_DIR`` or ``~/.cache/ram_plus``).
 """
 
 import contextlib
+import json
 import os
 import sys
 import types
@@ -350,6 +351,35 @@ def test_annotate_image_thresholds_and_sorts(monkeypatch):
     lenient = RamBackend(threshold=0.4, registry=registry)
     lenient.load("cpu")
     assert lenient.caption_image(image) == "sunset, beach, dog"
+
+
+# -- checkpoint layout (#130) --------------------------------------------------------
+# Every tensor in the real upstream checkpoint, recorded once from the file (see the fixture's
+# "about"). Comparing RamPlus against it catches a renamed or reshaped module without the 3 GB
+# download; the torch test runs in CI's torch job.
+_LAYOUT = json.loads((Path(__file__).parent / "fixtures" / "ram_plus_checkpoint_layout.json").read_text())["keys"]
+# Upstream stores an unused ``logit_scale``; RamPlus keeps ``reweight_scale`` at its initial value instead.
+_UNUSED_UPSTREAM = {"logit_scale"}
+
+
+def test_bundled_vocabulary_matches_the_checkpoint_label_embed():
+    """The tag list ships with lens; the checkpoint's label_embed must hold 51 × 512 rows for each tag."""
+    tags, _ = load_tag_vocabulary()
+    assert _LAYOUT["label_embed"] == [len(tags) * 51, 512]
+
+
+def test_ram_plus_matches_every_checkpoint_tensor():
+    """Every upstream tensor has a RamPlus parameter of the same name and shape, and nothing else is expected."""
+    pytest.importorskip("torch")
+    from argus_lens.backends._ram.model import RamPlus
+
+    tags, _ = load_tag_vocabulary()
+    state = {k: list(v.shape) for k, v in RamPlus(num_tags=len(tags)).state_dict().items()}
+    expected = {k: v for k, v in _LAYOUT.items() if k not in _UNUSED_UPSTREAM}
+    assert [k for k in expected if k not in state] == []
+    assert {k: (state[k], v) for k, v in expected.items() if state[k] != v} == {}
+    # What RamPlus has beyond the checkpoint is only what load() already tolerates.
+    assert unexpectedly_missing(sorted(set(state) - set(expected))) == []
 
 
 # -- real weights (skipped unless the checkpoint is on disk) ------------------------
