@@ -10,11 +10,8 @@ from argus_lens.types import CategoryConfig, get_category_config_map
 
 def _content_words(text: str) -> frozenset[str]:
     """Lower-cased, punctuation-stripped content words (stopwords excluded)."""
-    return frozenset(
-        w.lower().strip(".,!?;:'\"")
-        for w in text.split()
-        if len(w) > 1 and w.lower().strip(".,!?;:'\"") not in _STOPWORDS
-    )
+    words = (w.lower().strip(".,!?;:'\"") for w in text.split())
+    return frozenset(w for w in words if len(w) > 1 and w not in _STOPWORDS)
 
 
 _STOPWORDS: frozenset[str] = frozenset(

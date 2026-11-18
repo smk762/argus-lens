@@ -15,14 +15,17 @@ _TAGS = [f"tag{i}" for i in range(30)]
 def test_packed_caption_fits_whole_text_estimate(backend: str, trigger: str) -> None:
     """30 one-word tags packed into 60 tokens measure at most 60 as finished text."""
     kept: list[str] = []
+    rejected: str | None = None
     for tag in _TAGS:
-        try_add_fragment(tag, kept, max_segments=100, token_budget=60, backend=backend, trigger_word=trigger)
+        added = try_add_fragment(tag, kept, max_segments=100, token_budget=60, backend=backend, trigger_word=trigger)
+        if not added and rejected is None:
+            rejected = tag
     text = f"{trigger}, {', '.join(kept)}" if trigger else ", ".join(kept)
     assert estimate_tokens(text, backend) <= 60
     assert caption_tokens(kept, backend, trigger_word=trigger) == estimate_tokens(text, backend)
     # Packing is tight: the next tag would have overflowed the whole-text estimate.
-    assert len(kept) < len(_TAGS)
-    assert caption_tokens([*kept, _TAGS[len(kept)]], backend, trigger_word=trigger) > 60
+    assert rejected is not None
+    assert caption_tokens([*kept, rejected], backend, trigger_word=trigger) > 60
 
 
 def test_issue_80_example_no_longer_overruns() -> None:

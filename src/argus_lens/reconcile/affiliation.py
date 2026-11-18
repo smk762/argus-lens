@@ -64,7 +64,7 @@ def drop_side(prose: str) -> str:
         if not article:
             starts_sentence = not prose[: match.start()].strip() or prose[: match.start()].rstrip()[-1] in ".!?"
             return noun.capitalize() if starts_sentence else noun
-        fixed = "an" if noun[:1].lower() in "aeiou" else "a"
+        fixed = "an" if noun[:1].lower() in "aeiou" and not noun.lower().startswith("uni") else "a"  # "a uniform"
         return f"{fixed.capitalize() if article[:1].isupper() else fixed} {noun}"
 
     prose = _SIDE_BEFORE_NOUN_RE.sub(before_noun, prose)

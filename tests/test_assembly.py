@@ -57,9 +57,11 @@ class TestRedundancyFilter:
     def test_removes_overlapping_clauses(self):
         """Clauses overlapping the tag list are dropped while novel clauses like 'park' remain."""
         tags = "blonde hair, black t-shirt"
-        description = "A woman with blonde hair relaxing in a park with tall trees."
+        description = "She has blonde hair and a black t-shirt. She is relaxing in a park with tall trees."
         filtered = filter_redundant_clauses(description, tags)
         assert "park" in filtered
+        assert "blonde hair" not in filtered.lower()
+        assert "t-shirt" not in filtered.lower()
 
     def test_keeps_novel_clauses(self):
         """Clauses with no tag overlap survive filtering."""
@@ -152,8 +154,8 @@ class TestTokenEstimation:
 
     def test_commas_add_tokens(self):
         """Comma-separated lists estimate more tokens than plain text."""
-        plain = estimate_clip_tokens("black t-shirt standing")
-        with_commas = estimate_clip_tokens("black t-shirt, standing, outdoors")
+        plain = estimate_clip_tokens("black t-shirt standing outdoors")
+        with_commas = estimate_clip_tokens("black t-shirt, standing, outdoors")  # same words, two commas
         assert with_commas > plain
 
     def test_t5_estimation(self):
@@ -283,7 +285,8 @@ class TestComposeCaptionResult:
         )
         training = result.caption_variants["training"]
         zeroshot = result.caption_variants["zeroshot"]
-        assert "brown_hair" not in training
+        for identity in ("brown_hair", "brown hair", "brown_eyes", "brown eyes"):
+            assert identity not in training, (identity, training)
         assert "brown_hair" in zeroshot or "brown hair" in zeroshot
 
 
@@ -478,7 +481,8 @@ class TestZeroshotVariant:
         caption, _ = assemble_zeroshot_variant("sks_eva", buckets, "photo")
         parts = caption.split(", ")
         prose_idx = next(i for i, p in enumerate(parts) if "young woman" in p)
-        tag_positions = [i for i, p in enumerate(parts) if p.strip() in ("brown_hair", "green_eyes")]
+        tag_positions = [i for i, p in enumerate(parts) if p.strip().replace(" ", "_") in ("brown_hair", "green_eyes")]
+        assert tag_positions, caption  # the bare tags survive, so there is an order to check
         for idx in tag_positions:
             assert prose_idx < idx
 

@@ -8,11 +8,11 @@ from PIL import Image
 from argus_lens.assembly.subjects import hedge_prose_count
 from argus_lens.engine import ArgusLens
 from argus_lens.reconcile import Reconciler, build_verifier, detect_claims, detect_disputes
-from argus_lens.reconcile.affiliation import contradicted_side
+from argus_lens.reconcile.affiliation import contradicted_side, drop_side
 from argus_lens.reconcile.color_sample import dominant_color_name, nearest_color_name
 from argus_lens.reconcile.questions import answer_budget, build_question, parse_answer
 from argus_lens.reconcile.rewrite import apply_fix
-from argus_lens.reconcile.text_claims import detect_text_claims, is_confirmed
+from argus_lens.reconcile.text_claims import detect_text_claims, drop_text_claim, is_confirmed
 from argus_lens.reconcile.types import AttributeDispute, Verdict
 from argus_lens.reconcile.verifiers.florence import FlorenceGroundingVerifier
 from argus_lens.reconcile.verifiers.molmo import MolmoVerifier
@@ -497,6 +497,20 @@ def test_one_sentence_prose_keeps_an_unread_name() -> None:
     assert res.prose == prose and res.changes == []
 
 
+def test_text_claim_survives_verifier_returning_none() -> None:
+    """A verifier that returns None for a text claim abstains rather than crashing reconcile."""
+
+    class _NoneVerifier:
+        name = "none"
+
+        def verify(self, image, dispute):
+            return None
+
+    res = Reconciler(_NoneVerifier()).reconcile(Image.new("RGB", (8, 8)), "document", _DIPLOMA)
+    assert res.prose == _DIPLOMA
+    assert res.changes == [] and res.errors == 0
+
+
 def test_text_answer_parsing_and_budget() -> None:
     """A transcription passes through whitespace-collapsed; NONE abstains; text gets a longer answer budget."""
     assert parse_answer("  PRIX\n NOBEL ", "text") == "PRIX NOBEL"
@@ -551,3 +565,84 @@ def test_consistent_or_unclear_side_is_kept(prose: str) -> None:
     assert contradicted_side(prose) is None
     res = Reconciler(TagPriorVerifier()).reconcile(Image.new("RGB", (8, 8)), "soldier", prose)
     assert res.prose == prose
+
+
+def test_dropped_side_before_uniform_takes_a_not_an() -> None:
+    """ "uniform" starts with a vowel letter but a consonant sound, so the article is "a" (pack 9a35b0d4d8)."""
+    prose = "A Union uniform in gray wool hangs by the door. A gray coat lies beside it."
+    res = Reconciler(TagPriorVerifier()).reconcile(Image.new("RGB", (8, 8)), "uniform", prose)
+    assert res.prose == "A uniform in gray wool hangs by the door. A gray coat lies beside it."
+    assert drop_side("a Union officer and a Union uniform") == "an officer and a uniform"
+
+
+# --- audit packs: rewrite / text claims / colour sampling -----------------------------------------------------
+
+
+def test_count_fix_ignores_non_ascii_digit_verdict() -> None:
+    """A verdict like "²" passes str.isdigit() but int() rejects it: the prose stays (pack 4b629f8cb1)."""
+    dispute = AttributeDispute("count", "people", ("5",), ("6",))
+    assert apply_fix("Six soldiers stand.", dispute, "²") == "Six soldiers stand."
+    assert apply_fix("Six soldiers stand.", dispute, "1") == "Six soldiers stand."  # below 2: left alone
+
+
+def test_fix_case_keeps_the_replacement_s_own_casing() -> None:
+    """An all-caps original gets an all-caps value; a capitalised one keeps the value's inner case (pack fd31ac8327)."""
+    dispute = AttributeDispute("color", "dress", ("blue",), ("red",))
+    assert apply_fix("A RED dress.", dispute, "blue") == "A BLUE dress."
+    pose = AttributeDispute("pose", "posture", ("standing",), ("sitting",))
+    assert apply_fix("Sitting on a bench.", pose, "mid-Stride") == "Mid-Stride on a bench."
+
+
+def test_text_claim_dropped_from_every_sentence_that_states_it() -> None:
+    """A claim repeated in a later sentence goes from there too (pack e11c51c86e)."""
+    prose = (
+        "A diploma for Professor Henrik Bohr. Gold borders frame the text. "
+        "The seal bears the name of Professor Henrik Bohr."
+    )
+    res = Reconciler(_CountVerifier("Henri Becquerel")).reconcile(Image.new("RGB", (8, 8)), "document", prose)
+    assert res.prose == "Gold borders frame the text."
+    assert [c.was for c in res.changes] == [("Professor Henrik Bohr",)]
+
+
+def test_text_claim_kept_when_every_sentence_states_it() -> None:
+    """Dropping every sentence would leave nothing, so the prose stays."""
+    prose = "A diploma for Professor Henrik Bohr. The seal reads Professor Henrik Bohr."
+    assert drop_text_claim(prose, "Professor Henrik Bohr") == prose
+
+
+def test_drop_text_claim_keeps_paragraph_breaks() -> None:
+    """Only the cut is re-joined; whitespace elsewhere in the prose is untouched (pack 7295f9310f)."""
+    prose = "A diploma lies open.\n\nIt names Professor Henrik Bohr. Gold borders frame it.\n\nA desk  lamp glows."
+    assert (
+        drop_text_claim(prose, "Professor Henrik Bohr")
+        == "A diploma lies open.\n\nGold borders frame it.\n\nA desk  lamp glows."
+    )
+
+
+def test_case_variant_text_claims_collapse_to_one() -> None:
+    """Quoted "EXIT" and a read name "Exit" are one claim, not two that cancel out (pack 69a7f05a52)."""
+    claims = detect_text_claims('A sign reads "EXIT ROUTE" above the door. The label reads Exit Route.')
+    assert claims == ["EXIT ROUTE"]
+
+
+def test_text_claim_containment_is_on_word_boundaries() -> None:
+    """A quote inside another only as a substring ("OPEN" in "REOPENED") is its own claim (pack 7c5a0d0ab1)."""
+    claims = detect_text_claims('A sign reads "REOPENED SOON" and a card reads "OPEN".')
+    assert claims == ["REOPENED SOON", "OPEN"]
+
+
+def test_dominant_color_ignores_transparent_pixels() -> None:
+    """Transparent background pixels (stored as black) don't drag the mean (pack 6d309c835d)."""
+    img = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
+    img.paste((255, 0, 0, 255), (3, 3, 7, 7))
+    assert dominant_color_name(img) == "red"
+    assert dominant_color_name(Image.new("RGBA", (4, 4), (0, 0, 0, 0))) is None
+
+
+def test_dominant_color_is_the_area_mean() -> None:
+    """Off-centre colour counts as much as centre colour: an area mean, not a bicubic 1x1 (pack 690553579e)."""
+    img = Image.new("RGB", (100, 100), (240, 240, 240))  # light centre
+    img.paste((20, 20, 20), (0, 0, 100, 20))  # dark edge bands, 40% of the area
+    img.paste((20, 20, 20), (0, 80, 100, 100))
+    # mean is (152, 152, 152) -> gray; a bicubic 1x1 weights the light centre and reads (167, ...) -> silver
+    assert dominant_color_name(img) == "gray"
