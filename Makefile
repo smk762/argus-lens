@@ -12,9 +12,9 @@ install:  ## Create .venv + editable install (core deps only)
 	$(UV) venv
 	$(UV) pip install -e .
 
-dev:  ## Create .venv + editable install with dev + cli extras
+dev:  ## Create .venv + editable install with the extras CI tests with (dev, server, cli, lineage)
 	$(UV) venv
-	$(UV) pip install -e ".[dev,cli]"
+	$(UV) pip install -e ".[dev,server,cli,lineage]"
 
 lint:  ## Run ruff linter
 	$(UV) run --no-sync ruff check src/ tests/ workflows/
