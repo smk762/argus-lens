@@ -1210,7 +1210,10 @@ def create_app(
 
         def _run() -> dict[str, Any]:
             """Walk and caption off the event loop, collecting results and per-image errors."""
-            walker = root.rglob("*") if req.recursive else root.iterdir()
+            # Walking the folder *is* this route: it captions every image found, so the walk is
+            # dwarfed by one model call per image, and a cached index would miss images the user
+            # just dropped in. It runs in a worker thread (_run), never on the event loop.
+            walker = root.rglob("*") if req.recursive else root.iterdir()  # nosemgrep: handler-scans-all
             images = sorted(p for p in walker if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS)
             written: set[Path] = set()
             results: list[dict[str, Any]] = []
