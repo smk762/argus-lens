@@ -1,6 +1,7 @@
 """Tests for caption coherence: post-check, repair, and the assembled corpus."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,11 @@ from argus_lens.assembly.composer import compose_caption_result
 from argus_lens.assembly.filtering import extract_prose_tokens
 from argus_lens.assembly.prose_training import assemble_prose_training_variant
 from argus_lens.types import resolve_target_profile
+
+# Hair/eye mentions at any position, hyphenated or punctuated ("red-haired", "(hair", "blue-eyed", "eye").
+_IDENTITY_WORD = re.compile(r"(?<![a-z])(?:hair|haired|hairs|eye|eyes|eyed)(?![a-z])")
+# An identity tag in tag (``blonde_hair``) or prose (``blonde hair``) form.
+_IDENTITY_TERM = re.compile(r"\b\w+[ _-](?:hair|eyes)\b", re.IGNORECASE)
 
 CORPUS = json.loads((Path(__file__).parent / "fixtures" / "caption_corpus.json").read_text())
 
@@ -48,16 +54,16 @@ def test_corpus_variants_pass_post_check(case: dict, target_backend: str) -> Non
 
 @pytest.mark.parametrize("case", CORPUS, ids=[c["id"] for c in CORPUS])
 def test_corpus_training_prose_suppresses_identity(case: dict) -> None:
-    """The Flux training caption never mentions hair or eyes."""
+    """The Flux training caption never mentions hair or eyes, in any word form."""
     caption = _compose(case, "flux").caption_variants["training_prose"].lower()
-    assert " hair" not in caption and " eyes" not in caption, caption
+    assert not _IDENTITY_WORD.search(caption), caption
 
 
 @pytest.mark.parametrize("case", CORPUS, ids=[c["id"] for c in CORPUS])
 def test_corpus_training_has_no_identity_tags(case: dict) -> None:
     """The SDXL training caption keeps identity out, including via prose enrichment."""
     caption = _compose(case).caption_variants["training"]
-    assert "_hair" not in caption and "_eyes" not in caption, caption
+    assert not _IDENTITY_TERM.search(caption), caption  # "blonde_hair" and prose's "blonde hair"
 
 
 def test_corpus_category_variants_lead_with_their_category() -> None:

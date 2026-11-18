@@ -69,6 +69,33 @@ def test_manifest_read_errors(tmp_path):
         PackManifest.read(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"[1, 2]",
+        b'"just a string"',
+        json.dumps({"name": "p", "tags": [1, None], "thresholds": [0.5, 0.5]}).encode(),
+        json.dumps({"name": "p", "tags": [["nested"]], "thresholds": [0.5]}).encode(),
+        json.dumps({"name": "p", "tags": ["a"], "thresholds": ["high"]}).encode(),
+        json.dumps({"name": "p", "tags": ["a"], "thresholds": [True]}).encode(),
+        json.dumps({"name": "p", "tags": "abc", "thresholds": [0.5, 0.5, 0.5]}).encode(),
+        b'{"name": "\xff\xfe"}',  # not UTF-8
+    ],
+)
+def test_manifest_read_malformed_is_pack_error(tmp_path, payload):
+    """A readable but malformed manifest is a PackError, never a raw AttributeError/TypeError/UnicodeError."""
+    (tmp_path / "manifest.json").write_bytes(payload)
+    with pytest.raises(PackError):
+        PackManifest.read(tmp_path)
+
+
+def test_manifest_read_directory_is_pack_error(tmp_path):
+    """An unreadable manifest path (here a directory) is a PackError, not an OSError."""
+    (tmp_path / "manifest.json").mkdir()
+    with pytest.raises(PackError, match="cannot read"):
+        PackManifest.read(tmp_path)
+
+
 # -- merge rules ------------------------------------------------------------------------------
 
 
@@ -193,6 +220,25 @@ def test_describe_all_keeps_completed_tags_on_failure_and_resumes():
     assert result is done
     assert set(done) == {"alpha", "beta", "gamma"}
     assert calls["n"] == 4  # only beta and gamma were requested again
+
+
+def test_close_leaves_a_caller_supplied_client_open():
+    """close() closes only a client the writer made; an injected one stays usable and is not replaced."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "desc"}}]})
+
+    client = httpx.Client(base_url="http://llm.test/v1", transport=httpx.MockTransport(handler))
+    writer = DescriptionWriter(client=client, prompts=("what is {tag}",), samples_per_prompt=1)
+    writer.close()
+    assert not client.is_closed
+    assert writer._http() is client  # still the caller's (transport/auth kept), not a fresh default client
+    assert writer.describe("alpha")[1] == "desc"
+
+    own = DescriptionWriter(base_url="http://llm.test/v1")
+    made = own._http()
+    own.close()
+    assert made.is_closed
 
 
 # -- backend wiring ---------------------------------------------------------------------------------

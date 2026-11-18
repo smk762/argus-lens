@@ -6,9 +6,12 @@ import base64
 import io
 from typing import Any
 
+import structlog
 from PIL import Image
 
 from argus_lens.backends.base import CloudBackend
+
+logger = structlog.get_logger()
 
 
 class OpenAIBackend(CloudBackend):
@@ -73,6 +76,9 @@ class OpenAIBackend(CloudBackend):
         )
         if not response.choices or response.choices[0].message.content is None:
             raise RuntimeError("OpenAI response contained no caption text (empty choices or null content)")
+        if getattr(response.choices[0], "finish_reason", None) == "length":
+            # The caption was cut off mid-sentence at max_tokens; say so rather than pass it off as complete.
+            logger.warning("openai.caption_truncated", model=self.model_id, max_tokens=self._max_tokens)
         return response.choices[0].message.content.strip()
 
     def unload(self) -> None:

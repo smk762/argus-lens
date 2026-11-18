@@ -52,3 +52,10 @@ def test_rejects_a_sidecar_symlinked_outside(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         export_txt({"x.jpg": _r("pwned")}, out)
     assert victim.read_text() == "keep me"
+
+
+def test_names_sharing_a_sidecar_raise_and_write_nothing(tmp_path: Path) -> None:
+    """IMG_1.jpg and IMG_1.png map to one IMG_1.txt: refuse rather than overwrite one caption."""
+    with pytest.raises(ValueError, match="share the sidecar"):
+        export_txt({"ok.jpg": _r(), "IMG_1.jpg": _r("one"), "IMG_1.png": _r("two")}, tmp_path)
+    assert list(tmp_path.glob("*.txt")) == []

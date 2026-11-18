@@ -14,6 +14,10 @@ OOM_ERROR_SUBSTRINGS = (
 )
 
 
+# 2**60 seconds is already far past any deadline; keeps the backoff a finite float.
+_MAX_BACKOFF_EXPONENT = 60
+
+
 class OOMDeadlineExceededError(RuntimeError):
     """Raised when OOM retries exceed the configured wait budget."""
 
@@ -73,7 +77,10 @@ def run_with_oom_retry(
                     last_error=exc,
                 ) from exc
 
-            wait_s = min(interval_s * (2 ** (attempts - 1)), max(0.0, deadline - now))
+            # Cap the exponent: past ~1000 attempts (interval_s=0 spins fast) 2**n is
+            # too large for a float and would raise OverflowError over the real OOM.
+            backoff = interval_s * 2.0 ** min(attempts - 1, _MAX_BACKOFF_EXPONENT)
+            wait_s = min(backoff, max(0.0, deadline - now))
             if wait_s > 0:
                 if on_retry is not None:
                     on_retry(wait_s, attempts)
@@ -109,7 +116,13 @@ def resolve_device() -> str:
 
 
 def clear_gpu_cache() -> None:
-    """Empty CUDA cache and run garbage collection."""
+    """Run garbage collection, then empty the CUDA cache.
+
+    Collect first: tensors kept alive only by reference cycles (e.g. an OOM
+    traceback's frames) are freed by ``gc.collect()``, and only then can
+    ``empty_cache()`` hand their blocks back to the driver.
+    """
+    gc.collect()
     try:
         import torch
 
@@ -117,4 +130,3 @@ def clear_gpu_cache() -> None:
             torch.cuda.empty_cache()
     except Exception:
         pass
-    gc.collect()

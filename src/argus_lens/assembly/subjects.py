@@ -16,6 +16,7 @@ from typing import Any
 # ``2girls``, ``6+boys``, ``1other`` — the numbered WD14/danbooru headcount tags.
 _NUMBERED_TAG = re.compile(r"^(\d)(\+)?_?(girl|boy|other)s?$")
 _MULTIPLE_TAG = re.compile(r"^multiple_?(girls|boys|others)$")
+_SEPARATORS = re.compile(r"[\s_-]+")
 _EXACT_TAGS: frozenset[str] = frozenset({"solo", "solo_focus", "no_humans"})
 
 _NUMBER_WORDS: dict[str, int] = {
@@ -55,8 +56,12 @@ _PAIR_RE = re.compile(
 
 
 def _normalise_tag(tag: str) -> str:
-    """Lower-case and underscore a tag so ``2 girls`` and ``2girls`` compare equal."""
-    return tag.strip().lower().replace(" ", "_")
+    """Lower-case a tag and collapse each run of spaces, underscores or hyphens into one ``_``.
+
+    ``2 girls``, ``2  girls`` and ``2-girls`` all become ``2_girls``; the headcount
+    patterns accept an optional ``_``, so they match ``2girls`` the same way.
+    """
+    return _SEPARATORS.sub("_", tag.strip().lower())
 
 
 def is_subject_count_tag(tag: str) -> bool:
@@ -102,8 +107,12 @@ def count_from_tags(tags: list[str]) -> tuple[int | None, list[str]]:
     at_least = 0
     evidence: list[str] = []
     solo = no_humans = False
+    seen: set[str] = set()
     for tag in tags:
         key = _normalise_tag(tag)
+        if key.replace("_", "") in seen:
+            continue  # "1girl" twice (or as "1girl" and "1 girl") is still one girl
+        seen.add(key.replace("_", ""))
         if numbered := _NUMBERED_TAG.match(key):
             total += int(numbered.group(1))
             evidence.append(key)
@@ -187,8 +196,12 @@ def exact_tag_count(tags: list[str]) -> int | None:
     count inexact (``None``), as does the absence of numbered tags.
     """
     total = 0
+    seen: set[str] = set()
     for tag in tags:
         key = _normalise_tag(tag)
+        if key.replace("_", "") in seen:
+            continue
+        seen.add(key.replace("_", ""))
         if _MULTIPLE_TAG.match(key) or key == "solo_focus":
             return None
         if numbered := _NUMBERED_TAG.match(key):

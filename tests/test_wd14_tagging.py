@@ -93,6 +93,26 @@ def test_preprocess_pads_non_square_with_white():
     assert list(arr[0, 3, 4]) == [0.0, 0.0, 255.0]  # red content (BGR)
 
 
+def test_transparency_is_flattened_onto_white():
+    """Transparent pixels reach the tagger white (as WD-v3 does), not as the black RGB stored under them."""
+    rgba = Image.new("RGBA", (8, 8), (0, 0, 0, 0))  # fully transparent, black underneath
+    rgba.putpixel((4, 4), (255, 0, 0, 255))  # one opaque red pixel
+    rgb = WD14Backend._to_rgb(rgba)
+    assert rgb.mode == "RGB"
+    assert rgb.getpixel((0, 0)) == (255, 255, 255)
+    assert rgb.getpixel((4, 4)) == (255, 0, 0)  # opaque content kept
+
+    assert WD14Backend._to_rgb(Image.new("LA", (8, 8), (0, 0))).getpixel((2, 2)) == (255, 255, 255)
+
+    pal = Image.new("P", (8, 8), 0)
+    pal.putpalette([0, 0, 0] * 256)
+    pal.info["transparency"] = 0
+    assert WD14Backend._to_rgb(pal).getpixel((2, 2)) == (255, 255, 255)
+
+    # Opaque images are unchanged.
+    assert WD14Backend._to_rgb(Image.new("RGB", (2, 2), (1, 2, 3))).getpixel((0, 0)) == (1, 2, 3)
+
+
 def test_cache_key_includes_model_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     """Backends pointing at different model dirs must never share a cached session."""
     monkeypatch.delenv("WD14_MODEL_DIR", raising=False)
@@ -161,8 +181,11 @@ def test_ensure_model_never_touches_files_in_caller_model_dir(tmp_path: Any, mon
     assert model_path == subdir / "wd-eva02-large-tagger-v3.onnx"
     assert (subdir / wd14_mod._TAGS_FILENAME).read_text() == f"fresh:{repo}"
     assert (tmp_path / wd14_mod._TAGS_FILENAME).read_text() == "vit-tags"  # the other model's CSV survives
+    assert (tmp_path / wd14_mod._MODEL_FILENAME).read_text() == "vit-model"  # ...and so does its model
     # the default model in the same dir still resolves to its own flat pair
     assert WD14Backend(model_dir=tmp_path)._ensure_model() == tmp_path / wd14_mod._MODEL_FILENAME
+    assert len(calls) == 1  # resolving the existing flat pair downloads nothing
+    assert (tmp_path / wd14_mod._MODEL_FILENAME).read_text() == "vit-model"
     # a second run finds the subdir copy without downloading again
     assert backend._ensure_model() == model_path
     assert len(calls) == 1

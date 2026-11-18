@@ -114,7 +114,7 @@ def _clean_sentence(
             cleaned = f"{cleaned}, {clause}"
     # "His ... hair cascades ..., and he wears a coat" minus the hair clause.
     cleaned = _LEADING_CONJUNCTION.sub("", cleaned)
-    if len(cleaned.split()) < 3 and len(removed) > filler_removed:
+    if cleaned and len(cleaned.split()) < 3 and len(removed) > filler_removed:
         # An orphan left after identity removal ("Calm features").
         removed.append(cleaned)
         cleaned = ""

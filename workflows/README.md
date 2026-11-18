@@ -93,7 +93,7 @@ python workflows/curate_index.py caption runs/r1 \
 
 - Appends one line per image to `raw.jsonl` and flushes after each one. **Interrupt and re-run at any time**: finished images are skipped.
 - Failures go to `errors.jsonl` and do not stop the run. Re-running retries them.
-- The first call writes `run.json` with the caption settings and the package version. A later call with different settings is **refused** (`--force` overrides), so one `raw.jsonl` never mixes two models.
+- The first call writes `run.json` with the caption settings and the package version, including `count_url`, the endpoint the `--count-model` counter calls. A later call with different settings is **refused**, so one `raw.jsonl` never mixes two models. `--force` overrides: the original `caption` block stays as it was, and each forced resume is appended to `forced_resumes` (time, version, the settings it used and what differed). A setting an older `run.json` never recorded is not compared.
 - `--limit N` captions only N images, for pilots.
 
 ### 3. assemble
@@ -220,7 +220,7 @@ Then review:
 | File | Contents |
 |---|---|
 | `manifest.jsonl` | `image_id, sha256, rel_path, name, shoot_id, bytes[, duplicate_of]` |
-| `run.json` | package version, Python version, caption settings |
+| `run.json` | package version, Python version, caption settings, any `--force` resumes (`forced_resumes`) |
 | `raw.jsonl` | `sha256, rel_path, backend, tags, prose[, vlm_count]`, the only model output |
 | `errors.jsonl` | images that failed to caption (retried on the next run) |
 | `captions.<target>.jsonl` | per image: `variants` (identity, wardrobe, pose_composition, setting, lighting, action, training, training_prose, zeroshot), `buckets` (per-category tags and prose, plus `unclassified`), `subjects` (headcount with evidence), `refine`, `notes` |

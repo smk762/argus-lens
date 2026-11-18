@@ -53,7 +53,7 @@ def _variant_bucket_plan(
         if name == cat:
             plan.append((name, None))
         else:
-            cap = max(0, 4 - cfg.zeroshot_priority) if cfg.zeroshot_priority <= 4 else 1
+            cap = max(1, 4 - cfg.zeroshot_priority)  # 1 -> 3, 2 -> 2, 3+ -> 1: monotonic, never 0
             plan.append((name, cap))
     plan.sort(key=lambda entry: entry[0] != cat)  # stable: selected first, rest keep order
     return plan

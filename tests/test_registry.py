@@ -76,7 +76,7 @@ def test_clear_then_acquire_shares_the_held_model_and_keeps_refcount():
 
 
 def test_release_after_clear_and_reload_does_not_touch_new_entry():
-    """A holder of an old entry releasing it never decrements a reloaded model's count."""
+    """A last release of a cleared entry, after its last holder let go, leaves a later reload alone."""
     registry = ModelRegistry(idle_seconds=3600)
     old, new = _FakeModel("old"), _FakeModel("new")
     ctx = registry.acquire("k", lambda: old)
@@ -91,10 +91,37 @@ def test_release_after_clear_and_reload_does_not_touch_new_entry():
     assert registry.evict("k") is True
 
 
+def test_stale_holder_release_does_not_touch_a_reloaded_entry():
+    """A holder of a replaced entry releases *its* entry, by identity, never the reloaded one under the same key.
+
+    The public API keeps a held entry cached (clear() defers it), so the cache is swapped
+    directly here to stand in for any path that drops a held entry: the stale release must
+    neither decrement nor evict the new model.
+    """
+    registry = ModelRegistry(idle_seconds=3600)
+    old, new = _FakeModel("old"), _FakeModel("new")
+    old_ctx = registry.acquire("k", lambda: old)
+    assert old_ctx.__enter__() is old
+    registry.clear()  # deferred: old is held, so it is freed at its last release
+    with registry._lock:
+        del registry._models["k"]  # old is no longer the cached entry, but its holder lives on
+    with registry.acquire("k", lambda: new) as model:
+        assert model is new
+        assert registry.status()["k"]["refs"] == 1
+        old_ctx.__exit__(None, None, None)  # the stale holder releases while new is held
+        assert old.freed is True
+        assert new.freed is False
+        assert registry.status()["k"]["refs"] == 1
+        assert registry.status()["k"]["release_pending"] is False
+        assert registry.evict("k") is False  # new is still in use
+    assert registry.evict("k") is True
+    assert new.freed is True
+
+
 def test_clear_during_load_does_not_start_a_second_load():
     """clear() while a loader runs keeps the in-progress load, so a concurrent acquire waits on it."""
     registry = ModelRegistry(idle_seconds=3600)
-    started, proceed, second_done, hold_first = (threading.Event() for _ in range(4))
+    started, proceed, second_waiting, first_acquired, second_done, hold_first = (threading.Event() for _ in range(6))
     calls: list[_FakeModel] = []
     seen: dict[str, _FakeModel] = {}
 
@@ -108,6 +135,7 @@ def test_clear_during_load_does_not_start_a_second_load():
     def first():
         with registry.acquire("k", slow_loader) as m:
             seen["first"] = m
+            first_acquired.set()
             assert hold_first.wait(_TIMEOUT)
 
     def second():
@@ -119,9 +147,21 @@ def test_clear_during_load_does_not_start_a_second_load():
     t1.start()
     assert started.wait(_TIMEOUT)
     assert registry.clear() == ["k"]  # still loading: deferred, not dropped
+    # Observe t2 blocking on the in-progress load, so it can't slip in after the load finished.
+    load = registry._loading["k"]
+    real_wait = load.event.wait
+
+    def observed_wait(timeout=None):
+        second_waiting.set()
+        return real_wait(timeout)
+
+    load.event.wait = observed_wait
     t2 = threading.Thread(target=second)
     t2.start()
+    assert second_waiting.wait(_TIMEOUT)
+    assert not second_done.is_set()
     proceed.set()
+    assert first_acquired.wait(_TIMEOUT)
     assert second_done.wait(_TIMEOUT)
     assert len(calls) == 1
     assert seen["second"] is seen["first"]
