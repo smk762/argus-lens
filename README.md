@@ -247,8 +247,8 @@ engine = ArgusLens(backend="hybrid", verifier=build_verifier(
 |---|---|---|
 | `tag-prior` | trusts the tag value (no image) | nothing — default, fully deterministic |
 | `openai-compat` | asks a served vision model "what colour is the dress?" | a running OpenAI-compatible endpoint (`httpx` only) |
-| `florence` | grounds the subject to a box, samples the pixels | `[torch]` (reuses Florence-2's unused grounding task) |
-| `molmo` | asks Molmo, which can point at pixels | `[torch]` + ~8–17 GB VRAM |
+| `florence` | grounds the subject to a box, samples the pixels | `[torch]` (reuses Florence-2's unused grounding task; native weights, no remote code) |
+| `molmo` | asks Molmo, which can point at pixels | `[torch]` + ~8–17 GB VRAM + `HF_TRUST_REMOTE_CODE=true` (Molmo ships its own model code) |
 
 **Headcount disputes** (`kind: "count"`) need an exact count on both sides: numbered headcount tags (`1girl, 2boys`; not `multiple_girls` or `6+boys`) and exactly one stated headcount in the prose ("six soldiers", "3 people"). `tag-prior` resolves to the tag count, and the VQA verifiers ask "how many people are visible". The rewrite changes only the number ("six soldiers" → "three soldiers") and never to a singular. A count inside a collective phrase counts too ("a group of six soldiers").
 
@@ -521,11 +521,15 @@ The `docker-compose.yaml` bind-mounts `~/.cache/wd14_tagger`, `~/.cache/ram_plus
 
 ## Security
 
-### `trust_remote_code` and Florence-2
+### `trust_remote_code`
 
-By default, the Florence-2 backend uses [`florence-community/Florence-2-base`](https://huggingface.co/florence-community/Florence-2-base) weights which are natively supported in `transformers` -- no `trust_remote_code` needed.
+Nothing in lens runs Python from a model repository unless `HF_TRUST_REMOTE_CODE=true` is set (or `trust_remote_code=True` is passed in code).
 
-The legacy [`microsoft/Florence-2-base`](https://huggingface.co/microsoft/Florence-2-base) weights require `HF_TRUST_REMOTE_CODE=true`, which executes arbitrary Python from the model repository at load time. Only enable this for models you trust. WD14 uses a static ONNX model and never runs remote code.
+By default, the Florence-2 backend and the `florence` reconcile verifier use [`florence-community/Florence-2-base`](https://huggingface.co/florence-community/Florence-2-base) weights which are natively supported in `transformers` -- no `trust_remote_code` needed.
+
+The legacy [`microsoft/Florence-2-base`](https://huggingface.co/microsoft/Florence-2-base) weights require `HF_TRUST_REMOTE_CODE=true`, which executes arbitrary Python from the model repository at load time. Only enable this for models you trust. Without the flag, naming legacy weights is refused when the backend or verifier is built.
+
+The `molmo` reconcile verifier always needs remote code, so without the flag `--reconcile molmo` is refused up front rather than silently abstaining. WD14 and RAM++ load static weights and never run remote code.
 
 ## Related projects
 

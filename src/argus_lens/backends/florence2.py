@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import itertools
-import os
 from typing import Any
 
 from PIL import Image
 
 from argus_lens.backends.base import LocalBackend
 from argus_lens.registry import ModelRegistry, get_default_registry
+from argus_lens.remote_code import resolve_trust_remote_code
 
 _NATIVE_MODEL_ID = "florence-community/Florence-2-base"
 _LEGACY_MODEL_ID = "microsoft/Florence-2-base"
@@ -29,6 +29,34 @@ def _version_tuple(version: str) -> tuple[int, int]:
     while len(parts) < 2:
         parts.append(0)
     return parts[0], parts[1]
+
+
+def default_model_id(trust_remote_code: bool) -> str:
+    """The legacy remote-code weights when remote code is allowed, else the native ones."""
+    return _LEGACY_MODEL_ID if trust_remote_code else _NATIVE_MODEL_ID
+
+
+def load_florence(model_id: str, *, trust_remote_code: bool, dtype: Any = None) -> tuple[Any, Any]:
+    """Load a Florence-2 ``(processor, model)`` pair on the CPU; the caller moves the model.
+
+    Without *trust_remote_code* this uses transformers' native
+    ``Florence2ForConditionalGeneration`` and never runs code from the model repo.
+    With it, the legacy ``AutoModelForCausalLM`` path loads the repo's own code.
+    Shared by the caption backend and the reconcile verifier so the two can't drift.
+    """
+    from transformers import AutoProcessor
+
+    if trust_remote_code:
+        from transformers import AutoModelForCausalLM
+
+        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype, trust_remote_code=True)
+    else:
+        from transformers import Florence2ForConditionalGeneration
+
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = Florence2ForConditionalGeneration.from_pretrained(model_id, torch_dtype=dtype)
+    return processor, model
 
 
 class Florence2Backend(LocalBackend):
@@ -59,16 +87,8 @@ class Florence2Backend(LocalBackend):
         """
         if task not in CAPTION_TASKS:
             raise ValueError(f"Florence-2 task {task!r} does not produce a caption; use one of {CAPTION_TASKS}")
-        if trust_remote_code is None:
-            trust_remote_code = os.environ.get(
-                "HF_TRUST_REMOTE_CODE",
-                "0",
-            ).lower() in ("1", "true", "yes")
-        self._trust_remote_code = trust_remote_code
-
-        if model_id is None:
-            model_id = _LEGACY_MODEL_ID if trust_remote_code else _NATIVE_MODEL_ID
-        self._model_id = model_id
+        self._trust_remote_code = resolve_trust_remote_code(trust_remote_code)
+        self._model_id = model_id or default_model_id(self._trust_remote_code)
         self._task = task
         self._registry = registry or get_default_registry()
 
@@ -79,30 +99,10 @@ class Florence2Backend(LocalBackend):
     def _loader(self, device: str) -> tuple[Any, Any, str]:
         """Load the Florence-2 processor and model onto *device* (fp16 on CUDA)."""
         import torch
-        from transformers import AutoProcessor
 
         dtype = torch.float16 if device == "cuda" else torch.float32
-
-        load_kwargs: dict[str, Any] = {}
-        if self._trust_remote_code:
-            from transformers import AutoModelForCausalLM
-
-            model_cls = AutoModelForCausalLM
-            load_kwargs["trust_remote_code"] = True
-        else:
-            from transformers import Florence2ForConditionalGeneration
-
-            model_cls = Florence2ForConditionalGeneration
-
-        processor = AutoProcessor.from_pretrained(
-            self._model_id,
-            **({k: v for k, v in load_kwargs.items() if k == "trust_remote_code"}),
-        )
-        model = model_cls.from_pretrained(
-            self._model_id,
-            torch_dtype=dtype,
-            **load_kwargs,
-        ).to(device)
+        processor, model = load_florence(self._model_id, trust_remote_code=self._trust_remote_code, dtype=dtype)
+        model = model.to(device)
         model.eval()
         return processor, model, device
 

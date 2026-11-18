@@ -41,7 +41,7 @@ def build_verifier(
             kwargs["model_id"] = model_id
         return OpenAICompatVQAVerifier(**kwargs)
     if key == "florence":
-        return FlorenceGroundingVerifier(model_id=model_id or "florence-community/Florence-2-base", device=device)
+        return FlorenceGroundingVerifier(model_id=model_id, device=device)
     if key == "molmo":
         return MolmoVerifier(model_id=model_id or "allenai/Molmo-7B-D-0924", device=device)
     raise ValueError(f"Unknown verifier {name!r}. Choose from: {', '.join(VERIFIER_NAMES)}")
