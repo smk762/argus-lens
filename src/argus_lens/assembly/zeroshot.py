@@ -60,5 +60,9 @@ def assemble_zeroshot_variant(
                 fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
             ):
                 removed.append(fragment)
+    # Buckets with no category config (custom or stale taxonomies) are dropped, but reported.
+    for bucket_name, fragments in buckets.items():
+        if bucket_name not in config_map:
+            removed.extend(fragments)
 
     return with_trigger(trigger_word, ", ".join(kept)), removed

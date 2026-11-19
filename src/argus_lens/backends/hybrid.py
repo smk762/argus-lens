@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from PIL import Image
 
 from argus_lens.assembly.filtering import filter_redundant_clauses
@@ -35,9 +37,14 @@ class HybridPipeline(CaptionBackend):
         self.requires_gpu = tag_backend.requires_gpu or prose_backend.requires_gpu
 
     def load(self, device: str = "auto") -> None:
-        """Forward the device to both sub-backends."""
+        """Forward the device to both sub-backends; if the prose stage fails, the tag stage is unloaded again."""
         self._tag.load(device)
-        self._prose.load(device)
+        try:
+            self._prose.load(device)
+        except BaseException:
+            with contextlib.suppress(Exception):  # the load error is the one to report
+                self._tag.unload()
+            raise
 
     def caption_image(self, image: Image.Image) -> str:
         """Run both stages and merge tags with redundancy-filtered prose."""
@@ -73,9 +80,11 @@ class HybridPipeline(CaptionBackend):
         self._prose.prefetch()
 
     def unload(self) -> None:
-        """Unload both sub-backends."""
-        self._tag.unload()
-        self._prose.unload()
+        """Unload both sub-backends; the prose stage is unloaded even if the tag stage's unload raises."""
+        try:
+            self._tag.unload()
+        finally:
+            self._prose.unload()
 
     def is_available(self) -> bool:
         """Return True only if both sub-backends are available."""

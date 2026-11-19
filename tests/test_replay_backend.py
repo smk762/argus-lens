@@ -10,6 +10,8 @@ import hashlib
 import io
 import json
 import random
+import threading
+from typing import Any
 
 import pytest
 from PIL import Image
@@ -108,14 +110,20 @@ def test_lookup_by_sha256_returns_recorded_result_verbatim() -> None:
     assert result.metadata["note"] == "seeded by the tape"
 
 
-def test_lookup_falls_back_to_uri_when_sha_absent() -> None:
-    """With no sha row (or no sha given), the lookup resolves by asset uri."""
+def test_lookup_resolves_by_uri_only_without_a_sha() -> None:
+    """A hash-less input (no original bytes) resolves by asset uri; a hash never falls back to it.
+
+    The sha-given-but-absent case is a miss even when the uri has a recording
+    (:func:`test_lookup_sha_miss_does_not_fall_back_to_uri`), so it is asserted here too.
+    """
     backend = _backend_with({("uri", "immich://abc"): _RECORDED_ROW})
 
-    assert backend.lookup(sha256="notpresent" * 6) is None  # no sha row, no uri given
     result = backend.lookup(sha256=None, uri="immich://abc")
     assert result is not None
     assert result.final_caption == _RECORDED_ROW[0]
+    assert result.metadata["replay"]["asset_uri"] == "immich://abc"
+    assert backend.lookup(sha256="0" * 64) is None  # well-formed sha, no row, no uri
+    assert backend.lookup(sha256="0" * 64, uri="immich://abc") is None  # sha absent: no uri fallback
 
 
 def test_lookup_sha_miss_does_not_fall_back_to_uri() -> None:
@@ -159,6 +167,56 @@ def test_caption_image_is_unsupported() -> None:
     backend = _backend_with({})
     with pytest.raises(NotImplementedError):
         backend.caption_image(Image.new("RGB", (4, 4)))
+
+
+def _owned_backend(monkeypatch: pytest.MonkeyPatch, conns: list) -> ReplayBackend:
+    """A ReplayBackend that owns its connections (each _connect makes a new fake one)."""
+    backend = ReplayBackend(dsn="postgresql://x/y")
+
+    def _connect() -> _FakeConn:
+        """Open a fake connection and remember it."""
+        conns.append(_FakeConn({}))
+        return conns[-1]
+
+    monkeypatch.setattr(backend, "_connect", _connect)
+    return backend
+
+
+@pytest.mark.parametrize("call", ["unload", "load"])
+def test_unload_and_load_wait_for_an_in_flight_query(monkeypatch: pytest.MonkeyPatch, call: str) -> None:
+    """unload()/load() take the query lock: no closing the connection under a lookup, no second connection."""
+    conns: list = []
+    backend = _owned_backend(monkeypatch, conns)
+    if call == "unload":
+        backend.load()
+    done = threading.Event()
+    with backend._lock:  # a lookup is in flight
+        worker = threading.Thread(target=lambda: (getattr(backend, call)(), done.set()))
+        worker.start()
+        assert not done.wait(0.2), f"{call}() did not wait for the in-flight query"
+        if call == "unload":
+            assert conns[0].closed is False  # not closed under the query
+    worker.join(2)
+    assert done.is_set()
+    if call == "unload":
+        assert conns[0].closed is True and backend._conn is None
+    else:
+        assert len(conns) == 1
+
+
+def test_stale_connection_is_replaced_without_deadlock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing owned connection is closed and reopened inside the locked retry (no re-entrant unload)."""
+    conns: list = []
+    backend = _owned_backend(monkeypatch, conns)
+    backend.load()
+
+    def _broken_cursor() -> None:
+        """Simulate a dropped server connection."""
+        raise ConnectionError("server closed the connection")
+
+    monkeypatch.setattr(conns[0], "cursor", _broken_cursor)
+    assert backend.lookup(sha256="0" * 64) is None
+    assert conns[0].closed is True and len(conns) == 2
 
 
 def test_unload_leaves_injected_connection_alone() -> None:
@@ -250,15 +308,19 @@ def test_truncated_jpeg_fixture_passes_verify_but_fails_decode() -> None:
 
 # -- server wiring ------------------------------------------------------------
 
-pytest.importorskip("fastapi")
-pytest.importorskip("httpx")
-from fastapi.testclient import TestClient  # noqa: E402
 
-from argus_lens.server import create_app  # noqa: E402
+def _replay_client(rows: dict[tuple[str, str], tuple]) -> Any:
+    """A TestClient whose server engine replays from an injected fake connection.
 
+    The server extra is optional: only the server tests skip without it, not the
+    backend/engine tests in this module.
+    """
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
 
-def _replay_client(rows: dict[tuple[str, str], tuple]) -> TestClient:
-    """A TestClient whose server engine replays from an injected fake connection."""
+    from argus_lens.server import create_app
+
     return TestClient(create_app(default_backend=_backend_with(rows)))
 
 

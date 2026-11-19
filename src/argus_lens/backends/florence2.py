@@ -2,16 +2,61 @@
 
 from __future__ import annotations
 
-import os
+import itertools
 from typing import Any
 
 from PIL import Image
 
 from argus_lens.backends.base import LocalBackend
 from argus_lens.registry import ModelRegistry, get_default_registry
+from argus_lens.remote_code import resolve_trust_remote_code
 
 _NATIVE_MODEL_ID = "florence-community/Florence-2-base"
 _LEGACY_MODEL_ID = "microsoft/Florence-2-base"
+# Tasks whose post-processed result is plain text. The rest (<OD>, <DENSE_REGION_CAPTION>,
+# <OCR_WITH_REGION>, ...) return boxes/regions, which is not a caption.
+CAPTION_TASKS = ("<CAPTION>", "<DETAILED_CAPTION>", "<MORE_DETAILED_CAPTION>", "<OCR>")
+# The legacy remote-code weights break on transformers >= 4.52.
+_LEGACY_MAX_TRANSFORMERS = (4, 52)
+
+
+def _version_tuple(version: str) -> tuple[int, int]:
+    """``(major, minor)`` of a version string such as ``4.51.3`` or ``5.0.0.dev0`` (unparseable -> (0, 0))."""
+    parts = []
+    for piece in version.split(".")[:2]:
+        digits = "".join(itertools.takewhile(str.isdigit, piece))
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 2:
+        parts.append(0)
+    return parts[0], parts[1]
+
+
+def default_model_id(trust_remote_code: bool) -> str:
+    """The legacy remote-code weights when remote code is allowed, else the native ones."""
+    return _LEGACY_MODEL_ID if trust_remote_code else _NATIVE_MODEL_ID
+
+
+def load_florence(model_id: str, *, trust_remote_code: bool, dtype: Any = None) -> tuple[Any, Any]:
+    """Load a Florence-2 ``(processor, model)`` pair on the CPU; the caller moves the model.
+
+    Without *trust_remote_code* this uses transformers' native
+    ``Florence2ForConditionalGeneration`` and never runs code from the model repo.
+    With it, the legacy ``AutoModelForCausalLM`` path loads the repo's own code.
+    Shared by the caption backend and the reconcile verifier so the two can't drift.
+    """
+    from transformers import AutoProcessor
+
+    if trust_remote_code:
+        from transformers import AutoModelForCausalLM
+
+        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype, trust_remote_code=True)
+    else:
+        from transformers import Florence2ForConditionalGeneration
+
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = Florence2ForConditionalGeneration.from_pretrained(model_id, torch_dtype=dtype)
+    return processor, model
 
 
 class Florence2Backend(LocalBackend):
@@ -36,17 +81,14 @@ class Florence2Backend(LocalBackend):
         trust_remote_code: bool | None = None,
         registry: ModelRegistry | None = None,
     ) -> None:
-        """Pick native or legacy weights based on *trust_remote_code* and set the caption task."""
-        if trust_remote_code is None:
-            trust_remote_code = os.environ.get(
-                "HF_TRUST_REMOTE_CODE",
-                "0",
-            ).lower() in ("1", "true", "yes")
-        self._trust_remote_code = trust_remote_code
+        """Pick native or legacy weights based on *trust_remote_code* and set the caption task.
 
-        if model_id is None:
-            model_id = _LEGACY_MODEL_ID if trust_remote_code else _NATIVE_MODEL_ID
-        self._model_id = model_id
+        *task* must be one of :data:`CAPTION_TASKS`; region/detection tasks don't yield a caption.
+        """
+        if task not in CAPTION_TASKS:
+            raise ValueError(f"Florence-2 task {task!r} does not produce a caption; use one of {CAPTION_TASKS}")
+        self._trust_remote_code = resolve_trust_remote_code(trust_remote_code)
+        self._model_id = model_id or default_model_id(self._trust_remote_code)
         self._task = task
         self._registry = registry or get_default_registry()
 
@@ -57,30 +99,10 @@ class Florence2Backend(LocalBackend):
     def _loader(self, device: str) -> tuple[Any, Any, str]:
         """Load the Florence-2 processor and model onto *device* (fp16 on CUDA)."""
         import torch
-        from transformers import AutoProcessor
 
         dtype = torch.float16 if device == "cuda" else torch.float32
-
-        load_kwargs: dict[str, Any] = {}
-        if self._trust_remote_code:
-            from transformers import AutoModelForCausalLM
-
-            model_cls = AutoModelForCausalLM
-            load_kwargs["trust_remote_code"] = True
-        else:
-            from transformers import Florence2ForConditionalGeneration
-
-            model_cls = Florence2ForConditionalGeneration
-
-        processor = AutoProcessor.from_pretrained(
-            self._model_id,
-            **({k: v for k, v in load_kwargs.items() if k == "trust_remote_code"}),
-        )
-        model = model_cls.from_pretrained(
-            self._model_id,
-            torch_dtype=dtype,
-            **load_kwargs,
-        ).to(device)
+        processor, model = load_florence(self._model_id, trust_remote_code=self._trust_remote_code, dtype=dtype)
+        model = model.to(device)
         model.eval()
         return processor, model, device
 
@@ -126,22 +148,34 @@ class Florence2Backend(LocalBackend):
         prefetch_hf_snapshot(self._model_id)
 
     def is_available(self) -> bool:
-        """Return True if torch and transformers are importable."""
-        try:
-            __import__("torch")
-            __import__("transformers")
-        except ImportError:
-            return False
-        return True
+        """Return True if torch and a transformers suited to the selected weights are importable."""
+        return self.availability_reason() is None
 
     def availability_reason(self) -> str | None:
-        """Name the missing package (torch or transformers), or None if usable."""
+        """Name the missing package, or the transformers mismatch for the selected weights, or None if usable."""
         try:
             __import__("torch")
         except ImportError:
             return "Missing package: torch (pip install argus-lens[torch])"
         try:
-            __import__("transformers")
+            transformers = __import__("transformers")
         except ImportError:
             return "Missing package: transformers (pip install argus-lens[torch])"
+        version = str(getattr(transformers, "__version__", "0"))
+        if self._trust_remote_code:
+            if _version_tuple(version) >= _LEGACY_MAX_TRANSFORMERS:
+                return (
+                    f"legacy Florence-2 weights ({self._model_id}, trust_remote_code) need transformers<4.52; "
+                    f"found {version}. Use the native weights or pin transformers<4.52"
+                )
+            return None
+        try:
+            native = getattr(transformers, "Florence2ForConditionalGeneration", None)
+        except Exception:  # noqa: BLE001 - transformers' lazy module can fail importing the class
+            native = None
+        if native is None:
+            return (
+                f"transformers {version} has no native Florence-2 (Florence2ForConditionalGeneration); "
+                "upgrade transformers or set HF_TRUST_REMOTE_CODE=true with transformers<4.52"
+            )
         return None

@@ -58,9 +58,14 @@ def dominant_color_name(image: Image.Image, box: Box | None = None) -> str | Non
     The box is clamped to the image bounds (an out-of-range crop would sample
     black padding). Returns ``None`` for a degenerate box (zero area after
     clamping/rounding) so the caller abstains rather than sampling the whole
-    image as if it were the subject.
+    image as if it were the subject. Transparent pixels are left out of the
+    mean, and a region with no opaque pixel also returns ``None``.
     """
-    region = image.convert("RGB")
+    from PIL import ImageStat
+
+    if image.mode == "P" and "transparency" in image.info:
+        image = image.convert("RGBA")
+    region = image.convert("RGBA") if image.mode in {"RGBA", "LA", "PA"} else image.convert("RGB")
     if box is not None:
         w, h = region.size
         x0 = max(0, min(int(round(box[0])), w))
@@ -70,6 +75,12 @@ def dominant_color_name(image: Image.Image, box: Box | None = None) -> str | Non
         if x1 <= x0 or y1 <= y0:
             return None
         region = region.crop((x0, y0, x1, y1))
-    # Averaging to a single pixel gives the mean RGB cheaply, no numpy needed.
-    mean = region.resize((1, 1)).getpixel((0, 0))
-    return nearest_color_name(mean[:3])
+    # An exact area mean (a 1x1 resize would be bicubic, i.e. centre-weighted). Transparent pixels keep
+    # whatever RGB they store (usually black), so alpha masks them out; a fully transparent region abstains.
+    mask = None
+    if region.mode == "RGBA":
+        mask = region.getchannel("A").point(lambda a: 255 if a else 0)
+        if mask.getbbox() is None:
+            return None
+    mean = ImageStat.Stat(region.convert("RGB"), mask=mask).mean
+    return nearest_color_name(tuple(int(round(c)) for c in mean[:3]))

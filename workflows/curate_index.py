@@ -33,7 +33,16 @@ from typing import Any
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_LAYOUT = "{name}/pics/{shoot_id}/{file}"
 # Settings that change what ``caption`` produces. A resumed run must match them.
-CAPTION_KEYS = ("backend", "wd14_repo", "wd14_threshold", "model_id", "base_url", "prompt", "count_model")
+CAPTION_KEYS = (
+    "backend",
+    "wd14_repo",
+    "wd14_threshold",
+    "model_id",
+    "base_url",
+    "prompt",
+    "count_model",
+    "count_url",
+)
 INDEX_CATEGORIES = ("identity", "wardrobe", "pose_composition", "setting", "lighting", "action")
 
 
@@ -154,22 +163,39 @@ def cmd_inventory(args: argparse.Namespace) -> None:
 
 
 def _load_run_config(run: Path, wanted: dict[str, Any], force: bool) -> dict[str, Any]:
-    """Create or check run.json so a resumed run cannot silently mix settings."""
+    """Create or check run.json so a resumed run cannot silently mix settings.
+
+    ``caption`` always holds the settings the run was created with. A ``--force``
+    resume with different settings is appended to ``forced_resumes`` (time, the
+    settings now in effect, and the diffs), so run.json shows that ``raw.jsonl``
+    mixes configurations. A key an older run.json never recorded is not compared.
+    """
     path = run / "run.json"
     import argus_lens
 
     if path.exists():
         existing = json.loads(path.read_text())
+        recorded = existing["caption"]
         diffs = {
-            k: (existing["caption"].get(k), wanted.get(k))
+            k: (recorded.get(k), wanted.get(k))
             for k in CAPTION_KEYS
-            if existing["caption"].get(k) != wanted.get(k)
+            if k in recorded and recorded.get(k) != wanted.get(k)
         }
         if diffs and not force:
             raise SystemExit(
                 f"run.json was created with different caption settings: {diffs}. "
                 "Use a new run directory, or --force to continue anyway."
             )
+        if diffs:
+            existing.setdefault("forced_resumes", []).append(
+                {
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "argus_lens_version": argus_lens.__version__,
+                    "caption": wanted,
+                    "diffs": {k: {"recorded": old, "now": new} for k, (old, new) in diffs.items()},
+                }
+            )
+            path.write_text(json.dumps(existing, indent=2))
         return existing
     config = {
         "argus_lens_version": argus_lens.__version__,
@@ -188,18 +214,24 @@ _NO_PEOPLE = re.compile(
 
 
 def _parse_count(text: str) -> int | None:
-    """First integer in a headcount answer ("2", "Two people." -> 2; "No one is visible." -> 0)."""
+    """First count in a headcount answer ("2", "Two people." -> 2; "No one is visible." -> 0).
+
+    Digits and number words are read in order, so a later number never overrides the
+    headcount ("One person, around 30 years old" -> 1).
+    """
     words = {"zero": 0, "none": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
-    match = re.search(r"\d+", text)
-    if match:
-        return int(match.group(0))
-    # Negations first, or "No one is visible" would match the word "one".
-    if _NO_PEOPLE.search(text):
-        return 0
-    for word in re.findall(r"[a-z]+", text.lower()):
-        if word in words:
-            return words[word]
-    return None
+    text = text.lower()
+    # A negation counts as 0 where it appears, and its own words are skipped, or
+    # "No one is visible" would match the word "one".
+    negation = _NO_PEOPLE.search(text)
+    for token in re.finditer(r"\d+|[a-z]+", text):
+        if negation and token.start() >= negation.start():
+            return 0
+        if token.group().isdigit():
+            return int(token.group())
+        if token.group() in words:
+            return words[token.group()]
+    return 0 if negation else None
 
 
 def cmd_caption(args: argparse.Namespace) -> None:
@@ -220,6 +252,10 @@ def cmd_caption(args: argparse.Namespace) -> None:
         "base_url": args.base_url or env("ARGUS_OPENAI_COMPAT_BASE_URL") or None,
         "prompt": args.prompt or env("ARGUS_OPENAI_COMPAT_PROMPT") or None,
         "count_model": args.count_model,
+        # The endpoint the counter actually calls (OpenAICompatBackend falls back to the env var).
+        "count_url": (args.count_url or args.base_url or env("ARGUS_OPENAI_COMPAT_BASE_URL") or None)
+        if args.count_model
+        else None,
     }
     _load_run_config(run, wanted, args.force)
 
@@ -290,11 +326,12 @@ def _build_refiner(args: argparse.Namespace):
     """Return a Refiner when --refine-model is set, else None."""
     if not args.refine_model:
         return None
-    from argus_lens.refine import OpenAICompatRewriter, Refiner
+    from argus_lens.refine import OpenAICompatRewriter, Refiner, parse_variants
 
     return Refiner(
         OpenAICompatRewriter(base_url=args.refine_url, model_id=args.refine_model, api_key=args.refine_key),
-        variants=tuple(v.strip() for v in args.refine_variants.split(",") if v.strip()),
+        # Same parsing as the CLI: "all" (or an empty list) rewrites every variant, never none.
+        variants=parse_variants(args.refine_variants),
     )
 
 

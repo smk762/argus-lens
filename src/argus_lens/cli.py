@@ -33,13 +33,16 @@ def _make_verifier(
         return None
     from argus_lens.reconcile import build_verifier
 
-    return build_verifier(
-        reconcile,
-        base_url=verifier_url,
-        model_id=verifier_model,
-        api_key=verifier_key,
-        device=verifier_device,
-    )
+    try:
+        return build_verifier(
+            reconcile,
+            base_url=verifier_url,
+            model_id=verifier_model,
+            api_key=verifier_key,
+            device=verifier_device,
+        )
+    except ValueError as exc:  # an unknown name, or a model that needs HF_TRUST_REMOTE_CODE
+        raise typer.BadParameter(str(exc), param_hint="--reconcile") from exc
 
 
 @app.command()
@@ -252,13 +255,14 @@ def ram_vocab_build(
         typer.echo(f"Writing descriptions for {len(todo)} tag(s) with {writer.model_id} at {writer.base_url} ...")
         try:
             writer.describe_all(todo, on_progress=lambda i, n, tag: typer.echo(f"  [{i}/{n}] {tag}"), into=descriptions)
-        except Exception:
+        except BaseException:
             # Keep the descriptions already paid for: the partial file is valid input, and a
-            # re-run with it only writes the tags still empty.
+            # re-run with it only writes the tags still empty. BaseException so a Ctrl-C (the
+            # usual way to stop a long run) saves them too; the exception is re-raised.
             partial = out / "descriptions.partial.json"
             out.mkdir(parents=True, exist_ok=True)
             partial.write_text(json.dumps({t: descriptions.get(t, []) for t in parsed.tags}, indent=1), "utf-8")
-            typer.echo(f"Description writing failed; completed tags saved to {partial} (re-run with it).", err=True)
+            typer.echo(f"Description writing stopped; completed tags saved to {partial} (re-run with it).", err=True)
             raise
         finally:
             writer.close()
@@ -346,6 +350,19 @@ def eval_command(
     from argus_lens.eval.metrics import try_build_clip_scorer
     from argus_lens.eval.report import format_comparison
 
+    # Read the baseline before the (possibly long, GPU/API-costly) run, so a bad
+    # --baseline fails fast instead of after the scorecard has been computed.
+    base: dict | None = None
+    if baseline:
+        try:
+            base = json.loads(baseline.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            typer.echo(f"Could not read baseline {baseline}: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        if not isinstance(base, dict):
+            typer.echo(f"Baseline must be a JSON object, got {type(base).__name__}", err=True)
+            raise typer.Exit(1)
+
     try:
         dataset = load_dataset(path)
     except (FileNotFoundError, ValueError) as exc:
@@ -404,15 +421,7 @@ def eval_command(
     if all_failed:
         typer.echo(f"\nAll {scorecard.n} images errored — no metrics computed.", err=True)
 
-    if baseline:
-        try:
-            base = json.loads(baseline.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            typer.echo(f"Baseline is not valid JSON: {exc}", err=True)
-            raise typer.Exit(1) from exc
-        if not isinstance(base, dict):
-            typer.echo(f"Baseline must be a JSON object, got {type(base).__name__}", err=True)
-            raise typer.Exit(1)
+    if base is not None:
         comparison = compare_to_baseline(scorecard.aggregates, base.get("aggregates", base))
         typer.echo("\n" + format_comparison(comparison))
         if fail_on_regression and comparison["regressed"]:

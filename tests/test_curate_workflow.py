@@ -136,6 +136,15 @@ def test_parse_count() -> None:
     assert curate._parse_count("unclear") is None
 
 
+@pytest.mark.parametrize(
+    ("answer", "count"),
+    [("One person, around 30 years old.", 1), ("Two people, one in their 20s.", 2), ("3 people, two seated", 3)],
+)
+def test_parse_count_takes_the_first_count(answer: str, count: int) -> None:
+    """A later number (an age, a decade) must not override a spelled-out headcount."""
+    assert curate._parse_count(answer) == count
+
+
 @pytest.mark.parametrize("answer", ["No one is visible in the image.", "Nobody.", "no people", "No person is shown."])
 def test_parse_count_negations_are_zero(answer: str) -> None:
     """'No one' must not parse as 1 via the word 'one'."""
@@ -210,3 +219,29 @@ def test_run_json_records_env_configured_settings(library, monkeypatch) -> None:
     monkeypatch.setenv("ARGUS_OPENAI_COMPAT_MODEL", "llava")
     with pytest.raises(SystemExit, match="different caption settings"):
         curate.main(["caption", str(run)])
+
+
+def test_run_json_records_count_url_and_refuses_a_different_one(library, monkeypatch) -> None:
+    """The counter's endpoint is a caption setting: a resume against another one is refused."""
+    from argus_lens.backends.openai_compat import OpenAICompatBackend
+
+    monkeypatch.setattr(OpenAICompatBackend, "caption_image", lambda self, image: "1")
+    src, run = library
+    curate.main(["inventory", str(src), str(run)])
+    curate.main(["caption", str(run), "--limit", "1", "--count-model", "m", "--count-url", "http://a:1/v1"])
+    assert json.loads((run / "run.json").read_text())["caption"]["count_url"] == "http://a:1/v1"
+    with pytest.raises(SystemExit, match="count_url"):
+        curate.main(["caption", str(run), "--count-model", "m", "--count-url", "http://b:1/v1"])
+
+
+def test_forced_resume_is_recorded_in_run_json(library) -> None:
+    """--force with different settings keeps the original ones and logs the forced mix."""
+    src, run = library
+    curate.main(["inventory", str(src), str(run)])
+    curate.main(["caption", str(run), "--limit", "1"])
+    curate.main(["caption", str(run), "--limit", "1", "--wd14-threshold", "0.5", "--force"])
+    config = json.loads((run / "run.json").read_text())
+    assert config["caption"]["wd14_threshold"] != 0.5
+    (forced,) = config["forced_resumes"]
+    assert forced["caption"]["wd14_threshold"] == 0.5
+    assert forced["diffs"]["wd14_threshold"]["now"] == 0.5

@@ -247,8 +247,8 @@ engine = ArgusLens(backend="hybrid", verifier=build_verifier(
 |---|---|---|
 | `tag-prior` | trusts the tag value (no image) | nothing — default, fully deterministic |
 | `openai-compat` | asks a served vision model "what colour is the dress?" | a running OpenAI-compatible endpoint (`httpx` only) |
-| `florence` | grounds the subject to a box, samples the pixels | `[torch]` (reuses Florence-2's unused grounding task) |
-| `molmo` | asks Molmo, which can point at pixels | `[torch]` + ~8–17 GB VRAM |
+| `florence` | grounds the subject to a box, samples the pixels | `[torch]` (reuses Florence-2's unused grounding task; native weights, no remote code) |
+| `molmo` | asks Molmo, which can point at pixels | `[torch]` + ~8–17 GB VRAM + `HF_TRUST_REMOTE_CODE=true` (Molmo ships its own model code) |
 
 **Headcount disputes** (`kind: "count"`) need an exact count on both sides: numbered headcount tags (`1girl, 2boys`; not `multiple_girls` or `6+boys`) and exactly one stated headcount in the prose ("six soldiers", "3 people"). `tag-prior` resolves to the tag count, and the VQA verifiers ask "how many people are visible". The rewrite changes only the number ("six soldiers" → "three soldiers") and never to a singular. A count inside a collective phrase counts too ("a group of six soldiers").
 
@@ -395,8 +395,8 @@ The server binds `127.0.0.1` by default. Pass `--host 0.0.0.0` to reach it from 
 
 Endpoints:
 
-- `POST /caption` -- multipart file upload
-- `POST /caption/url` -- JSON body with an `http(s)://` image URL. Lens fetches it, so the fetch is fenced against SSRF: a host that resolves to a private, loopback, link-local, CGNAT or reserved address (or a redirect hop to one) is a `400` and no connection is made. The connection goes to the IP that was checked, redirects are capped at 5 and re-checked, and bodies over 50 MB are refused. Name trusted LAN hosts in `LENS_URL_ALLOWED_HOSTS`; `LENS_URL_FETCH=off` refuses every URL. A non-URL `image_url` (a server path) is a `400`. Fetch failures return a generic message (the HTTP status, or "could not fetch"), never the raw transport error
+- `POST /caption` -- multipart file upload. Each uploaded file (here, on the batch/stream routes, and the manifest routes' manifest) is capped at `LENS_MAX_UPLOAD_MB` (default 50); a larger one is a `413`
+- `POST /caption/url` -- JSON body with an `http(s)://` image URL. Lens fetches it, so the fetch is fenced against SSRF: a host that resolves to a private, loopback, link-local, CGNAT or reserved address (or a redirect hop to one) is a `400` and no connection is made. The connection goes to the IP that was checked, redirects are capped at 5 and re-checked, and bodies over 50 MB are refused. The fetch goes through argus-cortex's shared `argus_cortex.net` helper. Name trusted LAN hosts in `LENS_URL_ALLOWED_HOSTS`; `LENS_URL_FETCH=off` refuses every URL. A non-URL `image_url` (a server path) is a `400`. Fetch failures return a generic message (the HTTP status, or "could not fetch"), never the raw transport error
 - `POST /caption/batch` -- multiple file upload; results are keyed by filename, and a repeated filename gets a `#2`, `#3`, ... suffix so no result is dropped
 - `POST /caption/stream` -- NDJSON streaming for batch
 - `POST /caption/manifest` -- batch-caption an [argus-curator](https://github.com/smk762/argus-curator) JSONL manifest (shared `target_profile`, writes `.txt` sidecars; `write_xmp: true` also writes `.xmp` sidecars). Understands manifest 1.x and 2.x (unknown majors are a 400): pass the curator's export root as `export_root` and 2.0 rows are read from `export_root / exported_path` (valid even for `mode=move` exports); without it, rows fall back to `abs_path` (shared volume). Needs `--source-root` / `LENS_SOURCE_PATH` (400 otherwise): `export_root` must lie inside it, and a row whose image resolves outside it is a per-row error, never read or written
@@ -422,7 +422,7 @@ The `/immich/*` endpoints read `IMMICH_URL` and `IMMICH_API_KEY` from the enviro
 
 **CORS and cross-site writes.** `--cors` allows only the localhost dev frontend (`http://localhost:3000`, `http://127.0.0.1:3000`). Allow-list other origins with `--cors-origin <origin>` (repeatable) or `LENS_CORS_ORIGINS` (comma-separated), or use `--cors-any` for a credential-less wildcard on public demos. A literal `*` in the allow-list is treated as `--cors-any`.
 
-The caption endpoints have no auth and write sidecars, and CORS is not a write boundary: a `multipart/form-data` POST needs no preflight, so any page a browser visits could drive one. So every unsafe request (POST/PUT/PATCH/DELETE) is checked by Origin, with or without `--cors`: no `Origin` (curl, argus-curator, Frigate) passes, the same host as the request (a UI proxied onto this host) passes when that host is an IP address, `localhost`, or listed in `LENS_TRUSTED_HOSTS` (comma-separated host names, no port; a bare DNS-name match is what DNS rebinding forges, so a server reached as `http://morpheus:8100` must list `morpheus`), and so does an allow-listed origin; anything else is a `403`. `--cors-any` therefore grants reads, not writes: name an origin with `--cors-origin` to let it write. The guard is the suite's shared [`argus_cortex.server.WriteGuard`](https://github.com/smk762/argus-cortex), as in argus-curator, argus-forge and argus-proof.
+The caption endpoints have no auth and write sidecars, and CORS is not a write boundary: a `multipart/form-data` POST needs no preflight, so any page a browser visits could drive one. So every unsafe request (POST/PUT/PATCH/DELETE) is checked by Origin, with or without `--cors`: no `Origin` (curl, argus-curator, Frigate) passes, the same host as the request (a UI proxied onto this host) passes when that host is an IP address, `localhost`, or listed in `LENS_TRUSTED_HOSTS` (comma-separated host names, no port; a bare DNS-name match is what DNS rebinding forges, so a server reached as `http://<LAN_HOST>:8100` must list `<LAN_HOST>`), and so does an allow-listed origin; anything else is a `403`. `--cors-any` therefore grants reads, not writes: name an origin with `--cors-origin` to let it write. The guard is the suite's shared [`argus_cortex.server.WriteGuard`](https://github.com/smk762/argus-cortex), as in argus-curator, argus-forge and argus-proof.
 
 ### Immich
 
@@ -493,12 +493,13 @@ Copy or create a `.env` file for the Docker deployment:
 | `ARGUS_GPU_BROKER_URL` / `ARGUS_GPU_BROKER_TOKEN` | -- | The argus-iris broker and its caller token (`broker` only) |
 | `ARGUS_GPU_TENANT_MANIFEST` | `/app/gpu-tenant.yaml` | The tenant manifest the broker registers (`broker` only) |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` | Coordinator used when the broker is unreachable (`lease` or `none`) |
-| `ARGUS_ADMIN_TOKEN` | -- | Bearer token for `POST /admin/unload` (unset: open) |
+| `ARGUS_ADMIN_TOKEN` | -- | Bearer token for `POST /admin/unload` (`Authorization: Bearer <token>`, checked by `argus_cortex.auth`; a missing or wrong token is a `401`; unset: open) |
 | `ARGUS_MODEL_IDLE_SECONDS` | `300` | Idle seconds before the shared WD14/RAM++/BLIP-2 model cache evicts an unused model |
 | `LENS_CORS_ORIGINS` | -- | Comma-separated origins allowed CORS and cross-site writes (the image runs `--cors`, which trusts only `localhost:3000`) |
 | `LENS_TRUSTED_HOSTS` | -- | Comma-separated host names (no port) this server is reached by; a page served from this host may write only when it is an IP, `localhost`, or listed here |
 | `LENS_READ_ONLY` | -- | `1` refuses sidecar/XMP writes, Immich pulls and write-back with a 403 (advertised as `read_only` on `/health`) |
-| `LENS_URL_ALLOWED_HOSTS` | -- | Comma-separated hostnames `POST /caption/url` may fetch even when they resolve to a private/LAN address, e.g. `immich.lan` (unset: only public addresses) |
+| `LENS_URL_ALLOWED_HOSTS` | -- | Comma-separated `host` or `host:port` entries `POST /caption/url` may fetch even when they resolve to a private/LAN address, e.g. `immich.lan` or `immich.lan:2283` (a bare host allows any port; unset: only public addresses) |
+| `LENS_MAX_UPLOAD_MB` | `50` | Largest file a caption request may upload, per file (images on `/caption`, `/caption/batch`, `/caption/stream`; the manifest on `/caption/manifest[/stream]`); over it is a `413` |
 | `LENS_URL_FETCH` | `on` | `off` refuses every `POST /caption/url` fetch (clients upload bytes to `/caption` instead) |
 | `LENS_SOURCE_PATH` | `/data/images` | Host image folder mounted read-write at `/data/images` for the folder picker and `POST /caption/folder`; `.txt` sidecars are written next to the images |
 
@@ -520,11 +521,15 @@ The `docker-compose.yaml` bind-mounts `~/.cache/wd14_tagger`, `~/.cache/ram_plus
 
 ## Security
 
-### `trust_remote_code` and Florence-2
+### `trust_remote_code`
 
-By default, the Florence-2 backend uses [`florence-community/Florence-2-base`](https://huggingface.co/florence-community/Florence-2-base) weights which are natively supported in `transformers` -- no `trust_remote_code` needed.
+Nothing in lens runs Python from a model repository unless `HF_TRUST_REMOTE_CODE=true` is set (or `trust_remote_code=True` is passed in code).
 
-The legacy [`microsoft/Florence-2-base`](https://huggingface.co/microsoft/Florence-2-base) weights require `HF_TRUST_REMOTE_CODE=true`, which executes arbitrary Python from the model repository at load time. Only enable this for models you trust. WD14 uses a static ONNX model and never runs remote code.
+By default, the Florence-2 backend and the `florence` reconcile verifier use [`florence-community/Florence-2-base`](https://huggingface.co/florence-community/Florence-2-base) weights which are natively supported in `transformers` -- no `trust_remote_code` needed.
+
+The legacy [`microsoft/Florence-2-base`](https://huggingface.co/microsoft/Florence-2-base) weights require `HF_TRUST_REMOTE_CODE=true`, which executes arbitrary Python from the model repository at load time. Only enable this for models you trust. Without the flag, naming legacy weights is refused when the backend or verifier is built.
+
+The `molmo` reconcile verifier always needs remote code, so without the flag `--reconcile molmo` is refused up front rather than silently abstaining. WD14 and RAM++ load static weights and never run remote code.
 
 ## Related projects
 

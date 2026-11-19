@@ -15,7 +15,7 @@ def _image() -> Image.Image:
     return Image.new("RGB", (16, 16), color=(255, 0, 0))
 
 
-def _mock_client(backend: OpenAICompatBackend, handler, *, headers=None) -> dict:
+def _mock_client(backend: OpenAICompatBackend, handler) -> dict:
     """Attach a MockTransport client to *backend* and return a capture dict."""
     captured: dict = {}
 
@@ -28,7 +28,6 @@ def _mock_client(backend: OpenAICompatBackend, handler, *, headers=None) -> dict
 
     backend._client = httpx.Client(
         base_url=backend._base_url,
-        headers=headers or {},
         transport=httpx.MockTransport(_wrapped),
     )
     return captured
@@ -90,20 +89,52 @@ def test_caption_request_shape_and_parsing():
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
-def test_no_auth_header_without_key():
+def _intercept_transport(monkeypatch, handler) -> dict:
+    """Route the client the backend builds itself (headers and all) through a MockTransport.
+
+    Unlike :func:`_mock_client`, nothing about the request headers comes from the test:
+    whatever ``Authorization`` arrives was set by the backend's own ``load()``.
+    """
+    captured: dict = {}
+    real_client = httpx.Client
+
+    def _wrapped(request: httpx.Request) -> httpx.Response:
+        """Record the auth header the backend sent, then delegate to *handler*."""
+        captured["auth"] = request.headers.get("Authorization")
+        return handler(request)
+
+    def _client(*args, **kwargs):
+        """Build the backend's client as asked, swapping only the transport."""
+        return real_client(*args, transport=httpx.MockTransport(_wrapped), **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", _client)
+    return captured
+
+
+def test_no_auth_header_without_key(monkeypatch):
     """Omits the Authorization header when no API key is configured."""
+    monkeypatch.delenv("ARGUS_OPENAI_COMPAT_API_KEY", raising=False)
+    captured = _intercept_transport(monkeypatch, _ok_handler)
     b = OpenAICompatBackend(base_url="http://localhost:11434/v1")
-    captured = _mock_client(b, _ok_handler)
-    b.caption_image(_image())
+    assert b.caption_image(_image()) == "a red square"
     assert captured["auth"] is None
 
 
-def test_auth_header_with_key():
-    """Sends a Bearer Authorization header when an API key is configured."""
+def test_auth_header_with_key(monkeypatch):
+    """Sends a Bearer Authorization header built by the backend from its configured API key."""
+    monkeypatch.delenv("ARGUS_OPENAI_COMPAT_API_KEY", raising=False)
+    captured = _intercept_transport(monkeypatch, _ok_handler)
     b = OpenAICompatBackend(base_url="http://x/v1", api_key="secret123")
-    captured = _mock_client(b, _ok_handler, headers={"Authorization": "Bearer secret123"})
-    b.caption_image(_image())
+    assert b.caption_image(_image()) == "a red square"
     assert captured["auth"] == "Bearer secret123"
+
+
+def test_auth_header_from_env_key(monkeypatch):
+    """The key also resolves from ARGUS_OPENAI_COMPAT_API_KEY."""
+    monkeypatch.setenv("ARGUS_OPENAI_COMPAT_API_KEY", "envkey")
+    captured = _intercept_transport(monkeypatch, _ok_handler)
+    OpenAICompatBackend(base_url="http://x/v1").caption_image(_image())
+    assert captured["auth"] == "Bearer envkey"
 
 
 def test_http_error_propagates():
@@ -136,6 +167,23 @@ def test_list_content_parts_are_joined():
     b = OpenAICompatBackend(base_url="http://x/v1")
     _mock_client(b, lambda _r: httpx.Response(200, json={"choices": [{"message": {"content": parts}}]}))
     assert b.caption_image(_image()) == "a red square"
+
+
+def test_list_content_skips_null_text_parts():
+    """A non-text part carrying ``"text": null`` is skipped, not a TypeError from join."""
+    parts = [{"type": "text", "text": "a red square"}, {"type": "image", "text": None}, {"type": "refusal"}]
+    b = OpenAICompatBackend(base_url="http://x/v1")
+    _mock_client(b, lambda _r: httpx.Response(200, json={"choices": [{"message": {"content": parts}}]}))
+    assert b.caption_image(_image()) == "a red square"
+
+
+@pytest.mark.parametrize("message", [None, "oops", ["a"]])
+def test_null_or_non_dict_message_raises_clear_error(message):
+    """``"message": null`` (or another non-object) raises RuntimeError, not AttributeError."""
+    b = OpenAICompatBackend(base_url="http://x/v1")
+    _mock_client(b, lambda _r: httpx.Response(200, json={"choices": [{"message": message}]}))
+    with pytest.raises(RuntimeError, match="response shape"):
+        b.caption_image(_image())
 
 
 def test_large_images_are_downscaled_before_sending(monkeypatch):

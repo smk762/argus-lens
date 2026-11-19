@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import hashlib
 import inspect
 import io
@@ -136,11 +137,24 @@ def _resolve_backend(
     params = inspect.signature(cls.__init__).parameters
     accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
     ctor_kwargs: dict[str, Any] = {}
+    from argus_lens.backends.florence2 import Florence2Backend
+
+    is_florence = issubclass(cls, Florence2Backend)
     for key in _BACKEND_CTOR_KWARGS:
         if key in kwargs:
-            mapped = "model_id" if key == "florence_model_id" else key
-            if accepts_any or mapped in params:
-                ctor_kwargs[mapped] = kwargs[key]
+            if key == "florence_model_id":
+                # Florence-2 only: there it is the more specific id and wins over a
+                # shared ``model_id`` (meant for the other hybrid stage); any other
+                # backend never sees it, so it can't replace that backend's model_id.
+                if not is_florence:
+                    continue
+                key_out = "model_id"
+            elif key == "model_id" and is_florence and "florence_model_id" in kwargs:
+                continue
+            else:
+                key_out = key
+            if accepts_any or key_out in params:
+                ctor_kwargs[key_out] = kwargs[key]
     return cls(**ctor_kwargs)
 
 
@@ -167,12 +181,64 @@ class ImageAsset:
     data: bytes | None = field(default=None, repr=False, compare=False)
 
 
+def _find_images(directory: Path, glob: str, *, recursive: bool) -> list[Path]:
+    """Return the files under *directory* matching *glob*, sorted and de-duplicated.
+
+    *glob* is a comma list, optionally brace-wrapped (``*.{png,jpg}``); a bare
+    entry is an extension. File-name patterns match case-insensitively, so a
+    camera's ``IMG_1.JPG`` is found by ``*.jpg``. Each directory entry is listed
+    once and tested against every pattern, so a case-insensitive filesystem (or
+    overlapping patterns) can't yield one image twice. A pattern with a path
+    separator keeps plain (case-sensitive) ``Path.glob`` semantics.
+    """
+    name_patterns: list[str] = []
+    found: set[Path] = set()
+    for pattern in glob.replace("{", "").replace("}", "").split(","):
+        pattern = pattern.strip()
+        if not pattern:
+            continue
+        pattern = f"*.{pattern}" if not pattern.startswith("*") else pattern
+        if "/" in pattern or "\\" in pattern:
+            found.update(directory.rglob(pattern) if recursive else directory.glob(pattern))
+        else:
+            name_patterns.append(pattern.lower())
+    if name_patterns:
+        candidates = directory.rglob("*") if recursive else directory.iterdir()
+        found.update(p for p in candidates if any(fnmatch.fnmatchcase(p.name.lower(), pat) for pat in name_patterns))
+    return sorted(p for p in found if p.is_file())
+
+
+def _drop_sidecar_collisions(image_paths: list[Path], directory: Path) -> list[Path]:
+    """Keep one image per ``<stem>.txt`` sidecar; skip (and warn about) the rest.
+
+    ``IMG_1.jpg`` and ``IMG_1.png`` in one folder would share ``IMG_1.txt``, and
+    the second caption would silently replace the first. The sidecar name is a
+    contract with argus-forge, so it isn't changed: like the server, the first
+    image (sorted) owns the sidecar and each later one is skipped loudly.
+    """
+    owners: dict[Path, Path] = {}
+    kept: list[Path] = []
+    for p in image_paths:
+        sidecar = p.with_suffix(".txt")
+        owner = owners.setdefault(sidecar, p)
+        if owner is p:
+            kept.append(p)
+            continue
+        logger.warning(
+            "caption_sidecar_collision_skipped",
+            image=p.relative_to(directory).as_posix(),
+            kept=owner.relative_to(directory).as_posix(),
+            sidecar=sidecar.relative_to(directory).as_posix(),
+        )
+    return kept
+
+
 def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, Image.Image]:
     """Load an image from various source types.
 
     Accepts PIL images, raw bytes, file paths, or ``http(s)://`` URLs. URLs go
-    through :func:`argus_lens.url_fetch.fetch_url`, which refuses non-public
-    addresses unless ``LENS_URL_ALLOWED_HOSTS`` names the host (#110).
+    through :func:`argus_lens.url_fetch.fetch_url` (``argus_cortex.net``), which
+    refuses non-public addresses unless ``LENS_URL_ALLOWED_HOSTS`` names the host (#110).
     Returns ``(asset, pil_image)`` — the asset carries the original-bytes sha256
     when it is recoverable (everything except a pre-decoded PIL input).
     """
@@ -438,19 +504,23 @@ class ArgusLens:
         self._ensure_prefetched()  # network-bound: never under the GPU lease
         footprint = resolve_min_vram_mb(self._backend.name)
         use_lease = getattr(self._backend, "requires_gpu", False) and footprint > 0
-        # The lease waits for min_vram_mb *free*, and a resident model is already
-        # counted as used: asking for the footprint again would wait on our own
-        # weights. Only a load needs room; a resident model just takes the lock.
-        min_vram_mb = 0 if self._loaded else footprint
-        lease = (
-            self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb, kind=kind)
-            if use_lease
-            else contextlib.nullcontext()
-        )
+        # Mark busy *before* reading residency, in the same critical section, so
+        # unload()/the idle reaper can't free the model between the read and the
+        # lease: a model sized as resident stays resident until this inference ends.
         with self._load_lock:
             self._active += 1
             self._last_used = time.monotonic()
+            resident = self._loaded
         try:
+            # The lease waits for min_vram_mb *free*, and a resident model is already
+            # counted as used: asking for the footprint again would wait on our own
+            # weights. Only a load needs room; a resident model just takes the lock.
+            min_vram_mb = 0 if resident else footprint
+            lease = (
+                self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb, kind=kind)
+                if use_lease
+                else contextlib.nullcontext()
+            )
             with lease:
                 return self._infer_locked(pil)
         finally:
@@ -784,7 +854,11 @@ class ArgusLens:
         With *recursive*, sub-directories are walked too. Results are keyed by
         the image's POSIX path relative to *path* (just the filename for a
         flat walk), so ``a/IMG_1.jpg`` and ``b/IMG_1.jpg`` stay distinct and
-        ``.txt`` sidecars land next to their images.
+        ``.txt`` sidecars land next to their images. Extensions match
+        case-insensitively (``*.jpg`` finds ``IMG_1.JPG``). Images that would
+        share a ``<stem>.txt`` sidecar (``IMG_1.jpg`` + ``IMG_1.png``) are not
+        both captioned: the first (sorted) owns it and the rest are skipped
+        with a ``caption_sidecar_collision_skipped`` warning.
 
         *on_miss* is forwarded to :meth:`caption_batch`: with a handler a replay
         miss skips that image (no sidecar) and captioning continues, instead of
@@ -794,15 +868,10 @@ class ArgusLens:
         if not directory.is_dir():
             raise NotADirectoryError(f"Not a directory: {path}")
 
-        image_paths: list[Path] = []
-        for pattern in glob.replace("{", "").replace("}", "").split(","):
-            pattern = pattern.strip()
-            if pattern:
-                pattern = f"*.{pattern}" if not pattern.startswith("*") else pattern
-                image_paths.extend(directory.rglob(pattern) if recursive else directory.glob(pattern))
+        image_paths = _find_images(directory, glob, recursive=recursive)
 
-        image_paths = sorted({p for p in image_paths if p.is_file()})
-
+        if output_format == "txt":
+            image_paths = _drop_sidecar_collisions(image_paths, directory)
         if not overwrite and output_format == "txt":
             image_paths = [p for p in image_paths if not p.with_suffix(".txt").exists()]
 

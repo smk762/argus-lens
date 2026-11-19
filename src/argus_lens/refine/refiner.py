@@ -407,7 +407,8 @@ class Refiner:
         accepted, and the problems behind any rejection. A rewriter error
         (endpoint down, bad JSON) leaves the deterministic captions in place.
         """
-        names = [n for n in (self.variants or result.caption_variants) if n in result.caption_variants]
+        wanted = result.caption_variants if self.variants is None else self.variants  # () refines nothing
+        names = [n for n in wanted if n in result.caption_variants]
         if not names:
             return result
         if time.monotonic() < self._unavailable_until:

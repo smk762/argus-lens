@@ -99,10 +99,12 @@ class ReplayBackend(CaptionBackend):
     def load(self, device: str = "auto") -> None:
         """Open the Postgres connection eagerly so misconfiguration fails fast.
 
-        *device* is ignored — there is no model to place.
+        *device* is ignored — there is no model to place. Takes the query lock, so a
+        concurrent first lookup can't open (and leak) a second connection.
         """
-        if self._conn is None:
-            self._conn = self._connect()
+        with self._lock:
+            if self._conn is None:
+                self._conn = self._connect()
 
     def _connect(self) -> Any:
         """Open an autocommit psycopg connection to ``CORTEX_PG_URL``."""
@@ -119,7 +121,16 @@ class ReplayBackend(CaptionBackend):
         return psycopg.connect(self._dsn, autocommit=True)
 
     def unload(self) -> None:
-        """Close the connection if this backend owns it (injected ones are left alone)."""
+        """Close the connection if this backend owns it (injected ones are left alone).
+
+        Waits for an in-flight lookup (e.g. ``/admin/unload`` during a request) rather
+        than closing the connection under it.
+        """
+        with self._lock:
+            self._close_locked()
+
+    def _close_locked(self) -> None:
+        """Close and drop an owned connection; the caller holds ``self._lock``."""
         if self._conn is not None and self._owns_conn:
             with contextlib.suppress(Exception):  # closing a dead connection must not raise
                 self._conn.close()
@@ -173,7 +184,7 @@ class ReplayBackend(CaptionBackend):
                     # masks the original error — re-raise immediately instead.
                     if not self._owns_conn or attempt == 2:
                         raise
-                    self.unload()  # drop the stale connection; attempt 2 reconnects
+                    self._close_locked()  # drop the stale connection; attempt 2 reconnects
         return None
 
     @staticmethod

@@ -245,14 +245,25 @@ class WD14Backend(LocalBackend):
         return _DEFAULT_IMAGE_SIZE
 
     @staticmethod
-    def _preprocess(image: Image.Image, size: int) -> Any:
-        """Pad to square (white), resize, and convert to BGR float32 [0,255].
+    def _to_rgb(image: Image.Image) -> Image.Image:
+        """RGB copy of *image*, with any transparency composited onto white."""
+        if image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info):
+            rgba = image.convert("RGBA")
+            flat = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            flat.alpha_composite(rgba)
+            return flat.convert("RGB")
+        return image.convert("RGB")
 
-        Matches the SmilingWolf WD-v3 preprocessing.
+    @staticmethod
+    def _preprocess(image: Image.Image, size: int) -> Any:
+        """Flatten alpha onto white, pad to square (white), resize, and convert to BGR float32 [0,255].
+
+        Matches the SmilingWolf WD-v3 preprocessing: transparent regions become
+        white, not the (usually black) RGB stored under them.
         """
         import numpy as np
 
-        img = image.convert("RGB")
+        img = WD14Backend._to_rgb(image)
         w, h = img.size
         side = max(w, h)
         canvas = Image.new("RGB", (side, side), (255, 255, 255))

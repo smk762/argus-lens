@@ -79,9 +79,20 @@ def detect_text_claims(prose: str) -> list[str]:
             found.extend(
                 _clean(m.group(0)) for m in _TITLED_NAME_RE.finditer(sentence) if not re.search(r"['’]s?$", m.group(0))
             )
-    unique = list(dict.fromkeys(found))
-    # A name inside a longer claim ("Henrik Bohr" in "Professor Henrik Bohr") is the same claim.
-    return [c for c in unique if not any(c.lower() in o.lower() and c != o for o in unique)]
+    # Case-insensitive dedupe first, keeping the first spelling: "EXIT" and "Exit" are one claim,
+    # and left as two each would count as "inside" the other and both would go.
+    first: dict[str, str] = {}
+    for c in found:
+        first.setdefault(c.casefold(), c)
+    unique = list(first.values())
+    # A name inside a longer claim ("Henrik Bohr" in "Professor Henrik Bohr") is the same claim; whole
+    # words only, so "Ann" is not "inside" "Joanne".
+    return [c for c in unique if not any(c is not o and _contains_words(o, c) for o in unique)]
+
+
+def _contains_words(outer: str, inner: str) -> bool:
+    """True when *inner* occurs in *outer* on word boundaries, ignoring case."""
+    return re.search(rf"(?<!\w){re.escape(inner)}(?!\w)", outer, re.IGNORECASE) is not None
 
 
 def _tokens(text: str) -> list[str]:
@@ -111,20 +122,26 @@ def is_confirmed(claim: str, transcript: str) -> bool:
 
 
 def drop_text_claim(prose: str, claim: str) -> str:
-    """Return *prose* without the sentence that states *claim*.
+    """Return *prose* without the sentences that state *claim*.
 
     Rewriting a name in place ("for Professor Henrik Bohr" -> "for someone")
-    reads badly in most positions, so the whole sentence goes. Prose of a
-    single sentence is returned unchanged: dropping it would leave nothing.
+    reads badly in most positions, so the whole sentence goes; every sentence
+    stating the claim goes, not just the first. Prose in which no sentence
+    would remain (a single sentence, or every sentence states it) is returned
+    unchanged. Whitespace is only touched at each cut, so paragraph breaks
+    elsewhere survive.
     """
-    idx = prose.find(claim)
-    if idx < 0:
-        return prose
     spans = _sentences(prose)
-    if len(spans) < 2:
+    # By where each occurrence starts (a quote can span a split: "N.Y. PUBLIC LIBRARY"); any case,
+    # since detection folds "EXIT" and "Exit" into one claim; whole words only, like detection, so
+    # the claim "EXIT" never takes out a sentence about someone "exiting".
+    starts = [m.start() for m in re.finditer(rf"(?<!\w){re.escape(claim)}(?!\w)", prose, re.IGNORECASE)]
+    hits = [i for i, (start, end) in enumerate(spans) if any(start <= idx < end for idx in starts)]
+    if not hits or len(hits) == len(spans):
         return prose
-    for start, end in spans:
-        if start <= idx < end:
-            rest = (prose[:start] + prose[end:]).strip()
-            return re.sub(r"\s{2,}", " ", rest)
-    return prose
+    for i in reversed(hits):  # last first, so earlier spans' offsets stay valid
+        start, end = spans[i]
+        before, after = prose[:start].rstrip(), prose[end:].lstrip()
+        gap = prose[len(before) : start]  # the whitespace that separated the dropped sentence from the one before
+        prose = before + gap + after if before and after else before or after
+    return prose.strip()

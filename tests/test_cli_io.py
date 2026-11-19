@@ -59,3 +59,67 @@ def test_serve_binds_loopback_by_default(monkeypatch):
 def test_serve_host_override(monkeypatch):
     """--host 0.0.0.0 still exposes the server (as the Docker images do)."""
     assert _capture_serve(monkeypatch, ["--host", "0.0.0.0"])["host"] == "0.0.0.0"
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "not_utf8"])
+def test_eval_bad_baseline_fails_before_the_run(tmp_path, monkeypatch, kind):
+    """An unreadable --baseline is a clean exit 1 before any captioning happens."""
+    from PIL import Image
+
+    import argus_lens.eval as lens_eval
+
+    images = tmp_path / "images"
+    images.mkdir()
+    Image.new("RGB", (8, 8)).save(images / "a.png")
+    baseline = tmp_path / "baseline.json"
+    if kind == "directory":
+        baseline.mkdir()
+    elif kind == "not_utf8":
+        baseline.write_bytes(b"\xff\xfe\x00bad")
+    ran: list[bool] = []
+
+    def _fake_run_eval(*_args, **_kwargs):
+        """Record that the expensive eval run started."""
+        ran.append(True)
+        raise RuntimeError("eval ran")
+
+    monkeypatch.setattr(argus_lens, "ArgusLens", _FakeEngine)
+    monkeypatch.setattr(lens_eval, "run_eval", _fake_run_eval)
+    result = CliRunner().invoke(app, ["eval", str(images), "--baseline", str(baseline)])
+    assert result.exit_code == 1
+    assert not ran
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Could not read baseline" in result.output
+
+
+def test_ram_vocab_build_saves_partial_descriptions_on_ctrl_c(tmp_path, monkeypatch):
+    """Ctrl-C mid-way through description writing still saves the completed tags."""
+    import json
+
+    from argus_lens.backends._ram import describe
+
+    class _InterruptedWriter:
+        """Writes one tag's descriptions, then the user hits Ctrl-C."""
+
+        model_id = "fake"
+        base_url = "http://fake"
+
+        def __init__(self, **_kwargs) -> None:
+            """Accept and ignore the endpoint settings."""
+
+        def describe_all(self, tags, *, on_progress=None, into):
+            """Fill the first tag, then interrupt."""
+            into[tags[0]] = ["a description"]
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            """Nothing to close."""
+
+    monkeypatch.setattr(describe, "DescriptionWriter", _InterruptedWriter)
+    source = tmp_path / "tags.txt"
+    source.write_text("dress\nhat\n", "utf-8")
+    out = tmp_path / "pack"
+    result = CliRunner().invoke(app, ["ram-vocab", "build", str(source), "--out", str(out), "--name", "x"])
+    assert result.exit_code != 0
+    saved = json.loads((out / "descriptions.partial.json").read_text("utf-8"))
+    assert saved == {"dress": ["a description"], "hat": []}

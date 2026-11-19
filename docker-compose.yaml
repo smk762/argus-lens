@@ -53,6 +53,7 @@ services:
       - LENS_SOURCE_PATH=/data/images
       - LENS_CORS_ORIGINS=${LENS_CORS_ORIGINS:-}
       - LENS_TRUSTED_HOSTS=${LENS_TRUSTED_HOSTS:-}
+      - LENS_MAX_UPLOAD_MB=${LENS_MAX_UPLOAD_MB:-}
     volumes:
       # Image library for GET /folders and POST /caption/folder. Read-write:
       # .txt (and optional .xmp) sidecars are written next to the images.

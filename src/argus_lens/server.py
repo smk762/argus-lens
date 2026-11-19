@@ -5,15 +5,19 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import os
 import threading
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 try:
+    from argus_cortex.auth import bearer
+    from argus_cortex.limits import BadInput, TooLarge, read_upload
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
-    from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+    from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
     from fastapi.responses import StreamingResponse
     from pydantic import BaseModel
 except ImportError as exc:
@@ -21,6 +25,7 @@ except ImportError as exc:
 
 import httpx
 import structlog
+from argus_cortex.net import FetchFailed, UrlRefused
 from argus_cortex.xmp import XmpError
 from PIL import Image
 
@@ -41,7 +46,6 @@ from argus_lens.types import (
     CaptionResult,
     get_category_names,
 )
-from argus_lens.url_fetch import URLRefused
 
 logger = structlog.get_logger()
 
@@ -52,6 +56,10 @@ _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing sn
 _PULL_CONCURRENCY = 4  # parallel Immich downloads per /immich/pull request
 # The dev frontend (argus-studio) that bare --cors trusts, matching argus-curator.
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+# Per-file cap on uploaded images and manifests, in MB (LENS_MAX_UPLOAD_MB).
+DEFAULT_MAX_UPLOAD_MB = 50.0
+# /admin/unload: Authorization: Bearer $ARGUS_ADMIN_TOKEN, open when the variable is unset.
+_require_admin = bearer("ARGUS_ADMIN_TOKEN", open_when_unset=True)
 
 
 class CaptionURLRequest(BaseModel):
@@ -533,15 +541,26 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
     }
 
 
-def _require_admin_token(authorization: str | None) -> None:
-    """Enforce ``Authorization: Bearer <ARGUS_ADMIN_TOKEN>`` when the env var is set.
+def _max_upload_bytes() -> int:
+    """The per-file upload cap from ``LENS_MAX_UPLOAD_MB`` (default 50), in bytes.
 
-    When ``ARGUS_ADMIN_TOKEN`` is unset the admin endpoints stay open (dev
-    default); setting it locks them down for a networked deployment.
+    A value that isn't a positive, finite number fails loudly at startup.
     """
-    token = os.environ.get("ARGUS_ADMIN_TOKEN")
-    if token and authorization != f"Bearer {token}":
-        raise HTTPException(status_code=401, detail="admin token required")
+    raw = os.environ.get("LENS_MAX_UPLOAD_MB", "").strip()
+    mb = float(raw) if raw else DEFAULT_MAX_UPLOAD_MB
+    if not (mb > 0 and math.isfinite(mb)):
+        raise ValueError(f"LENS_MAX_UPLOAD_MB must be a positive number, got {raw!r}")
+    return int(mb * 1024 * 1024)
+
+
+async def _read_upload(upload: UploadFile, max_bytes: int, what: str = "upload") -> bytes:
+    """Read *upload* up to *max_bytes*: over the cap is a 413, a malformed upload a 400."""
+    try:
+        return await read_upload(upload, max_bytes, what=what)
+    except TooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except BadInput as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def create_app(
@@ -626,6 +645,7 @@ def create_app(
         from argus_lens.refine import refiner_from_env
 
         kwargs["refiner"] = refiner_from_env()  # on by default; ARGUS_REFINE=off disables
+    max_upload = _max_upload_bytes()
     idle = os.environ.get("ARGUS_IDLE_UNLOAD_S", "").strip()
     if idle and "idle_unload_s" not in kwargs:
         # Free VRAM after this many idle seconds (e.g. when sharing a GPU with ComfyUI).
@@ -743,8 +763,8 @@ def create_app(
             "gpu": gpu,
         }
 
-    @app.post("/admin/unload")
-    async def admin_unload(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    @app.post("/admin/unload", dependencies=[Depends(_require_admin)])
+    async def admin_unload() -> dict[str, Any]:
         """Unload the model to free VRAM for a co-resident GPU tenant (#37).
 
         The model reloads lazily on the next caption. Set ``ARGUS_ADMIN_TOKEN``
@@ -753,7 +773,6 @@ def create_app(
         Every engine is unloaded, including backends a request switched to;
         ``unloaded`` is true when any of them freed a model.
         """
-        _require_admin_token(authorization)
 
         def _unload_all() -> bool:
             """Unload each pooled engine; True if any was resident."""
@@ -829,7 +848,7 @@ def create_app(
         server's); an unknown/unavailable/disallowed one is a 400.
         """
         eng = await _engine_for(backend)
-        data = await file.read()
+        data = await _read_upload(file, max_upload, f"upload {file.filename or 'image'!r}")
         try:
             Image.open(io.BytesIO(data)).convert("RGB")
         except Exception as exc:
@@ -877,11 +896,11 @@ def create_app(
             )
         except ReplayMiss as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except URLRefused as exc:
-            # url_fetch's refusals are written to be returned as-is.
+        except UrlRefused as exc:
+            # argus_cortex.net's refusals name the host, never a resolved address: returned as-is.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except httpx.HTTPStatusError as exc:
-            raise HTTPException(status_code=400, detail=f"image_url returned HTTP {exc.response.status_code}") from exc
+        except FetchFailed as exc:
+            raise HTTPException(status_code=400, detail=f"image_url returned HTTP {exc.status}") from exc
         except (Image.UnidentifiedImageError, Image.DecompressionBombError) as exc:
             raise HTTPException(status_code=400, detail="image_url did not return a decodable image") from exc
         except (httpx.HTTPError, OSError) as exc:
@@ -915,7 +934,7 @@ def create_app(
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
-            data = await f.read()
+            data = await _read_upload(f, max_upload, f"upload {f.filename or 'image'!r}")
             try:
                 Image.open(io.BytesIO(data)).convert("RGB")
             except Exception:
@@ -967,7 +986,7 @@ def create_app(
         payloads: list[bytes] = []
         names: list[str] = []
         for f in files:
-            data = await f.read()
+            data = await _read_upload(f, max_upload, f"upload {f.filename or 'image'!r}")
             try:
                 Image.open(io.BytesIO(data)).convert("RGB")
             except Exception:
@@ -1046,7 +1065,7 @@ def create_app(
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
         eng = await _engine_for(backend)
         source = _confine_folder(default_source, ".")  # 400 when no source root is configured
-        rows = _parse_manifest(await manifest.read())
+        rows = _parse_manifest(await _read_upload(manifest, max_upload, "manifest"))
         root = _manifest_export_root(default_source, export_root)
 
         def _run() -> dict[str, Any]:
@@ -1107,7 +1126,7 @@ def create_app(
         _refuse_if_read_only(write_sidecar or write_xmp, "sidecar writes")
         eng = await _engine_for(backend)
         source = _confine_folder(default_source, ".")  # 400 when no source root is configured
-        rows = _parse_manifest(await manifest.read())
+        rows = _parse_manifest(await _read_upload(manifest, max_upload, "manifest"))
         root = _manifest_export_root(default_source, export_root)
         total = len(rows)
         written: set[Path] = set()
@@ -1192,7 +1211,10 @@ def create_app(
 
         def _run() -> dict[str, Any]:
             """Walk and caption off the event loop, collecting results and per-image errors."""
-            walker = root.rglob("*") if req.recursive else root.iterdir()
+            # Walking the folder *is* this route: it captions every image found, so the walk is
+            # dwarfed by one model call per image, and a cached index would miss images the user
+            # just dropped in. It runs in a worker thread (_run), never on the event loop.
+            walker = root.rglob("*") if req.recursive else root.iterdir()  # nosemgrep: handler-scans-all
             images = sorted(p for p in walker if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS)
             written: set[Path] = set()
             results: list[dict[str, Any]] = []
@@ -1285,12 +1307,17 @@ def create_app(
 
             A direct write would leave a truncated file on ENOSPC/kill, which
             the exists()-skip below would then treat as complete on every
-            later pull.
+            later pull. The temp name is unique per call, so concurrent pulls
+            into the same folder, or an asset that is itself named
+            ``<other>.part``, never share or clobber each other's temp file.
             """
             data = source.fetch_original(AssetRef(id=asset["id"]))
-            tmp = target.with_name(target.name + ".part")
+            # uuid rather than mkstemp: mkstemp's 0600 mode would survive the
+            # rename, while a plain create keeps the umask-derived permissions.
+            tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
             try:
-                tmp.write_bytes(data)
+                with tmp.open("xb") as fh:
+                    fh.write(data)
                 tmp.replace(target)
             finally:
                 tmp.unlink(missing_ok=True)

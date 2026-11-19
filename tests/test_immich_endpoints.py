@@ -273,6 +273,21 @@ def test_immich_pull_failed_download_leaves_no_file_behind(
     assert not list(dest.glob("*.part"))
 
 
+def test_immich_pull_temp_file_never_clobbers_a_part_named_file(
+    immich_env, album_assets, monkeypatch, tmp_path: Path
+) -> None:
+    """The download temp name is unique: an existing ``<name>.part`` file is neither overwritten nor deleted."""
+    dest = tmp_path / "trip"
+    dest.mkdir()
+    (dest / "01.jpg.part").write_bytes(b"someone else's file")
+    monkeypatch.setattr(ImmichSource, "fetch_original", lambda self, ref: _png_bytes())
+    resp = _client(tmp_path).post("/immich/pull", json={"album_id": "al1", "dest_folder": "trip"})
+    assert _events(resp)[-1]["downloaded"] == 2
+    assert (dest / "01.jpg").read_bytes() == _png_bytes()
+    assert (dest / "01.jpg.part").read_bytes() == b"someone else's file"
+    assert sorted(p.name for p in dest.iterdir()) == ["01.jpg", "01.jpg.part", "02.jpg"]
+
+
 def test_immich_pull_warns_on_uncaptionable_extension(immich_env, monkeypatch, tmp_path: Path) -> None:
     """Pulled originals /caption/folder cannot walk (e.g. HEIC) carry a warning on their progress line."""
     assets = [{"id": "a1", "name": "IMG_0001.HEIC"}, {"id": "a2", "name": "02.jpg"}]
@@ -408,6 +423,7 @@ def test_immich_caption_stream_write_back_failure_keeps_caption(immich_env, albu
     resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "write_back": True})
     events = _events(resp)
     progress = [e for e in events if e["type"] == "progress"]
+    assert len(progress) == 2  # all() over an empty list would pass vacuously
     assert all("write_back failed" in e["error"] for e in progress)
     assert all(e["final_caption"] for e in progress)
     assert events[-1] == {"type": "complete", "total": 2, "captioned": 0, "failed": 2}

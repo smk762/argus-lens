@@ -1,17 +1,14 @@
 # CLAUDE.md — argus-lens
 
-Guidance for AI agents working in this repo. Human-facing usage lives in [README.md](README.md) (it is unusually detailed and is the source of truth for behaviour); this file is the orientation an agent needs to change code safely.
+Guidance for AI agents changing this repo. [README.md](README.md) is the source of truth for behaviour; read its "assembly pipeline" section before touching `assembly/`.
 
 ## What this is
 
-The **captioning** stage in the Argus suite. It takes images and produces *intent-aware, structured* captions — not one flat string but category-bucketed variants (identity, wardrobe, pose, setting, lighting, action) plus specialised `training` and `zeroshot` variants — and writes a `.txt` caption sidecar next to each source image.
+The **captioning** stage of the Argus suite. Lens takes images and builds structured captions: category variants (identity, wardrobe, pose_composition, setting, lighting, action) plus `training`, `training_prose` and `zeroshot`. It writes the `final_caption` as a `<image_stem>.txt` sidecar next to the source image. The model is only an input. The value is the assembly pipeline that runs after it, `assembly/composer.compose_caption_result`, which every backend's output goes through.
 
 ```
 argus-quarry -> argus-curator -> argus-lens -> argus-forge -> your trainer -> argus-proof
-  acquire        curate/export    caption       configs        LoRA           validate
 ```
-
-The model is just an input source; the value is the **assembly pipeline** that runs after inference (classify → filter → specialise → token-budget → diversify → enrich). Read the README's "assembly pipeline" section for the *why* behind each step.
 
 ## Argus suite
 <!-- argus-suite: keep this block; argus-ci checks for it -->
@@ -23,45 +20,51 @@ argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
 
 Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 
-## Layout
+## Must never happen
 
-`src/argus_lens/`:
+Each row names the check that enforces it. A rule marked **UNENFORCED** or **Partial** needs a check, not more prose. Tests are `tests/<file>::<test>`. CI runs the suite twice: torch-free with `dev,server,cli,lineage`, and again with CPU torch added (the `torch` job), so torch-gated tests run too. Without the `server` extra the server tests skip, and so do most of the rows below.
 
-- `engine.py` — `ArgusLens`, the entry point. Owns the `_BACKEND_REGISTRY` (string → backend, lazily imported), backend resolution (incl. `hybrid` = wd14+florence2 and `hybrid:tag+prose`), lazy device-aware model load, the GPU capacity lease (`argus_cortex.gpu`), OOM-retry, and the idle-unload reaper. `caption` / `caption_batch` / `caption_stream` / `caption_directory`.
-- `types.py` — the data contract, **plain `@dataclass`es, not Pydantic**: `CaptionResult` (`final_caption`, `caption_variants`, `removed_phrases`, …), `CategoryConfig` + `DEFAULT_CATEGORY_CONFIGS`, `CaptionTargetProfile`, `BACKEND_TOKEN_BUDGETS` (SDXL 60, Flux/SD3 200), `HYBRID_PRESETS`. Category names/hint-words and token budgets live here.
-- `assembly/` — the pipeline: `classifier`, `filtering`, `noise`, `token_budget`, `training` (identity-suppressed variant), `zeroshot` (identity-first variant), `variants`, and `composer.compose_caption_result` (the orchestrator every backend output flows through). `profiles.py` is a pluggable `AssemblyProfile` registry (`lora_training` is the trunk).
-- `backends/` — one module per source: local (`wd14`, `ram` = RAM++ photo tagger, `florence2`, `blip2`) and cloud (`openai`, `openai_compat`, `hf_inference`, `nvidia_nim`, `replicate`) over `base.py` (`LocalBackend` / `CloudBackend`), `hybrid.py` (tag+prose fusion), `replay.py` (serves recorded captions from cortex — no model), `output.py`/provenance types. Register a new backend in `engine._register_backends`; a tagger sets `emits_tags = True` so its standalone output feeds the tag side. `backends/_ram/` is a vendored, inference-only RAM++ port (Apache-2.0 `LICENSE-RAM`; `swin.py` is Microsoft's MIT Swin): module/parameter names must keep matching the upstream checkpoint, and `vocab.py` stays torch-free so CI (no `[torch]`) can test it. Vocabulary packs (#62) live in `_ram/packs.py` (manifest + merge rules, torch-free), `build.py`, `embed.py` (CLIP ViT-B/16 text tower via transformers) and `describe.py` (upstream's description prompts over an OpenAI-compatible endpoint); the `ram-vocab` CLI wraps them. Pack embeddings must stay 51 × 512 per tag in CLIP ViT-B/16 space or RAM++'s tagging head won't understand them.
-- `server.py` — FastAPI micro-server (`create_app`). `/caption`, `/caption/{url,batch,stream,folder,manifest,manifest/stream}`, `/folders`, `/immich/*`, `/health`, `/admin/unload`, `/profiles`, `/backends`. Optional `[server]` extra.
-- `openai_compat.py` — `/v1/models` + `/v1/chat/completions` shim so the server is a drop-in Frigate GenAI provider; always mounted.
-- `cli.py` — Typer app: `caption`, `backends`, `eval`, `serve`.
-- `connectors/` — Source/Sink abstractions: `filesystem`, `immich` (pull/caption/write-back), `xmp` (`.xmp` sidecars for Lightroom/digiKam/Immich). `exporters/` — `.txt`/json/jsonl/csv. `eval/` — reference-free caption scoring. `reconcile/` — fix prose that contradicts tags via a pluggable verifier. `taxonomy.py`, `registry.py` (TTL model cache). `gpu/` re-exports `argus_cortex.gpu`'s coordinator (`none`/`lease`/`broker`, host-wide `ARGUS_GPU_*`) and owns lens's per-backend VRAM footprints in `capacity.py`; don't reintroduce a local coordinator. `gpu-tenant.yaml` (repo root, shipped in the image) is lens's argus-iris tenant manifest: every lease names a `kind` declared there (`engine.LEASE_KIND_CAPTION` / `LEASE_KIND_BATCH`), and `tests/test_gpu_tenant.py` keeps the two in step.
+| Must never happen | Enforced by |
+|---|---|
+| **Sidecars** | |
+| A basename collision in a batch overwrites a caption (it must be a per-image error) | `test_folder_endpoints::test_caption_folder_reports_sidecar_stem_collision`, `test_manifest_endpoint::test_manifest_reports_sidecar_stem_collision`, `test_export_txt::test_names_sharing_a_sidecar_raise_and_write_nothing` |
+| `caption_directory` re-captions an image that already has a `.txt` when `overwrite` is not set | `test_engine_core::test_directory_still_skips_existing_sidecars` |
+| An XMP write drops foreign properties or clobbers an unparseable sidecar | `test_connectors::test_xmp_sink_merges_into_existing_sidecar`, `::test_xmp_sink_leaves_unreadable_sidecar_untouched` |
+| Lens grows its own XMP writer or GPU coordinator (use `argus_cortex.xmp` / `argus_cortex.gpu`) | `test_shared_modules` (source scan) |
+| **Wire schema** | |
+| A `CaptionResult` field or `caption_variants` key is renamed or dropped (argus-studio and lightbox read them) | `test_wire_schema` |
+| A manifest major other than 1.x/2.x is accepted | `test_manifest_endpoint::test_manifest_rejects_unsupported_major_version` |
+| **Server safety** | |
+| A folder, manifest or immich path escapes the source root (absolute, `..` or symlink) | `test_folder_endpoints::test_caption_folder_rejects_path_outside_root`, `test_manifest_endpoint::test_manifest_symlink_out_of_the_root_is_refused` |
+| `/caption/url` connects to an internal address | `test_caption_url_endpoint::test_internal_url_is_400_without_connecting` |
+| `/v1` fetches an `http(s)` image URL | `test_openai_router::test_remote_image_url_is_refused_without_fetching` |
+| A cross-site write passes, or `*` grants credentials or writes | `test_write_guard::test_wildcard_reads_anywhere_but_never_writes_cross_site`, `::test_cross_site_write_refused_even_with_cors_off` |
+| `/admin/unload` runs without the token when `ARGUS_ADMIN_TOKEN` is set, or leaves a pooled engine loaded | `test_meta_endpoints::test_admin_unload_requires_token_when_configured`, `test_backend_selection::test_admin_unload_frees_switched_engines_too` |
+| The Immich API key is sent on a cross-origin redirect | `test_immich_connector::test_fetch_original_drops_api_key_on_cross_origin_redirect` |
+| A CSV export cell starts a formula | `test_export_file::test_csv_escapes_formula_triggers` |
+| Model-repo Python runs without `HF_TRUST_REMOTE_CODE` | `test_remote_code` (every loader, plus a source scan for a hardcoded `trust_remote_code=True`), `test_florence2_backend::test_remote_code_is_off_by_default` |
+| **Backends** | |
+| A bad per-request `backend` falls back to the default, or fails after streaming starts (it must be a 400 first) | `test_backend_selection::test_unknown_backend_is_a_400`, `::test_stream_refuses_a_bad_backend_before_streaming` |
+| Replay re-runs assembly, or falls back to a live model on a miss (`ReplayMiss`) | `test_replay_backend::test_lookup_by_sha256_returns_recorded_result_verbatim`, `::test_engine_raises_replay_miss_for_unknown_asset` |
+| Lineage records without `LENS_RECORD_LINEAGE=1`, records a replay, fails a caption on a store error, or records `/v1` captions | `test_lineage::test_recorder_from_env_is_opt_in`, `::test_replay_never_records`, `::test_a_failed_write_never_fails_the_caption`, `::test_server_records_captions_but_not_the_v1_router` |
+| A GPU lease names a `kind` that `gpu-tenant.yaml` doesn't declare | `test_gpu_tenant::test_manifest_validates_and_declares_every_lease_kind` |
+| **RAM++ port** (`backends/_ram/`, vendored from upstream) | |
+| A module or parameter name stops matching the upstream checkpoint | `test_ram_backend::test_ram_plus_matches_every_checkpoint_tensor` against `tests/fixtures/ram_plus_checkpoint_layout.json` (every tensor's name and shape, recorded from the real file; regenerate it only from the real checkpoint) |
+| `_ram/vocab.py` or `_ram/packs.py` imports torch | `test_ram_backend` and `test_ram_vocab_packs` import them at module level, so collection fails in torch-free CI |
+| A vocabulary pack's embeddings aren't 51 × 512 per tag (CLIP ViT-B/16) | `test_ram_vocab_packs` (manifest checks, and `::test_build_pack_and_apply_it_to_a_model` for the tensor), `test_ram_backend::test_bundled_vocabulary_matches_the_checkpoint_label_embed` |
 
-## Commands
+## Conventions the code doesn't show
 
-```bash
-make dev     # uv venv + editable install with [dev,cli]
-make test    # pytest --tb=short -q  (asyncio_mode = auto)
-make lint    # ruff check (pinned ruff 0.15.16)
-make fmt     # ruff format + --fix
-make check   # lint + test + build
-```
-
-Run a single test: `uv run --no-sync pytest tests/test_assembly.py::test_name -q`.
-
-## Conventions & gotchas
-
-- **The caption sidecar contract is load-bearing: lens writes `<image_stem>.txt` (the `final_caption`) next to the *source* image; forge relies on this pairing.** On a basename collision within a batch the server errors that image rather than overwriting a caption (`_caption_and_write` in `server.py`); `caption_directory` skips images that already have a `.txt` unless `overwrite=True`. Preserve both behaviours.
-- **Backend selection is local (GPU/CPU) vs cloud (API) — don't blur the two.** `LocalBackend` gets its device once via `load(device)` and stays device-free after; `CloudBackend` resolves its API key from constructor arg → env var (e.g. `OPENAI_API_KEY`). Heavy GPU work goes through the coordinator lease + OOM-retry; cloud backends bypass both.
-- **The `replay` backend reads the argus-cortex lineage store directly** (`CORTEX_PG_URL`, `[replay]` extra) and returns recorded `CaptionResult`s verbatim — it must **not** re-run the assembly pipeline or re-apply the profile. Replay does not use the `argus-cortex` package's store layer; it relies only on the documented lineage schema. A missing recording is a `ReplayMiss` (a real error), not a cue to fall back to a live model.
-- **Lens writes the tape** (`lineage.py`, `[lineage]` extra): with `LENS_RECORD_LINEAGE=1` + `CORTEX_PG_URL`, `ArgusLens._finish` records every live caption through `argus_cortex.store` (`source_asset` keyed on the original-bytes sha256, then `caption`, in one transaction; original bytes to the blob store when `CORTEX_S3_*` is set). Keep it opt-in via its own flag (replay hosts set `CORTEX_PG_URL` too), never record replayed captions, keep failures best-effort (log, still return the caption), and don't hand the recorder to the `/v1` router's engines.
-- **Per-request `backend` (#107)**: `create_app` keeps one `ArgusLens` per backend name (`engines`, the default first). `_engine_for` validates a requested name (allow-list, then `is_available()` on the resolved backend) and refuses with 400; it never falls back to the default. Resolve it before reading uploads or opening a stream, so a bad name is a 400 rather than per-line errors. New engines share the recorder/refiner kwargs, and `/admin/unload` must unload all of them.
-- **XMP sidecars go through `argus_cortex.xmp`** (shared with curator). `XmpSink` writes merge — only `dc:subject`/`dc:description` are replaced, foreign properties are preserved, and empty keywords/caption leave the existing value alone. `xmp_overwrite: true` discards the existing sidecar; an unparseable one is a per-image error, never clobbered. Don't reintroduce a local XMP writer.
-- **Server safety boundaries — don't loosen casually:**
-  - Every folder/manifest/immich path is confined under the configured source root (`--source-root` / `LENS_SOURCE_PATH`) via `_resolve_within` / `_confine_folder`; an absolute or `..`-laden path is a 400, not an escape. `manifest 2.0` rows resolve images as `export_root / exported_path` (confined the same way), falling back to `abs_path`.
-  - **The caption endpoints have no auth** — reaching the port means writing sidecars into the source root. `/admin/unload` is gated by `ARGUS_ADMIN_TOKEN` when set (open otherwise). CORS is **off by default**; `--cors` trusts only the localhost:3000 dev frontend, `--cors-origin` / `LENS_CORS_ORIGINS` name others, `--cors-any` is a credential-less wildcard (credentials are never allowed with a `*` origin — CORS-spec footgun; keep that). Independently of CORS, `argus_cortex.server.WriteGuard` + `cross_site_refuse` refuse unsafe methods from an Origin that is neither the request's host nor allow-listed — the wildcard grants reads, never cross-site writes. Don't drop the guard or let `*` into the trusted-writer list.
-- **`CaptionResult` is the wire schema.** Endpoints `asdict()` it to JSON; the `caption_variants` keys (the category names + `training`/`zeroshot`) and field names are the API contract for argus-studio and downstream tools — renaming a field or variant key is a breaking change. Only manifest majors **1.x/2.x** are accepted (`_SUPPORTED_MANIFEST_MAJORS`); a new major must fail loudly.
-- **Versioning is git-tag-derived** (`hatch-vcs`); `src/argus_lens/_version.py` is generated and gitignored. Never hand-edit a version — tag `vX.Y.Z` to release.
-- `structlog` for logging; Ruff line-length 120 (`E`/`F`/`W`/`I`/`UP`/`B`/`SIM`); `interrogate` gates docstring coverage at 80% in CI. Python ≥ 3.11.
+- Register a new backend in `engine._register_backends`. A tagger sets `emits_tags = True` so that its output feeds the tag side of a hybrid.
+- Local vs cloud backends: a `LocalBackend` gets its device once through `load(device)`. GPU work goes through the `argus_cortex.gpu` lease and the OOM retry. A `CloudBackend` takes its key from the constructor arg or an env var and skips the lease. Don't blur the two.
+- Replay depends only on cortex's documented lineage schema, not on the `argus-cortex` store layer. Lineage *writing* (`lineage.py`) does use `argus_cortex.store`.
+- Per-request backends (#107): `create_app` keeps one `ArgusLens` per name, the default first. A new engine shares the recorder and refiner kwargs.
+- `backends/_ram/` is a vendored, inference-only RAM++ port: Apache-2.0 (`LICENSE-RAM`), with Microsoft's MIT Swin in `swin.py`. Keep both licences with the code.
+- `types.py` uses plain `@dataclass`es, not Pydantic. Token budgets (SDXL 60, Flux/SD3 200) and the category hint words live there.
+- The caption endpoints have no auth. Anyone who reaches the port can write sidecars into the source root. CORS is off by default.
+- Versions come from git tags (`hatch-vcs`). Never hand-edit one; tag `vX.Y.Z` to release.
+- Use `structlog`. Ruff line length is 120. `interrogate` requires 80% docstring coverage in CI. Python ≥ 3.11.
+- `make dev` / `make check`. One test: `uv run --no-sync pytest tests/test_assembly.py::test_name -q`.
 
 ## Branches
 
@@ -69,4 +72,4 @@ Run a single test: `uv run --no-sync pytest tests/test_assembly.py::test_name -q
 
 ## CI / release
 
-CI runs via the shared [`argus-ci`](https://github.com/smk762/argus-ci) reusable workflow (`python-ci.yml@v1`, ruff 0.15.16, `dev` extras, `interrogate` post-test). Release (`release.yml`) publishes to PyPI + GHCR on `v*` tags.
+CI uses argus-ci's `python-ci.yml@v1` (ruff 0.15.16, test extras `dev,server,cli,lineage`, `interrogate` after the tests), plus a local `torch` job with CPU torch. `release.yml` publishes to PyPI and GHCR on `v*` tags.

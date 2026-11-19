@@ -80,7 +80,8 @@ class Reconciler:
                 errors += 1
                 continue
             if dispute.kind == "text":
-                current = self._drop_unread(current, dispute.prose_says, value, verdict.source, changes)
+                if verdict is not None:  # a None verdict abstains, like an empty transcript
+                    current = self._drop_unread(current, dispute.prose_says, value, verdict.source, changes)
                 continue
             if not value or value.lower() in {p.lower() for p in dispute.prose_says}:
                 continue  # abstained, or confirmed what the prose already said

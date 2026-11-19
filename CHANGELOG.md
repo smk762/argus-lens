@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-19
+
+### Upgrading
+- **argus-cortex 0.8.** Every cortex pin is now `>=0.8,<0.9`, and the base install takes
+  `argus-cortex[remote]` (for `argus_cortex.net`).
+
+### Changed
+- Uploads are capped (`LENS_MAX_UPLOAD_MB`, default 50, per file): images on `/caption`,
+  `/caption/batch` and `/caption/stream`, and the manifest on `/caption/manifest[/stream]`. A larger
+  file is a 413.
+- URL fetches and the admin token check now use argus-cortex 0.8's shared helpers (`argus_cortex.net`,
+  `argus_cortex.auth`), and uploads are read through `argus_cortex.limits`. `LENS_URL_ALLOWED_HOSTS`
+  keeps its meaning and also accepts `host:port` entries. `/admin/unload` is still open when
+  `ARGUS_ADMIN_TOKEN` is unset; a missing or wrong token is still a 401, now with
+  `WWW-Authenticate: Bearer` and the detail "bearer token required". A non-2xx answer from
+  `argus_lens.url_fetch.fetch_url` / `_load_image` now raises `argus_cortex.net.FetchFailed` instead of
+  `httpx.HTTPStatusError`, and refusals raise `argus_cortex.net.UrlRefused` (lens's `URLRefused` is gone).
+
+### Fixed
+- **Reconcile verifiers no longer run model-repo code without `HF_TRUST_REMOTE_CODE` (#131).** The
+  `florence` verifier passed `trust_remote_code=True` even for the native weights; it now loads them
+  natively, through the same loader as the Florence-2 caption backend. `molmo` needs remote code, so
+  without `HF_TRUST_REMOTE_CODE=true` it is refused when built (a CLI usage error), instead of loading
+  anyway. Set the flag to keep using it.
+- Dropping an unread text claim matches it as a whole word: the claim "EXIT" no longer also removes
+  a sentence about someone "exiting".
+- `LENS_MAX_UPLOAD_MB=inf` (or `nan`) is refused at startup like any other non-positive cap.
+- `curate_index.py assemble --refine-variants` reads `all` (or an empty list) as every variant, like the
+  CLI, instead of refining none.
+- Reconcile no longer crashes when a verifier returns `None` for a text claim (a name or quote the
+  prose says it read); the claim is left as written, as for an empty transcript.
+
 ## [0.13.0] - 2026-11-16
 
 ### Upgrading
@@ -753,7 +785,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/smk762/argus-lens/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-lens/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-lens/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/smk762/argus-lens/compare/v0.10.0...v0.11.0

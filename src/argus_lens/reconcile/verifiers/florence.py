@@ -14,8 +14,10 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from argus_lens.backends.florence2 import default_model_id, load_florence
 from argus_lens.reconcile.color_sample import Box, dominant_color_name
 from argus_lens.reconcile.types import Verdict
+from argus_lens.remote_code import ENV_VAR, RemoteCodeRefused, resolve_trust_remote_code
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -33,12 +35,25 @@ class FlorenceGroundingVerifier:
 
     def __init__(
         self,
-        model_id: str = "florence-community/Florence-2-base",
+        model_id: str | None = None,
         device: str = "cpu",
         ground_fn: Callable[[Image.Image, str], list[Box]] | None = None,
         ocr_fn: Callable[[Image.Image], str] | None = None,
+        trust_remote_code: bool | None = None,
     ) -> None:
-        self.model_id = model_id
+        """Pick the weights the same way the caption backend does: native unless remote code is allowed.
+
+        *trust_remote_code* defaults to ``HF_TRUST_REMOTE_CODE`` (off). Naming the legacy
+        ``microsoft/Florence-2-*`` weights without it is refused here, not at first use,
+        because the reconciler turns a load error into a silent abstain.
+        """
+        self.trust_remote_code = resolve_trust_remote_code(trust_remote_code)
+        self.model_id = model_id or default_model_id(self.trust_remote_code)
+        if not self.trust_remote_code and self.model_id.startswith("microsoft/Florence-2"):
+            raise RemoteCodeRefused(
+                f"{self.model_id} runs Python from its model repo; set {ENV_VAR}=true to allow it, "
+                "or use the native florence-community/Florence-2-* weights"
+            )
         self.device = device
         self._ground_fn = ground_fn
         self._ocr_fn = ocr_fn
@@ -93,10 +108,8 @@ class FlorenceGroundingVerifier:
         with self._load_lock:
             if self._model is not None:
                 return
-            from transformers import AutoModelForCausalLM, AutoProcessor  # noqa: PLC0415
-
-            processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-            model = AutoModelForCausalLM.from_pretrained(self.model_id, trust_remote_code=True).to(self.device)
+            processor, model = load_florence(self.model_id, trust_remote_code=self.trust_remote_code)
+            model = model.to(self.device)
             self._processor = processor
             self._model = model
 
