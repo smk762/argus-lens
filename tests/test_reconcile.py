@@ -619,6 +619,12 @@ def test_drop_text_claim_keeps_paragraph_breaks() -> None:
     )
 
 
+def test_drop_text_claim_matches_whole_words_only() -> None:
+    """The claim "EXIT" drops the sentence that reads it, not one about someone "exiting"."""
+    prose = 'A sign reads "EXIT" above the door. A man is exiting the room. The walls are white.'
+    assert drop_text_claim(prose, "EXIT") == "A man is exiting the room. The walls are white."
+
+
 def test_case_variant_text_claims_collapse_to_one() -> None:
     """Quoted "EXIT" and a read name "Exit" are one claim, not two that cancel out (pack 69a7f05a52)."""
     claims = detect_text_claims('A sign reads "EXIT ROUTE" above the door. The label reads Exit Route.')

@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   natively, through the same loader as the Florence-2 caption backend. `molmo` needs remote code, so
   without `HF_TRUST_REMOTE_CODE=true` it is refused when built (a CLI usage error), instead of loading
   anyway. Set the flag to keep using it.
+- Dropping an unread text claim matches it as a whole word: the claim "EXIT" no longer also removes
+  a sentence about someone "exiting".
+- `LENS_MAX_UPLOAD_MB=inf` (or `nan`) is refused at startup like any other non-positive cap.
+- `curate_index.py assemble --refine-variants` reads `all` (or an empty list) as every variant, like the
+  CLI, instead of refining none.
 - Reconcile no longer crashes when a verifier returns `None` for a text claim (a name or quote the
   prose says it read); the claim is left as written, as for an empty transcript.
 

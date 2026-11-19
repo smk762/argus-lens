@@ -62,7 +62,7 @@ def test_cap_defaults_to_50_mb(monkeypatch) -> None:
     assert _max_upload_bytes() == _CAP_BYTES
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "lots"])
+@pytest.mark.parametrize("value", ["0", "-1", "lots", "nan", "inf"])
 def test_bad_cap_fails_at_startup(monkeypatch, value) -> None:
     """A cap that isn't a positive number refuses to start rather than running uncapped."""
     monkeypatch.setenv("LENS_MAX_UPLOAD_MB", value)

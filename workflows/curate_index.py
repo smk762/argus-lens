@@ -326,11 +326,12 @@ def _build_refiner(args: argparse.Namespace):
     """Return a Refiner when --refine-model is set, else None."""
     if not args.refine_model:
         return None
-    from argus_lens.refine import OpenAICompatRewriter, Refiner
+    from argus_lens.refine import OpenAICompatRewriter, Refiner, parse_variants
 
     return Refiner(
         OpenAICompatRewriter(base_url=args.refine_url, model_id=args.refine_model, api_key=args.refine_key),
-        variants=tuple(v.strip() for v in args.refine_variants.split(",") if v.strip()),
+        # Same parsing as the CLI: "all" (or an empty list) rewrites every variant, never none.
+        variants=parse_variants(args.refine_variants),
     )
 
 

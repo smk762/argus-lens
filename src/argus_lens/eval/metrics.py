@@ -164,6 +164,8 @@ def _noun_variants(noun: str) -> set[str]:
     variants = {noun}
     if noun.endswith(_SIBILANT_ENDINGS):
         variants.add(noun + "es")  # dress → dresses
+        if noun.endswith("ch"):
+            variants.add(noun + "s")  # a hard "ch" takes -s: stomach → stomachs
     elif len(noun) > 1 and noun.endswith("y") and noun[-2] not in _VOWELS:
         variants.add(noun[:-1] + "ies")  # sky → skies
     else:

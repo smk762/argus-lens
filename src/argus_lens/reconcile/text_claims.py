@@ -133,8 +133,9 @@ def drop_text_claim(prose: str, claim: str) -> str:
     """
     spans = _sentences(prose)
     # By where each occurrence starts (a quote can span a split: "N.Y. PUBLIC LIBRARY"); any case,
-    # since detection folds "EXIT" and "Exit" into one claim.
-    starts = [m.start() for m in re.finditer(re.escape(claim), prose, re.IGNORECASE)]
+    # since detection folds "EXIT" and "Exit" into one claim; whole words only, like detection, so
+    # the claim "EXIT" never takes out a sentence about someone "exiting".
+    starts = [m.start() for m in re.finditer(rf"(?<!\w){re.escape(claim)}(?!\w)", prose, re.IGNORECASE)]
     hits = [i for i, (start, end) in enumerate(spans) if any(start <= idx < end for idx in starts)]
     if not hits or len(hits) == len(spans):
         return prose

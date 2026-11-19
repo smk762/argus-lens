@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import os
 import threading
 import uuid
@@ -543,11 +544,11 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
 def _max_upload_bytes() -> int:
     """The per-file upload cap from ``LENS_MAX_UPLOAD_MB`` (default 50), in bytes.
 
-    A value that isn't a positive number fails loudly at startup.
+    A value that isn't a positive, finite number fails loudly at startup.
     """
     raw = os.environ.get("LENS_MAX_UPLOAD_MB", "").strip()
     mb = float(raw) if raw else DEFAULT_MAX_UPLOAD_MB
-    if not mb > 0:
+    if not (mb > 0 and math.isfinite(mb)):
         raise ValueError(f"LENS_MAX_UPLOAD_MB must be a positive number, got {raw!r}")
     return int(mb * 1024 * 1024)
 
