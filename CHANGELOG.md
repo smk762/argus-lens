@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which shows whether assembly removes hallucinations or adds them. New flags: `--judge-url`,
   `--judge-key` (or `ARGUS_JUDGE_API_KEY`), `--judge-threshold`. See `eval/README.md`.
 
+### Fixed
+- **`target_category` can select `training`, `training_prose` or `zeroshot`** (#136). Those names
+  used to fall back to `identity`, so `/caption/folder` and `/caption/manifest` sidecars always held
+  the identity caption. Every endpoint and `argus-lens caption --category` now accept them, and
+  `final_caption`/`selected_category` report the chosen variant.
+
 ## [0.14.0] - 2026-11-19
 
 ### Upgrading

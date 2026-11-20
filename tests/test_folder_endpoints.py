@@ -64,6 +64,34 @@ def test_caption_folder_non_recursive_writes_sidecars(tmp_path: Path) -> None:
     assert not (tmp_path / "sub" / "03.txt").exists()
 
 
+@pytest.mark.parametrize("variant", ["training", "training_prose", "zeroshot"])
+def test_caption_folder_sidecar_holds_the_requested_composite_variant(tmp_path: Path, variant: str) -> None:
+    """``target_category`` selects a composite variant for the ``.txt`` sidecar, not always identity (#136)."""
+    _png(tmp_path / "01.jpg")
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path)))
+    resp = client.post(
+        "/caption/folder", json={"folder": str(tmp_path), "trigger_word": "sks", "target_category": variant}
+    )
+    assert resp.status_code == 200, resp.text
+    sidecar = (tmp_path / "01.txt").read_text(encoding="utf-8")
+    assert resp.json()["results"][0]["final_caption"] == sidecar
+
+    with (tmp_path / "01.jpg").open("rb") as fh:
+        single = client.post(
+            "/caption",
+            files={"file": ("01.jpg", fh, "image/jpeg")},
+            data={"trigger_word": "sks", "target_category": variant},
+        ).json()
+    assert single["selected_category"] == variant
+    if variant == "training":
+        # The training variant randomly drops/shuffles fragments (augmentation), so two calls differ;
+        # it does strip identity traits, which the old identity-only sidecar kept.
+        assert "a person" in single["caption_variants"]["identity"]
+        assert "a person" not in sidecar
+    else:
+        assert sidecar == single["caption_variants"][variant]
+
+
 def test_caption_folder_recursive(tmp_path: Path) -> None:
     """Recursive captioning includes subfolder images; write_sidecar=False skips sidecar files."""
     _png(tmp_path / "01.jpg")
