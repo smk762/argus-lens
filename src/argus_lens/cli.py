@@ -334,6 +334,18 @@ def eval_command(
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
     verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
+    judge_model: str | None = Option(
+        None, "--judge-model", help="Score each caption claim against the image with this vision model"
+    ),
+    judge_url: str = Option(
+        "http://localhost:11434/v1", "--judge-url", help="OpenAI-compatible endpoint serving --judge-model"
+    ),
+    judge_key: str | None = Option(
+        None, "--judge-key", envvar="ARGUS_JUDGE_API_KEY", help="API key for the judge endpoint"
+    ),
+    judge_threshold: float = Option(
+        50.0, "--judge-threshold", min=0, max=100, help="Judge scores (0-100) below this mark a claim unsupported"
+    ),
     verbose: bool = Option(False, "--verbose", "-v", help="Per-image progress"),
 ) -> None:
     """Score caption quality over a dataset and print a scorecard.
@@ -341,7 +353,9 @@ def eval_command(
     Works reference-free on any image directory (tag/prose contradiction,
     token-budget adherence, redundancy). A ``.jsonl`` manifest with
     ``expected_tags`` / ``target_caption`` additionally unlocks tag-coverage
-    recall and reference CLIPScore.
+    recall and reference CLIPScore. ``--judge-model`` adds faithfulness: the
+    share of claims, before and after assembly, that a vision judge says the
+    image doesn't support.
     """
     from dataclasses import replace
 
@@ -399,6 +413,12 @@ def eval_command(
         """Echo per-image progress when verbose."""
         typer.echo(f"  [{current}/{total}] {getattr(item, 'image', '')}")
 
+    judge = None
+    if judge_model:
+        from argus_lens.eval.faithfulness import OpenAICompatJudge
+
+        judge = OpenAICompatJudge(model_id=judge_model, base_url=judge_url, api_key=judge_key)
+
     scorecard = run_eval(
         engine,
         dataset,
@@ -406,6 +426,8 @@ def eval_command(
         trigger_word=trigger,
         hybrid_preset=hybrid_preset,
         prose_bias=prose_bias,
+        judge=judge,
+        judge_threshold=judge_threshold,
         progress=_progress if verbose else None,
     )
 
@@ -422,6 +444,14 @@ def eval_command(
         typer.echo(f"\nAll {scorecard.n} images errored — no metrics computed.", err=True)
 
     if base is not None:
+        base_config = base.get("config") or {}
+        for key in ("judge_model", "judge_threshold"):
+            if base_config.get(key) and scorecard.config.get(key) and base_config[key] != scorecard.config[key]:
+                typer.echo(
+                    f"Warning: baseline {key} is {base_config[key]!r}, this run used {scorecard.config[key]!r}; "
+                    "unsupported-claim rates are not comparable across judges.",
+                    err=True,
+                )
         comparison = compare_to_baseline(scorecard.aggregates, base.get("aggregates", base))
         typer.echo("\n" + format_comparison(comparison))
         if fail_on_regression and comparison["regressed"]:

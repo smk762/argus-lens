@@ -31,6 +31,43 @@ def encode_data_url(image: Image.Image) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def chat_completion(
+    base_url: str,
+    model_id: str,
+    image_url: str,
+    prompt: str,
+    *,
+    api_key: str | None = None,
+    max_tokens: int = 10,
+    timeout: float = 30.0,
+) -> str:
+    """POST one image + prompt to ``{base_url}/chat/completions``; return the answer text.
+
+    *image_url* is a ``data:`` URL from :func:`encode_data_url`, so a caller asking
+    several questions about one image encodes it once. Greedy (``temperature=0``).
+    A server that returns no, empty or null content yields ``""``.
+    """
+    payload = {
+        "model": model_id,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            }
+        ],
+    }
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    resp = httpx.post(f"{base_url.rstrip('/')}/chat/completions", json=payload, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    choices = resp.json().get("choices") or [{}]
+    return (choices[0].get("message") or {}).get("content") or ""
+
+
 class OpenAICompatVQAVerifier:
     """Adjudicate disputes by asking a served OpenAI-compatible vision model."""
 
@@ -50,27 +87,15 @@ class OpenAICompatVQAVerifier:
 
     def _ask(self, image: Image.Image, question: str, max_tokens: int = 10) -> str:
         """POST a single-image chat completion and return the raw answer text."""
-        payload = {
-            "model": self.model_id,
-            "temperature": 0,
-            "max_tokens": max_tokens,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": question},
-                        {"type": "image_url", "image_url": {"url": encode_data_url(image)}},
-                    ],
-                }
-            ],
-        }
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        resp = httpx.post(f"{self.base_url}/chat/completions", json=payload, headers=headers, timeout=self.timeout)
-        resp.raise_for_status()
-        # Tolerate servers that return no/empty/null content or an empty choices
-        # list — parse_answer("") abstains rather than the verifier crashing.
-        choices = resp.json().get("choices") or [{}]
-        return (choices[0].get("message") or {}).get("content") or ""
+        return chat_completion(
+            self.base_url,
+            self.model_id,
+            encode_data_url(image),
+            question,
+            api_key=self.api_key,
+            max_tokens=max_tokens,
+            timeout=self.timeout,
+        )
 
     def verify(self, image: Image.Image, dispute: AttributeDispute) -> Verdict:
         """Ask the model and map its answer onto the palette/pose vocabulary."""

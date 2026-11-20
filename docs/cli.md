@@ -89,7 +89,9 @@ Score caption quality over a dataset and print a scorecard.
 Works reference-free on any image directory (tag/prose contradiction,
 token-budget adherence, redundancy). A ``.jsonl`` manifest with
 ``expected_tags`` / ``target_caption`` additionally unlocks tag-coverage
-recall and reference CLIPScore.
+recall and reference CLIPScore. ``--judge-model`` adds faithfulness: the
+share of claims, before and after assembly, that a vision judge says the
+image doesn&#x27;t support.
 
 **Usage**:
 
@@ -123,6 +125,10 @@ $ argus-lens eval [OPTIONS] PATH
 * `--verifier-model TEXT`: Model id for the verifier
 * `--verifier-key TEXT`: API key for the verifier
 * `--verifier-device TEXT`: Device for florence/molmo verifiers (cpu|cuda)  [default: cpu]
+* `--judge-model TEXT`: Score each caption claim against the image with this vision model
+* `--judge-url TEXT`: OpenAI-compatible endpoint serving --judge-model  [default: http://localhost:11434/v1]
+* `--judge-key TEXT`: API key for the judge endpoint  [env var: ARGUS_JUDGE_API_KEY]
+* `--judge-threshold FLOAT RANGE`: Judge scores (0-100) below this mark a claim unsupported  [default: 50.0; 0&lt;=x&lt;=100]
 * `-v, --verbose`: Per-image progress
 * `--help`: Show this message and exit.
 
