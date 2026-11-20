@@ -51,7 +51,12 @@ def caption(
     backend: str = Option("hybrid", "--backend", "-b", help="Captioning backend"),
     trigger: str = Option("", "--trigger", "-t", help="Trigger word to prepend"),
     style: str = Option("photo", "--style", "-s", help="Target style: photo or anime"),
-    category: str = Option("identity", "--category", "-c", help="Target category for final_caption"),
+    category: str = Option(
+        "identity",
+        "--category",
+        "-c",
+        help="Variant for final_caption: a category, or training / training_prose / zeroshot",
+    ),
     target_backend: str = Option("sdxl", "--target-backend", help="Diffusion backend (sdxl, flux, sd3)"),
     hybrid_preset: str | None = Option(
         None, "--hybrid-preset", help="Tag/prose balance: tags, keywords, balanced, descriptive, prose"
