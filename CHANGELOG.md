@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ocr` text reader for reconcile (#141).** `text` claims (names and quotes the prose says it read) can be
+  checked by argus-retina's OCR server (`ghcr.io/smk762/argus-retina-ocr`, PP-OCRv6 small, CPU) through
+  cortex's `OcrClient`. With `--ocr-url` / `LENS_OCR_URL` set, text claims go to OCR and everything else to
+  the `--reconcile` verifier; `--text-verifier` / `LENS_TEXT_VERIFIER` picks another reader (`ocr`,
+  `florence`, `openai-compat`, `molmo`). A failed reader falls back to the `--reconcile` verifier when it
+  can read, `ReconcileChange.source` names the reader that decided, and with no reader left the failure is
+  counted, never skipped. `--reconcile ocr` checks text claims alone.
 - **`argus-lens eval --judge-model`: claim-level faithfulness.** A vision model behind any
   OpenAI-compatible endpoint rates each caption claim 0–100 against the image, following the
   HalDec-Bench protocol. The scorecard reports the unsupported-claim rate of the final caption
@@ -15,7 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which shows whether assembly removes hallucinations or adds them. New flags: `--judge-url`,
   `--judge-key` (or `ARGUS_JUDGE_API_KEY`), `--judge-threshold`. See `eval/README.md`.
 
+### Changed
+- **A text claim is dropped only when the transcription contradicts it (#141).** Before, any claim the
+  transcription didn't contain lost its sentence. Transcriptions are rarely complete: on the lightbox tape
+  images, retina OCR missed curved, vertical and small scene text, and that rule dropped 14 of 25 true claims
+  (CINE RADIO, THE WINDMILL, Coca-Cola, ...). Now a claim goes when part of it was read and part not, or a
+  long word is a near miss ("72801-H" for "72804 H"); a claim nothing of which was read is kept. On the tape
+  that drops 0 true claims and 3 of 6 false ones, and the #87 Nobel diploma case is still dropped. Matching
+  also tolerates words run together ("N.Y.PUBLIC") and dropped accents ("Cafe" for "Café").
+- Requires argus-cortex 0.11 (for `OcrClient`).
+
 ### Fixed
+- A name after a reading verb no longer runs into the next sentence ("addressed to Henri Becquerel. Gold
+  borders..." claimed "Henri Becquerel. Gold"), which no transcription would confirm.
 - **`target_category` can select `training`, `training_prose` or `zeroshot`** (#136). Those names
   used to fall back to `identity`, so `/caption/folder` and `/caption/manifest` sidecars always held
   the identity caption. Every endpoint and `argus-lens caption --category` now accept them, and

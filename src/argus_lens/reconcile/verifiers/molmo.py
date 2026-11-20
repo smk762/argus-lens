@@ -26,6 +26,7 @@ class MolmoVerifier:
     """Resolve colour/pose disputes by asking Molmo a single question each."""
 
     name = "molmo"
+    reads_text = True  # a "transcribe the text" question answers text claims
 
     def __init__(
         self,

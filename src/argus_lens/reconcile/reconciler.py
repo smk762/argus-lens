@@ -10,7 +10,7 @@ import structlog
 from argus_lens.reconcile.affiliation import contradicted_side, drop_side
 from argus_lens.reconcile.detect import detect_claims, detect_disputes
 from argus_lens.reconcile.rewrite import apply_fix, hedge_claim
-from argus_lens.reconcile.text_claims import drop_text_claim, is_confirmed
+from argus_lens.reconcile.text_claims import drop_text_claim, is_contradicted
 from argus_lens.reconcile.types import ReconcileChange
 
 if TYPE_CHECKING:
@@ -49,7 +49,9 @@ class Reconciler:
     model readings and no tag to break the tie, the exact figure is dropped
     instead ("six soldiers" -> "several soldiers"). A ``text`` claim's verdict
     is a transcription of the image's text: each claimed name or quote it
-    doesn't contain is dropped with its sentence. ``tag-prior`` has no tag to
+    contradicts (part read, part not, or a near miss) is dropped with its
+    sentence. A claim the transcription says nothing about is kept, since
+    readers miss text (#141). ``tag-prior`` has no tag to
     offer, so it abstains on every claim.
     """
 
@@ -108,11 +110,11 @@ class Reconciler:
     def _drop_unread(
         prose: str, claimed: tuple[str, ...], transcript: str | None, source: str, changes: list[ReconcileChange]
     ) -> str:
-        """Drop each claimed name/quote *transcript* doesn't contain; abstain on no transcript."""
+        """Drop each claimed name/quote *transcript* contradicts; abstain on no transcript."""
         if not transcript:
             return prose
         for claim in claimed:
-            if is_confirmed(claim, transcript):
+            if not is_contradicted(claim, transcript):
                 continue
             rewritten = drop_text_claim(prose, claim)
             if rewritten == prose:
