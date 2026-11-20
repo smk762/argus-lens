@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - A name after a reading verb no longer runs into the next sentence ("addressed to Henri Becquerel. Gold
   borders..." claimed "Henri Becquerel. Gold"), which no transcription would confirm.
+- The `training` variant's random drops (augmentation) could take every fragment and leave only the
+  trigger word, about once in 200 compositions for a short setting-only image. The first dropped fragment
+  that fits now comes back. This also made `test_coherence::test_corpus_variants_pass_post_check` flaky.
 - **`target_category` can select `training`, `training_prose` or `zeroshot`** (#136). Those names
   used to fall back to `identity`, so `/caption/folder` and `/caption/manifest` sidecars always held
   the identity caption. Every endpoint and `argus-lens caption --category` now accept them, and

@@ -258,7 +258,8 @@ def assemble_training_variant(
     wardrobe_all, ward_dropped = _diversity_pass(wardrobe_all)
     lighting_all, light_dropped = _diversity_pass(lighting_all)
     setting_all, set_dropped = _diversity_pass(setting_all)
-    removed.extend(pose_dropped + action_dropped + ward_dropped + light_dropped + set_dropped)
+    diversity_dropped = pose_dropped + action_dropped + ward_dropped + light_dropped + set_dropped
+    removed.extend(diversity_dropped)
 
     # Phase 4: assemble under token budget
     # Each fragment is checked against the whole caption so far (trigger included).
@@ -279,6 +280,17 @@ def assemble_training_variant(
             fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
         ):
             removed.append(fragment)
+
+    # The random drops are augmentation, not a verdict: they must never leave the trigger alone. When
+    # everything that survived was dropped (about 1 in 200 for a short setting-only image), restore the
+    # first dropped fragment that fits.
+    if not kept:
+        for fragment in diversity_dropped:
+            if try_add_fragment(
+                fragment, kept, max_segments, clip_token_budget, target_backend, trigger_word=trigger_word
+            ):
+                removed.remove(fragment)
+                break
 
     removed.extend(identity_discarded)
 
