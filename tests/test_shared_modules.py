@@ -50,3 +50,16 @@ def test_no_local_xmp_writer_or_gpu_coordinator(path: Path) -> None:
     assert not [c for c in classes if c.endswith(BANNED_CLASS_SUFFIXES)], (
         "the GPU coordinator lives in argus_cortex.gpu"
     )
+
+
+# Lens stays MIT by talking to argus-retina over HTTP (cortex's OcrClient), never importing it or an OCR engine.
+OCR_ENGINE_IMPORTS = ("argus_retina", "rapidocr", "rapidocr_onnxruntime", "paddleocr", "easyocr", "pytesseract")
+
+
+@pytest.mark.parametrize("path", SOURCES, ids=lambda p: str(p.relative_to(SRC)))
+def test_no_in_process_ocr_engine_or_retina_import(path: Path) -> None:
+    """Lens never imports argus-retina or an OCR engine: text is read over HTTP (#141)."""
+    imported = _imports(ast.parse(path.read_text(encoding="utf-8")))
+    assert not [m for m in imported if m.split(".")[0] in OCR_ENGINE_IMPORTS], (
+        "read text through argus_cortex.moderation.OcrClient"
+    )

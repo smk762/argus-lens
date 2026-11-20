@@ -72,6 +72,7 @@ class OpenAICompatVQAVerifier:
     """Adjudicate disputes by asking a served OpenAI-compatible vision model."""
 
     name = "openai-compat"
+    reads_text = True  # a "transcribe the text" question answers text claims
 
     def __init__(
         self,

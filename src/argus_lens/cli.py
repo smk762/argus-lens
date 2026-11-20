@@ -27,6 +27,8 @@ def _make_verifier(
     verifier_model: str | None,
     verifier_key: str | None,
     verifier_device: str,
+    text_verifier: str | None = None,
+    ocr_url: str | None = None,
 ) -> object | None:
     """Build an attribute verifier from CLI flags, or ``None`` when disabled."""
     if not reconcile:
@@ -40,9 +42,12 @@ def _make_verifier(
             model_id=verifier_model,
             api_key=verifier_key,
             device=verifier_device,
+            text_verifier=text_verifier,
+            ocr_url=ocr_url,
         )
     except ValueError as exc:  # an unknown name, or a model that needs HF_TRUST_REMOTE_CODE
-        raise typer.BadParameter(str(exc), param_hint="--reconcile") from exc
+        hint = "--reconcile" if not (text_verifier or ocr_url) else "--reconcile / --text-verifier / --ocr-url"
+        raise typer.BadParameter(str(exc), param_hint=hint) from exc
 
 
 @app.command()
@@ -84,12 +89,21 @@ def caption(
     reconcile: str | None = Option(
         None,
         "--reconcile",
-        help="Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo",
+        help="Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo, ocr",
     ),
     verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
     verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
+    text_verifier: str | None = Option(
+        None,
+        "--text-verifier",
+        help="Reader for names/quotes the prose claims to read: ocr, florence, openai-compat, molmo "
+        "[LENS_TEXT_VERIFIER; ocr when an OCR URL is set, else the --reconcile verifier]",
+    ),
+    ocr_url: str | None = Option(
+        None, "--ocr-url", help="argus-retina OCR server, e.g. http://ocr:8133 [LENS_OCR_URL]"
+    ),
     refine: bool = Option(
         True, "--refine/--no-refine", help="Rewrite captions with an LLM, validated (on unless ARGUS_REFINE=off)"
     ),
@@ -125,7 +139,9 @@ def caption(
         else:
             kwargs["model_id"] = model_id
 
-    verifier = _make_verifier(reconcile, verifier_url, verifier_model, verifier_key, verifier_device)
+    verifier = _make_verifier(
+        reconcile, verifier_url, verifier_model, verifier_key, verifier_device, text_verifier, ocr_url
+    )
     refiner = None
     from argus_lens.refine import refine_opted_out
 
@@ -333,12 +349,21 @@ def eval_command(
     reconcile: str | None = Option(
         None,
         "--reconcile",
-        help="Apply an attribute verifier before scoring: tag-prior, openai-compat, florence, molmo",
+        help="Apply an attribute verifier before scoring: tag-prior, openai-compat, florence, molmo, ocr",
     ),
     verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
     verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
+    text_verifier: str | None = Option(
+        None,
+        "--text-verifier",
+        help="Reader for names/quotes the prose claims to read: ocr, florence, openai-compat, molmo "
+        "[LENS_TEXT_VERIFIER; ocr when an OCR URL is set, else the --reconcile verifier]",
+    ),
+    ocr_url: str | None = Option(
+        None, "--ocr-url", help="argus-retina OCR server, e.g. http://ocr:8133 [LENS_OCR_URL]"
+    ),
     judge_model: str | None = Option(
         None, "--judge-model", help="Score each caption claim against the image with this vision model"
     ),
@@ -405,7 +430,9 @@ def eval_command(
             kwargs["florence_model_id" if backend == "florence2" else "model_id"] = model_id
         else:
             kwargs["model_id"] = model_id
-    verifier = _make_verifier(reconcile, verifier_url, verifier_model, verifier_key, verifier_device)
+    verifier = _make_verifier(
+        reconcile, verifier_url, verifier_model, verifier_key, verifier_device, text_verifier, ocr_url
+    )
     engine = ArgusLens(backend=backend, verifier=verifier, **kwargs)
 
     clip_scorer = None

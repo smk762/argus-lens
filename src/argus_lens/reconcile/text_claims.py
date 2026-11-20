@@ -3,8 +3,11 @@
 A small VLM reads text badly and fills the gap with a plausible name: a Nobel
 diploma naming Henri Becquerel came out as "Professor Henrik Bohr". No tagger
 speaks to text, so these are *claims*: the verifier transcribes the image's
-text (Florence ``<OCR>``, or a VQA "transcribe the text" question) and a
-claimed name the transcription doesn't contain is left out of the prose.
+text (retina OCR, Florence ``<OCR>``, or a VQA "transcribe the text"
+question) and a claimed name the transcription *contradicts* is left out of
+the prose. A transcription is rarely complete (OCR misses curved, vertical and
+small scene text), so a claim nothing of which was read is kept: dropping it
+removed 14 of 25 true claims on the lightbox tape images (#141).
 
 Detection is deliberately narrow, so a famous face named from memory is not
 treated as text:
@@ -19,7 +22,10 @@ treated as text:
 from __future__ import annotations
 
 import re
+import unicodedata
 from difflib import SequenceMatcher
+
+from argus_cortex.moderation import normalize_text
 
 _NAME_WORD = r"[A-ZÀ-Þ][\w'’.-]*"
 _TITLES = (
@@ -43,6 +49,9 @@ _WRITTEN_MATERIAL_RE = re.compile(
 _SENTENCE_END_RE = re.compile(r"(?<!\bDr)(?<!\bMr)(?<!\bMrs)(?<!\bMs)(?<!\bProf)(?<!\bMme)(?<!\bRev)[.!?](?=\s|$)")
 _TITLE_WORDS = {re.sub(r"\W", "", t).lower() for t in _TITLES.strip("(?:)").split("|")}
 _MATCH_RATIO = 0.8  # fuzzy token match: tolerates OCR noise ("Becquere1"), not a different name ("Bohr")
+# A long claimed word read at least this close (but under _MATCH_RATIO) was misread: "72804" vs "72801-H".
+_NEAR_MISS_RATIO = 0.6
+_NEAR_MISS_MIN_LEN = 5  # shorter words near-miss by chance ("MOES" vs "House")
 
 
 def _sentences(prose: str) -> list[tuple[int, int]]:
@@ -63,6 +72,20 @@ def _clean(claim: str) -> str:
     return claim.strip().rstrip(".,;:'’")
 
 
+def _to_sentence_end(name: str) -> str:
+    """Cut *name* after a word that ends its sentence ("Bohr. Gold" -> "Bohr."), keeping abbreviations.
+
+    A name word may carry dots ("N.Y.", "Jr."), so the read-name regex can run on into the next sentence's
+    first word. A word ending in "." with three or more letters ends the sentence; shorter ones are initials or
+    abbreviations.
+    """
+    words = name.split()
+    for i, word in enumerate(words[:-1]):
+        if word.endswith(".") and len(re.sub(r"\W", "", word)) >= 3:
+            return " ".join(words[: i + 1])
+    return name
+
+
 def detect_text_claims(prose: str) -> list[str]:
     """Return the names and quoted strings *prose* claims to read from the image, in order, deduplicated."""
     found: list[str] = []
@@ -71,7 +94,9 @@ def detect_text_claims(prose: str) -> list[str]:
         if any(c.isalpha() for c in quoted):
             found.append(quoted)
     for m in _READ_NAME_RE.finditer(prose):
-        found.append(_clean(m.group(1)))
+        name = _to_sentence_end(m.group(1))
+        if len(name.split()) > 1:  # the regex wants two words; one left after the cut is no name
+            found.append(_clean(name))
     for start, end in _sentences(prose):
         sentence = prose[start:end]
         if _WRITTEN_MATERIAL_RE.search(sentence):
@@ -95,6 +120,11 @@ def _contains_words(outer: str, inner: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(inner)}(?!\w)", outer, re.IGNORECASE) is not None
 
 
+def _fold(text: str) -> str:
+    """*text* without accents: OCR often drops them ("Cafe Bohemia" for "Café Bohemia")."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
 def _tokens(text: str) -> list[str]:
     """Lower-cased alphanumeric tokens ("N.Y." -> "ny")."""
     return [t for t in (re.sub(r"[^\w]", "", w).lower() for w in text.split()) if t]
@@ -105,10 +135,17 @@ def is_confirmed(claim: str, transcript: str) -> bool:
 
     Titles ("Professor") don't count: the name is the claim. A short token
     (three letters or fewer) must match exactly; longer ones may differ by OCR
-    noise. Words OCR ran together ("HENRIBECQUEREL") still match as substrings.
+    noise. Words OCR ran together ("HENRIBECQUEREL") still match as substrings,
+    and a claim of two or more words also matches whole with spaces and
+    punctuation removed (``normalize_text``), so "N.Y. PUBLIC LIBRARY" is read
+    in "N.Y.PUBLIC LIBRARY" although "ny" is no token of its own there. One
+    word never matches that way: "and" is not read in "stand".
     """
+    claim, transcript = _fold(claim), _fold(transcript)
     words = [t for t in _tokens(claim) if t not in _TITLE_WORDS]
     if not words:
+        return True
+    if len(words) > 1 and normalize_text(" ".join(words)) in normalize_text(transcript):
         return True
     read = _tokens(transcript)
     joined = "".join(read)
@@ -119,6 +156,28 @@ def is_confirmed(claim: str, transcript: str) -> bool:
             continue
         return False
     return True
+
+
+def is_contradicted(claim: str, transcript: str) -> bool:
+    """True when *transcript* shows the reader saw *claim*'s text and read something else.
+
+    Evidence is part of the claim read and part not ("Henri Becquerel" for the
+    claim "Professor Henrik Bohr": "Henrik" matches, "Bohr" is missing), or a
+    long word read close but not close enough to confirm ("72801-H" for
+    "72804 H"). A claim nothing of which was read is not contradicted: the
+    reader may simply have missed that text, which OCR often does.
+    """
+    if is_confirmed(claim, transcript):
+        return False
+    words = [t for t in _tokens(_fold(claim)) if t not in _TITLE_WORDS]
+    seen = [w for w in words if is_confirmed(w, transcript)]
+    if seen:
+        return True  # some words read, the claim as a whole not: the reader saw it and read it differently
+    read = _tokens(_fold(transcript))
+    return any(
+        len(w) >= _NEAR_MISS_MIN_LEN and any(SequenceMatcher(None, w, r).ratio() >= _NEAR_MISS_RATIO for r in read)
+        for w in words
+    )
 
 
 def drop_text_claim(prose: str, claim: str) -> str:
