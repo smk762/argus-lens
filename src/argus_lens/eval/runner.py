@@ -8,11 +8,13 @@ from typing import TYPE_CHECKING, Any
 
 from PIL import Image
 
+from argus_lens.eval.faithfulness import DEFAULT_THRESHOLD
 from argus_lens.eval.metrics import compute_metrics
 
 if TYPE_CHECKING:
     from argus_lens.engine import ArgusLens
     from argus_lens.eval.dataset import EvalItem
+    from argus_lens.eval.faithfulness import FaithfulnessJudge
     from argus_lens.eval.metrics import ClipScorer
 
 
@@ -74,6 +76,7 @@ def _aggregate(items: list[ItemResult]) -> dict[str, Any]:
     clip = [r.metrics["clip"] for r in scored if r.metrics["clip"] is not None]
 
     return {
+        **_aggregate_faithfulness(scored),
         "contradiction_rate_mean": _mean(contra_rates),
         "contradiction_total": contra_total,
         "items_with_contradiction": items_with_contra,
@@ -85,6 +88,34 @@ def _aggregate(items: list[ItemResult]) -> dict[str, Any]:
     }
 
 
+def _aggregate_faithfulness(scored: list[ItemResult]) -> dict[str, Any]:
+    """Roll up the judge's per-item results; every value is ``None`` without a judge.
+
+    ``assembly_unsupported_delta_mean`` is the paired mean of final − raw over the
+    images where both sides were scored: negative means assembly removed
+    unsupported claims, positive means it added them.
+    """
+    judged = [r.metrics.get("faithfulness") for r in scored]
+    ok = [f for f in judged if f and "error" not in f]
+    errors = sum(1 for f in judged if f and "error" in f)
+
+    def _rate(f: dict, side: str) -> float | None:
+        """The side's unsupported rate, or ``None`` if it had no scored claims."""
+        return f[side]["rate"] if f[side] else None
+
+    final = [r for f in ok if (r := _rate(f, "final")) is not None]
+    raw = [r for f in ok if (r := _rate(f, "raw")) is not None]
+    paired = [_rate(f, "final") - _rate(f, "raw") for f in ok if None not in (_rate(f, "final"), _rate(f, "raw"))]
+    with_unsupported = [f for f in ok if f["final"] and f["final"]["unsupported"] > 0]
+    return {
+        "unsupported_rate_final_mean": _mean(final),
+        "unsupported_rate_raw_mean": _mean(raw),
+        "assembly_unsupported_delta_mean": _mean(paired),
+        "items_with_unsupported_pct": len(with_unsupported) / len(ok) if ok else None,
+        "faithfulness_errors": errors if any(f is not None for f in judged) else None,
+    }
+
+
 def run_eval(
     engine: ArgusLens,
     dataset: list[EvalItem],
@@ -93,12 +124,17 @@ def run_eval(
     trigger_word: str = "",
     hybrid_preset: str | None = None,
     prose_bias: float | None = None,
+    judge: FaithfulnessJudge | None = None,
+    judge_threshold: float = DEFAULT_THRESHOLD,
     progress: Callable[[int, int, EvalItem], None] | None = None,
 ) -> Scorecard:
     """Caption every item and score it; return an aggregated :class:`Scorecard`.
 
     Per-image captioning errors are captured (not raised) so one bad file never
     aborts the run — they surface as ``n_errors`` and per-item ``error`` strings.
+    With a *judge*, each caption is also scored for faithfulness to its image
+    (see :mod:`argus_lens.eval.faithfulness`); a judge error is recorded on the
+    item and counted in ``faithfulness_errors``, not raised.
     """
     per_item: list[ItemResult] = []
     total = len(dataset)
@@ -114,7 +150,15 @@ def run_eval(
                 hybrid_preset=hybrid_preset,
                 prose_bias=prose_bias,
             )
-            metrics = compute_metrics(item, result, image=pil, clip_scorer=clip_scorer)
+            metrics = compute_metrics(
+                item,
+                result,
+                image=pil,
+                clip_scorer=clip_scorer,
+                judge=judge,
+                judge_threshold=judge_threshold,
+                trigger_word=trigger_word,
+            )
             per_item.append(ItemResult(image=str(item.image), metrics=metrics, final_caption=result.final_caption))
         except Exception as exc:  # noqa: BLE001 - report per-image, keep the run going
             per_item.append(ItemResult(image=str(item.image), error=str(exc)))
@@ -126,6 +170,10 @@ def run_eval(
         "hybrid_preset": hybrid_preset,
         "prose_bias": prose_bias,
         "clip_enabled": clip_scorer is not None,
+        # Unsupported rates are only comparable between runs with the same judge
+        # and threshold, so both go in the baseline surface.
+        "judge_model": judge.model_id if judge is not None else None,
+        "judge_threshold": judge_threshold if judge is not None else None,
     }
     return Scorecard(
         n=total,

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`argus-lens eval --judge-model`: claim-level faithfulness.** A vision model behind any
+  OpenAI-compatible endpoint rates each caption claim 0–100 against the image, following the
+  HalDec-Bench protocol. The scorecard reports the unsupported-claim rate of the final caption
+  (gated by `--fail-on-regression`) and of the raw backend output, plus their paired difference,
+  which shows whether assembly removes hallucinations or adds them. New flags: `--judge-url`,
+  `--judge-key` (or `ARGUS_JUDGE_API_KEY`), `--judge-threshold`. See `eval/README.md`.
+
 ## [0.14.0] - 2026-11-19
 
 ### Upgrading

@@ -9,6 +9,36 @@ The `argus-lens eval` harness scores caption quality. It accepts two dataset sha
    which additionally unlock **tag-coverage recall**. (CLIPScore, when enabled with
    `--clip`, always scores the model's own caption — never the reference.)
 
+## Faithfulness (a VLM judge)
+
+Add `--judge-model <id>` to check each caption against its image. The caption is split into
+claims (its sentence and comma fragments, minus the trigger word). A vision model behind any
+OpenAI-compatible endpoint (`--judge-url`, default Ollama at `http://localhost:11434/v1`; key in
+`--judge-key` or `ARGUS_JUDGE_API_KEY`) rates each one 0–100, and a score below
+`--judge-threshold` (default 50) marks it **unsupported**. This follows the
+[HalDec-Bench](https://arxiv.org/abs/2603.15253) protocol, and its leaderboard is a good place to
+pick a judge.
+
+Each image is scored twice:
+
+| Aggregate | Meaning |
+|-----------|---------|
+| `unsupported_rate_final_mean` | Share of `final_caption` claims the judge rejects. **Gated.** |
+| `items_with_unsupported_pct` | Images whose final caption has at least one unsupported claim. **Gated.** |
+| `unsupported_rate_raw_mean` | The same, for the backend's raw prose + tags before assembly. |
+| `assembly_unsupported_delta_mean` | Paired mean of final − raw. Negative: assembly removed unsupported claims. |
+| `faithfulness_errors` | Images where the judge failed (the other metrics still count). |
+
+A claim found in both texts is judged once, so the delta isn't judge noise. The judge model and
+threshold are recorded in the scorecard's `config`. Rates are only comparable between runs that
+used the same judge, and `--baseline` warns when they differ. Judges are imperfect (the best
+HalDec-Bench AUROC is about 0.8), so treat the rate as a trend, not ground truth. Cost is one
+request per unique claim per image.
+
+```console
+$ argus-lens eval ./golden --backend hybrid --judge-model qwen2.5vl:7b -o scorecard.json
+```
+
 ## Manifest format
 
 One JSON object per line. Only `image` is required; everything else is optional.
