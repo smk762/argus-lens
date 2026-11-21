@@ -308,18 +308,12 @@ def test_bad_text_verifier_is_refused(text_verifier: str, ocr_url: str | None, m
         build_verifier("openai-compat", text_verifier=text_verifier, ocr_url=ocr_url)
 
 
-@pytest.mark.parametrize(
-    ("prose", "claim"),
-    [
-        ("A diploma signed by Prof. Niels Bohr.", "Prof. Niels Bohr"),
-        ("A letter signed by Gen. Ulysses Grant.", "Gen. Ulysses Grant"),
-        ("A card addressed to Sgt. Alvin York.", "Sgt. Alvin York"),
-    ],
-)
-def test_a_title_abbreviation_does_not_cut_the_name_it_heads(prose, claim):
+def test_a_title_abbreviation_does_not_cut_the_name_it_heads():
     """A dotted title is not a sentence end: "Prof. Niels Bohr" stays whole instead of shrinking to "Prof." and
     being dropped as a one-word name (audit pack-argus-lens-900cc0a705)."""
-    assert claim in detect_text_claims(prose)
+    assert "Prof. Niels Bohr" in detect_text_claims("A diploma signed by Prof. Niels Bohr.")
+    assert "Gen. Ulysses Grant" in detect_text_claims("A letter signed by Gen. Ulysses Grant.")
+    assert "Sgt. Alvin York" in detect_text_claims("A card addressed to Sgt. Alvin York.")
 
 
 def test_a_dotted_name_word_still_ends_its_sentence():
