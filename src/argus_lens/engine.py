@@ -9,7 +9,7 @@ import inspect
 import io
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -330,7 +330,8 @@ class ArgusLens:
         self._kwargs = kwargs
         self._last_used: float | None = None
         self._active = 0  # in-flight inferences; guarded by _load_lock
-        self._drained = threading.Condition(self._load_lock)  # notified whenever _active drops
+        self._captions = 0  # live captions, inference through lineage write; guarded by _load_lock
+        self._drained = threading.Condition(self._load_lock)  # notified whenever _active or _captions drops
         # Serialises lineage writes against close(): no record() reaches a closed recorder.
         self._record_lock = threading.Lock()
         self._closed = False
@@ -437,20 +438,33 @@ class ArgusLens:
         """Stop the idle reaper (if running), let in-flight inferences finish, unload the model and close the
         lineage recorder.
 
-        Waits up to *drain_timeout_s* for running inferences, since ``unload()`` refuses while one runs. A caption
-        that reaches its lineage write after the recorder closed is returned unrecorded, with a warning, never
-        written to a closed store.
+        Waits up to *drain_timeout_s* for running captions, from inference through their lineage write, since
+        ``unload()`` refuses while an inference runs and a caption composes and refines after it. A caption still
+        running when the wait times out is returned unrecorded, with a warning, never written to a closed store.
         """
         if self._reaper_stop is not None:
             self._reaper_stop.set()
         with self._drained:
-            if not self._drained.wait_for(lambda: self._active == 0, timeout=drain_timeout_s):
-                logger.warning("close_with_inference_running", active=self._active)
+            if not self._drained.wait_for(lambda: self._active == 0 and self._captions == 0, timeout=drain_timeout_s):
+                logger.warning("close_with_captions_running", active=self._active, captions=self._captions)
         self.unload()
         with self._record_lock:
             self._closed = True
             if self._recorder is not None:
                 self._recorder.close()
+
+    @contextlib.contextmanager
+    def _live_caption(self) -> Iterator[None]:
+        """Count one caption from its inference to its lineage write, so close() waits for all of it: the
+        composing and refining after inference can outlast the model call."""
+        with self._load_lock:
+            self._captions += 1
+        try:
+            yield
+        finally:
+            with self._load_lock:
+                self._captions -= 1
+                self._drained.notify_all()
 
     def _start_idle_reaper(self, idle_unload_s: float) -> None:
         """Start a daemon thread that unloads the model after idle periods (#37).
@@ -672,19 +686,20 @@ class ArgusLens:
             categories=self._categories,
         )
 
-        tags, prose = self._infer(pil, lease_kind)
+        with self._live_caption():
+            tags, prose = self._infer(pil, lease_kind)
 
-        result = compose_caption_result(
-            trigger_word=trigger_word,
-            tags=tags,
-            prose=prose,
-            target_profile=profile,
-            prose_enrichment=prose_enrichment,
-            categories=self._categories,
-            backend_name=self._backend.name,
-            monochrome=is_monochrome(pil),
-        )
-        return self._finish(result, profile, trigger_word, pil, asset, asset.name)
+            result = compose_caption_result(
+                trigger_word=trigger_word,
+                tags=tags,
+                prose=prose,
+                target_profile=profile,
+                prose_enrichment=prose_enrichment,
+                categories=self._categories,
+                backend_name=self._backend.name,
+                monochrome=is_monochrome(pil),
+            )
+            return self._finish(result, profile, trigger_word, pil, asset, asset.name)
 
     def _refine(self, result: CaptionResult, profile: Any, trigger_word: str, pil: Image.Image) -> CaptionResult:
         """Apply the optional LLM refiner (validated, falls back to *result*)."""
@@ -783,21 +798,22 @@ class ArgusLens:
                 pil.save(buf, format="PNG")
                 h = _image_hash(buf.getvalue())
 
-                if h not in caption_cache:
-                    caption_cache[h] = self._infer(pil, LEASE_KIND_BATCH)
+                with self._live_caption():
+                    if h not in caption_cache:
+                        caption_cache[h] = self._infer(pil, LEASE_KIND_BATCH)
 
-                cached_tags, cached_prose = caption_cache[h]
-                composed = compose_caption_result(
-                    trigger_word=trigger_word,
-                    tags=cached_tags,
-                    prose=cached_prose,
-                    target_profile=profile,
-                    image_index=idx,
-                    categories=self._categories,
-                    backend_name=self._backend.name,
-                    monochrome=is_monochrome(pil),
-                )
-                results[name] = self._finish(composed, profile, trigger_word, pil, asset, name)
+                    cached_tags, cached_prose = caption_cache[h]
+                    composed = compose_caption_result(
+                        trigger_word=trigger_word,
+                        tags=cached_tags,
+                        prose=cached_prose,
+                        target_profile=profile,
+                        image_index=idx,
+                        categories=self._categories,
+                        backend_name=self._backend.name,
+                        monochrome=is_monochrome(pil),
+                    )
+                    results[name] = self._finish(composed, profile, trigger_word, pil, asset, name)
 
             if progress is not None:
                 progress(idx + 1, total, name, results[name])
@@ -855,18 +871,20 @@ class ArgusLens:
                     yield name, miss
                 continue
 
-            tags, prose = self._infer(pil, LEASE_KIND_BATCH)
-            result = compose_caption_result(
-                trigger_word=trigger_word,
-                tags=tags,
-                prose=prose,
-                target_profile=profile,
-                image_index=idx,
-                categories=self._categories,
-                backend_name=self._backend.name,
-                monochrome=is_monochrome(pil),
-            )
-            yield name, self._finish(result, profile, trigger_word, pil, asset, name)
+            with self._live_caption():  # not held across the yield: a paused consumer must not stall close()
+                tags, prose = self._infer(pil, LEASE_KIND_BATCH)
+                result = compose_caption_result(
+                    trigger_word=trigger_word,
+                    tags=tags,
+                    prose=prose,
+                    target_profile=profile,
+                    image_index=idx,
+                    categories=self._categories,
+                    backend_name=self._backend.name,
+                    monochrome=is_monochrome(pil),
+                )
+                result = self._finish(result, profile, trigger_word, pil, asset, name)
+            yield name, result
 
     def caption_directory(
         self,
