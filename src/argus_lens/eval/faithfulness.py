@@ -84,7 +84,8 @@ def split_claims(text: str, *, trigger_word: str = "") -> list[str]:
     and repeats (case-insensitive) are dropped, so order is kept and each claim is
     judged once.
     """
-    trigger = trigger_word.strip().lower()
+    # Normalised like the claims below, or "sks_person" never equals the fragment "sks person".
+    trigger = " ".join(trigger_word.replace("_", " ").split()).lower()
     seen: set[str] = set()
     claims: list[str] = []
     for chunk in _CLAIM_SPLIT.split(text.replace("_", " ")):

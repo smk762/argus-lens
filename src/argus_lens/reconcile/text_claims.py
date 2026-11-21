@@ -53,6 +53,12 @@ _TITLE_WORDS = {re.sub(r"\W", "", t).lower() for t in _TITLES.strip("(?:)").spli
 _ABBREVIATIONS = _TITLE_WORDS | {
     "gen", "col", "capt", "sgt", "cpl", "lt", "maj", "adm", "cmdr", "hon", "gov", "sen", "rep", "jr", "sr", "st",
 }  # fmt: skip
+# Capitalised words that open a sentence and are no part of a name. After a dotted word they show the dot was
+# a full stop, whatever the word's length: "Henri Xu. The frame", "John Smith Jr. His medal".
+_SENTENCE_OPENERS = {
+    "the", "a", "an", "this", "that", "these", "those", "there", "here", "he", "she", "it", "they", "we",
+    "his", "her", "its", "their", "in", "on", "at", "behind", "above", "below", "beside", "next", "to",
+}  # fmt: skip
 _MATCH_RATIO = 0.8  # fuzzy token match: tolerates OCR noise ("Becquere1"), not a different name ("Bohr")
 # A long claimed word read at least this close (but under _MATCH_RATIO) was misread: "72804" vs "72801-H".
 _NEAR_MISS_RATIO = 0.6
@@ -83,11 +89,14 @@ def _to_sentence_end(name: str) -> str:
     A name word may carry dots ("N.Y.", "Jr."), so the read-name regex can run on into the next sentence's
     first word. A word ending in "." with three or more letters ends the sentence; shorter ones are initials or
     abbreviations, and so are titles and known abbreviations ("Prof.", "Gen.", ``_ABBREVIATIONS``) and words
-    with dots inside ("Ph.D.", "U.S.A.").
+    with dots inside ("Ph.D.", "U.S.A."). Any dotted word ends the sentence when the next word is one that
+    only opens a sentence ("Xu. The", "Jr. His"; ``_SENTENCE_OPENERS``), a title apart ("Dr. The ...").
     """
     words = name.split()
     for i, word in enumerate(words[:-1]):
         letters = re.sub(r"\W", "", word)
+        if word.endswith(".") and letters.lower() not in _TITLE_WORDS and words[i + 1].lower() in _SENTENCE_OPENERS:
+            return " ".join(words[: i + 1])
         if word.endswith(".") and len(letters) >= 3 and letters.lower() not in _ABBREVIATIONS and "." not in word[:-1]:
             return " ".join(words[: i + 1])
     return name

@@ -227,3 +227,12 @@ def test_gate_flags_a_rise_in_final_unsupported_rate_only() -> None:
     cur = {"unsupported_rate_final_mean": 0.20, "unsupported_rate_raw_mean": 0.50}
     comparison = compare_to_baseline(cur, base)
     assert comparison["regressions"] == ["unsupported_rate_final_mean"]
+
+
+def test_split_claims_drops_a_trigger_with_underscores() -> None:
+    """The trigger is normalised like the claims: ``sks_person`` is the fragment "sks person"."""
+    assert split_claims("sks_person, red_dress. A woman stands", trigger_word="sks_person") == [
+        "red dress",
+        "A woman stands",
+    ]
+    assert split_claims("ohwx  style, a barn", trigger_word=" OHWX_style ") == ["a barn"]

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 from pathlib import Path
 
+import pytest
 from PIL import Image
 from structlog.testing import capture_logs
 
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.backends.florence2 import Florence2Backend
-from argus_lens.engine import ArgusLens, _resolve_backend
+from argus_lens.engine import ArgusLens, _find_images, _resolve_backend
 
 
 class _Local(CaptionBackend):
@@ -148,3 +150,110 @@ def test_directory_still_skips_existing_sidecars(tmp_path: Path) -> None:
     assert engine.caption_directory(tmp_path) == {}
     assert (tmp_path / "a.txt").read_text() == "hand-written"
     assert list(engine.caption_directory(tmp_path, overwrite=True)) == ["a.jpg"]
+
+
+def test_directory_qualified_pattern_is_globbed_as_written(tmp_path: Path) -> None:
+    """A pattern with a path separator gets no ``*.`` extension prefix: ``raw/*.jpg`` matches ``raw/a.jpg``."""
+    _write_image(tmp_path / "raw" / "a.jpg", "JPEG")
+    _write_image(tmp_path / "raw" / "b.png")
+    _write_image(tmp_path / "edited" / "c.jpg", "JPEG")
+    assert _find_images(tmp_path, "raw/*.jpg", recursive=False) == [tmp_path / "raw" / "a.jpg"]
+    assert _find_images(tmp_path, "raw/*.jpg, png", recursive=True) == [
+        tmp_path / "raw" / "a.jpg",
+        tmp_path / "raw" / "b.png",
+    ]
+    results = ArgusLens(backend=_Local()).caption_directory(tmp_path, glob="raw/*.jpg")
+    assert list(results) == ["raw/a.jpg"]
+
+
+@pytest.mark.parametrize("pattern", ["*/../../outside/*.jpg", "../outside/*.jpg", "sub/..", "/etc/*.jpg", "sub\\..\\*"])
+def test_pattern_cannot_leave_the_directory(tmp_path: Path, pattern: str) -> None:
+    """A ``..`` segment or an absolute pattern is refused before anything is listed."""
+    root = tmp_path / "root"
+    _write_image(root / "sub" / "a.jpg", "JPEG")
+    _write_image(tmp_path / "outside" / "secret.jpg", "JPEG")
+    with pytest.raises(ValueError, match="inside the directory"):
+        _find_images(root, pattern, recursive=False)
+    with pytest.raises(ValueError, match="inside the directory"):
+        ArgusLens(backend=_Local()).caption_directory(root, glob=pattern)
+    assert not (tmp_path / "outside" / "secret.txt").exists()
+
+
+def test_pattern_through_a_symlink_out_of_the_directory_matches_nothing(tmp_path: Path) -> None:
+    """A separator pattern can't reach outside through a symlinked sub-directory either."""
+    root = tmp_path / "root"
+    _write_image(root / "sub" / "a.jpg", "JPEG")
+    _write_image(tmp_path / "outside" / "secret.jpg", "JPEG")
+    (root / "link").symlink_to(tmp_path / "outside", target_is_directory=True)
+    assert _find_images(root, "*/*.jpg", recursive=False) == [root / "sub" / "a.jpg"]
+
+
+def test_concurrent_cold_requests_ask_for_the_footprint_once() -> None:
+    """Requests that arrive while the model is cold wait for the one load, then lease as resident.
+
+    Each asking for the full footprint would leave the later ones waiting for room that the first
+    one's freshly loaded weights now occupy.
+    """
+    requested: list[int] = []
+    first_in_lease = threading.Event()
+    release_first = threading.Event()
+
+    class _Coordinator:
+        name = "rec"
+
+        @contextlib.contextmanager
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
+            requested.append(min_vram_mb)
+            if len(requested) == 1:
+                first_in_lease.set()
+                assert release_first.wait(5)
+            yield
+
+    backend = _Local()
+    eng = ArgusLens(backend=backend, coordinator=_Coordinator())
+    image = Image.new("RGB", (4, 4))
+    threads = [threading.Thread(target=eng._infer, args=(image,)) for _ in range(3)]
+    threads[0].start()
+    assert first_in_lease.wait(5)
+    for t in threads[1:]:
+        t.start()
+    # The later two have passed the residency read (still cold) once both are counted in flight.
+    for _ in range(500):
+        if eng._active == 3:
+            break
+        threading.Event().wait(0.01)
+    assert eng._active == 3
+    release_first.set()
+    for t in threads:
+        t.join(5)
+    assert requested == [2500, 0, 0]
+    assert backend.loads == 1
+
+
+def test_failed_cold_load_lets_the_next_request_load() -> None:
+    """A load that fails releases the cold-start queue and leaves the model cold: the next request asks for
+    the footprint itself."""
+    requested: list[int] = []
+
+    class _Coordinator:
+        name = "rec"
+
+        @contextlib.contextmanager
+        def lease(self, *, caller: str, min_vram_mb: int, **_):
+            requested.append(min_vram_mb)
+            yield
+
+    class _FailsOnce(_Local):
+        def load(self, device: str = "auto") -> None:
+            """Fail the first load."""
+            super().load(device)
+            if self.loads == 1:
+                raise RuntimeError("no such device")
+
+    eng = ArgusLens(backend=_FailsOnce(), coordinator=_Coordinator())
+    image = Image.new("RGB", (4, 4))
+    with pytest.raises(RuntimeError, match="no such device"):
+        eng._infer(image)
+    eng._infer(image)
+    eng._infer(image)
+    assert requested == [2500, 2500, 0]
