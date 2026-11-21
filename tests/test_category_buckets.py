@@ -146,3 +146,22 @@ def test_light_as_adjective_is_not_lighting(fragment: str) -> None:
 def test_no_lighting_split_without_a_turn(clause: str) -> None:
     """``the light`` mid-phrase (no comma or conjunction turn, or the shade) keeps the clause whole."""
     assert split_lighting_clauses(clause) == [clause]
+
+
+def test_no_hint_word_belongs_to_two_categories():
+    """A fragment's category must come from its words, not from tie-breaking between two categories that list
+    the same hint ("leaning" was in pose and action: audit pack-argus-lens-0e22b84a18)."""
+    import itertools
+
+    from argus_lens.types import DEFAULT_CATEGORY_CONFIGS
+
+    for a, b in itertools.combinations(DEFAULT_CATEGORY_CONFIGS, 2):
+        assert not set(a.hint_words) & set(b.hint_words), (a.name, b.name)
+
+
+def test_looking_at_camera_is_pose_like_looking_at_viewer():
+    """Gaze toward the camera is composition, kept in training captions, not identity, which training drops
+    (audit pack-argus-lens-e437056a78)."""
+    from argus_lens.assembly.classifier import classify_fragment
+
+    assert classify_fragment("looking at camera") == classify_fragment("looking at viewer") == "pose_composition"

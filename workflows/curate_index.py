@@ -303,11 +303,23 @@ def cmd_caption(args: argparse.Namespace) -> None:
                     "prose": result.raw_prose,
                 }
                 if counter is not None:
-                    from PIL import Image
+                    # Its own try: a down or garbled count server must not throw away the caption already made.
+                    try:
+                        from PIL import Image
 
-                    with Image.open(path) as img:
-                        answer = counter.caption_image(img)
-                    record["vlm_count"] = _parse_count(answer)
+                        with Image.open(path) as img:
+                            answer = counter.caption_image(img)
+                        record["vlm_count"] = _parse_count(answer)
+                    except Exception as exc:  # noqa: BLE001 - the caption stands; the count is null and logged
+                        record["vlm_count"] = None
+                        err.write(
+                            json.dumps(
+                                {"rel_path": row["rel_path"], "stage": "count", "error": f"{type(exc).__name__}: {exc}"}
+                            )
+                            + "\n"
+                        )
+                        err.flush()
+                        print(f"  count error {row['rel_path']}: {exc}", file=sys.stderr)
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
                 out.flush()
             except Exception as exc:  # noqa: BLE001 - record and keep going; rerun retries failures

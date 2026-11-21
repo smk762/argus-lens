@@ -127,3 +127,13 @@ def test_zeroshot_reports_unconfigured_buckets_as_removed() -> None:
     caption, removed = assemble_zeroshot_variant("sks", buckets, "photo")
     assert "melancholic" not in caption
     assert "melancholic" in removed and "quiet" in removed
+
+
+def test_a_clause_with_no_content_words_goes_with_or_without_tags():
+    """A stopword-only clause ("It is") is dropped whether or not tags exist: the same prose must not give a
+    different caption just because the tagger returned nothing (audit pack-argus-lens-0ec796201a)."""
+    from argus_lens.assembly.filtering import filter_redundant_clauses_detailed
+
+    prose = "A woman in a red coat. It is."
+    assert filter_redundant_clauses_detailed(prose, "") == (["A woman in a red coat"], ["It is"])
+    assert filter_redundant_clauses_detailed(prose, "blue sky") == (["A woman in a red coat"], ["It is"])

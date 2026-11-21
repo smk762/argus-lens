@@ -1318,7 +1318,11 @@ def create_app(
                 raise HTTPException(
                     status_code=400, detail=f"dest_folder is not a directory: {req.dest_folder}"
                 ) from exc
-        except HTTPException:
+            except OSError as exc:  # PermissionError on a read-only volume, ENOSPC, ...
+                raise HTTPException(
+                    status_code=500, detail=f"cannot create dest_folder {req.dest_folder}: {exc.strerror or exc}"
+                ) from exc
+        except BaseException:  # the stream has not taken the client yet: close it on any way out
             source.close()
             raise
         total = len(assets)

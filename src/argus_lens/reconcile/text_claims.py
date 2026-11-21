@@ -48,6 +48,11 @@ _WRITTEN_MATERIAL_RE = re.compile(
 # A sentence ends at . ! ? followed by space/end, but not after a title abbreviation ("Dr. Who").
 _SENTENCE_END_RE = re.compile(r"(?<!\bDr)(?<!\bMr)(?<!\bMrs)(?<!\bMs)(?<!\bProf)(?<!\bMme)(?<!\bRev)[.!?](?=\s|$)")
 _TITLE_WORDS = {re.sub(r"\W", "", t).lower() for t in _TITLES.strip("(?:)").split("|")}
+# Dotted words that never end a name's sentence: the titles, plus common abbreviations of titles, ranks and
+# suffixes a name carries ("Gen. Grant", "Sgt. York", "Martin Luther King Jr.").
+_ABBREVIATIONS = _TITLE_WORDS | {
+    "gen", "col", "capt", "sgt", "cpl", "lt", "maj", "adm", "cmdr", "hon", "gov", "sen", "rep", "jr", "sr", "st",
+}  # fmt: skip
 _MATCH_RATIO = 0.8  # fuzzy token match: tolerates OCR noise ("Becquere1"), not a different name ("Bohr")
 # A long claimed word read at least this close (but under _MATCH_RATIO) was misread: "72804" vs "72801-H".
 _NEAR_MISS_RATIO = 0.6
@@ -77,11 +82,13 @@ def _to_sentence_end(name: str) -> str:
 
     A name word may carry dots ("N.Y.", "Jr."), so the read-name regex can run on into the next sentence's
     first word. A word ending in "." with three or more letters ends the sentence; shorter ones are initials or
-    abbreviations.
+    abbreviations, and so are titles and known abbreviations ("Prof.", "Gen.", ``_ABBREVIATIONS``) and words
+    with dots inside ("Ph.D.", "U.S.A.").
     """
     words = name.split()
     for i, word in enumerate(words[:-1]):
-        if word.endswith(".") and len(re.sub(r"\W", "", word)) >= 3:
+        letters = re.sub(r"\W", "", word)
+        if word.endswith(".") and len(letters) >= 3 and letters.lower() not in _ABBREVIATIONS and "." not in word[:-1]:
             return " ".join(words[: i + 1])
     return name
 
