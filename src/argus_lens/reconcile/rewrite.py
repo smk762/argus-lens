@@ -91,4 +91,46 @@ def hedge_claim(prose: str, claim: AttributeDispute) -> str:
     """
     if claim.kind == "count":
         return hedge_prose_count(prose)
+    if claim.kind == "posture":
+        for term in claim.prose_says:
+            prose = drop_posture_word(prose, term)
+        return prose
     return prose
+
+
+_AND_BEFORE = re.compile(r"\s+and\s+$", re.IGNORECASE)
+_AND_AFTER = re.compile(r"\s+and\b", re.IGNORECASE)
+_COMMA_BEFORE = re.compile(r",\s*$")
+_AUX_BEFORE = re.compile(r"\b(?:is|are|was|were)\s+$", re.IGNORECASE)
+_CLAUSE_END = re.compile(r"\s*(?:[.,;:!?]|$)")
+
+
+def drop_posture_word(prose: str, term: str) -> str:
+    """Return *prose* without the posture word *term* (and a ``down``/``up`` after it), keeping the sentence.
+
+    "a woman sitting on a bench" -> "a woman on a bench"; "smiling and standing" -> "smiling"; "a woman, sitting,
+    reads" -> "a woman reads". Where the word is the clause's whole predicate ("she is lying down.") nothing short
+    of rewriting the sentence reads well, so that occurrence is kept. A sentence that started with the word gets its
+    next word capitalised.
+    """
+    word = re.compile(rf"\b{re.escape(term)}\b(?:\s+(?:down|up)\b)?", re.IGNORECASE)
+    out = prose
+    for m in reversed(list(word.finditer(prose))):  # right to left, so earlier offsets stay valid
+        start, end = m.start(), m.end()
+        before, after = out[:start], out[end:]
+        if _CLAUSE_END.match(after) and _AUX_BEFORE.search(before):
+            continue  # "she is lying." -> "she is." / "she." both read worse than the word
+        if (b := _AND_BEFORE.search(before)) is not None:
+            start = b.start()
+        elif (a := _AND_AFTER.match(after)) is not None:
+            end += a.end()
+        elif (b := _COMMA_BEFORE.search(before)) is not None and after.lstrip().startswith(","):
+            start = b.start()
+            end += after.index(",") + 1
+        head, tail = out[:start], out[end:]
+        if m.group(0)[:1].isupper() and (not head.strip() or head.rstrip().endswith((".", "!", "?"))):
+            tail = re.sub(r"^\s*([a-z])", lambda c: c.group(1).upper(), tail, count=1)
+        out = head + tail
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+([.,;:!?])", r"\1", out)
+    return out.strip()

@@ -64,6 +64,17 @@ def test_manifest_validates_and_declares_every_lease_kind() -> None:
     assert resident.unload_path == "/admin/unload" and resident.admin_auth
 
 
+def test_sibling_priority_matches_each_lease_kind() -> None:
+    """The X-Argus-Priority lens sends a sibling mid-caption is the manifest's priority for that work's kind."""
+    from argus_lens.priority import PRIORITY_BY_LEASE_KIND, priority_for_lease_kind
+
+    manifest = load_tenant_manifest(MANIFEST)
+    assert set(PRIORITY_BY_LEASE_KIND) == {LEASE_KIND_CAPTION, LEASE_KIND_BATCH}
+    for kind in (LEASE_KIND_CAPTION, LEASE_KIND_BATCH):
+        assert priority_for_lease_kind(kind) == manifest.kind_for(kind).priority
+    assert priority_for_lease_kind("something-new") == "interactive"
+
+
 def test_single_caption_leases_as_interactive_kind() -> None:
     """caption() takes an interactive lease unless the caller says it is looping."""
     coord = _Recording()

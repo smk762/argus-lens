@@ -52,7 +52,10 @@ class Reconciler:
     contradicts (part read, part not, or a near miss) is dropped with its
     sentence. A claim the transcription says nothing about is kept, since
     readers miss text (#141). ``tag-prior`` has no tag to
-    offer, so it abstains on every claim.
+    offer, so it abstains on every claim. A ``posture`` claim (a prose posture
+    word no tag speaks to) is only checked by a verifier that ``reads_pose``
+    (argus-puppet's, :class:`~argus_lens.reconcile.verifiers.pose.PoseVerifier`);
+    one its measured stance contradicts is dropped from the prose.
     """
 
     def __init__(self, verifier: AttributeVerifier) -> None:
@@ -61,6 +64,10 @@ class Reconciler:
     def reconcile(self, image: Image.Image, tags: str, prose: str) -> ReconcileResult:
         """Return the (possibly rewritten) prose plus the list of changes made."""
         disputes = detect_disputes(tags, prose) + detect_claims(tags, prose)
+        if not getattr(self.verifier, "reads_pose", False):
+            # A posture claim is checked against argus-puppet's measured pose only (LENS_POSE_URL): no other
+            # verifier is asked to drop a posture word no tag disputes.
+            disputes = [d for d in disputes if d.kind != "posture"]
         changes: list[ReconcileChange] = []
         errors = 0
         current = prose
