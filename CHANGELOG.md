@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`pose` verifier: posture words checked against argus-puppet's measured pose** (argus-puppet#1). With
+  `LENS_POSE_URL` set (and optionally `LENS_POSE_TIMEOUT_S`), reconcile sends posture to argus-puppet's
+  `POST /pose` ahead of the `--reconcile` verifier and reads the primary person's `labels.stance` (wire 1.1).
+  A `pose` dispute is corrected only when the tags and the measurement agree; a new `posture` claim (the
+  prose's one posture word, no posture tag) the measurement contradicts is dropped from the prose. Pose words
+  are never added. It abstains on several people, an `unknown` stance, a word puppet can't judge (`kneeling`,
+  `squatting`) and a 1.0 server. A failed read is a counted error and never rewrites or drops a word. The
+  call goes through `argus_cortex.net.fetch` to the configured host only, without redirects, retrying a 503
+  twice per `Retry-After`, with `X-Argus-Priority` following lens's own lease kind. `--reconcile pose`
+  checks posture alone.
+
 ### Fixed
 - **Prose training captions kept losing poses and props.** Identity suppression let any four words sit
   between "with" and an identity noun, so "with her hands in her hair" and "with a hat over her eyes" were
