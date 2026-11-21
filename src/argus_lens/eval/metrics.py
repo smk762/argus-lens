@@ -157,14 +157,41 @@ _SIBILANT_ENDINGS = ("s", "x", "z", "ch", "sh")
 _VOWELS = frozenset("aeiou")
 
 
+# Plural-only nouns common in tags: stripping the "s" gives a different real word (shorts → short).
+_PLURALIA_TANTUM: frozenset[str] = frozenset(
+    {
+        "bangs",
+        "clothes",
+        "glasses",
+        "goggles",
+        "jeans",
+        "leggings",
+        "news",
+        "overalls",
+        "pajamas",
+        "pants",
+        "scissors",
+        "shorts",
+        "sunglasses",
+        "tights",
+        "trousers",
+    }
+)
+
+
 def _noun_variants(noun: str) -> set[str]:
     """Singular/plural surface forms of *noun* for prose matching.
 
     Regular English plurals only, so a variant is never a different real word:
     ``-es`` follows a sibilant (dress → dresses, never cap → capes), consonant +
     ``y`` becomes ``-ies`` (sky → skies). The reverse direction recovers the
-    singular of a plural tag noun (skies → sky, glasses → glass, eyes → eye).
+    singular of a plural tag noun (skies → sky, dresses → dress, eyes → eye).
+    Plural-only nouns (``_PLURALIA_TANTUM``: shorts, glasses, bangs) have no
+    singular of the same meaning, so they match only themselves: stripping
+    them would make "short hair" or "a glass window" count as the tag.
     """
+    if noun in _PLURALIA_TANTUM:
+        return {noun}
     variants = {noun}
     if noun.endswith(_SIBILANT_ENDINGS):
         variants.add(noun + "es")  # dress → dresses

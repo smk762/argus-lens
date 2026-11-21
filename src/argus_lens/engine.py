@@ -38,6 +38,7 @@ logger = structlog.get_logger()
 # local coordinators ignore the kind.
 LEASE_KIND_CAPTION = "caption"
 LEASE_KIND_BATCH = "caption-batch"
+CLOSE_DRAIN_TIMEOUT_S = 30.0  # close() waits this long for running inferences before unloading
 
 # Backend string -> constructor lookup
 _BACKEND_REGISTRY: dict[str, type] = {}
@@ -329,6 +330,10 @@ class ArgusLens:
         self._kwargs = kwargs
         self._last_used: float | None = None
         self._active = 0  # in-flight inferences; guarded by _load_lock
+        self._drained = threading.Condition(self._load_lock)  # notified whenever _active drops
+        # Serialises lineage writes against close(): no record() reaches a closed recorder.
+        self._record_lock = threading.Lock()
+        self._closed = False
         # Weights are fetched once, outside the GPU lease (#64). Separate lock: a
         # multi-minute download must not block unload() or the busy counter.
         self._prefetched = False
@@ -428,13 +433,24 @@ class ArgusLens:
             "idle_s": self.idle_s,
         }
 
-    def close(self) -> None:
-        """Stop the idle reaper (if running) and unload the model."""
+    def close(self, drain_timeout_s: float = CLOSE_DRAIN_TIMEOUT_S) -> None:
+        """Stop the idle reaper (if running), let in-flight inferences finish, unload the model and close the
+        lineage recorder.
+
+        Waits up to *drain_timeout_s* for running inferences, since ``unload()`` refuses while one runs. A caption
+        that reaches its lineage write after the recorder closed is returned unrecorded, with a warning, never
+        written to a closed store.
+        """
         if self._reaper_stop is not None:
             self._reaper_stop.set()
+        with self._drained:
+            if not self._drained.wait_for(lambda: self._active == 0, timeout=drain_timeout_s):
+                logger.warning("close_with_inference_running", active=self._active)
         self.unload()
-        if self._recorder is not None:
-            self._recorder.close()
+        with self._record_lock:
+            self._closed = True
+            if self._recorder is not None:
+                self._recorder.close()
 
     def _start_idle_reaper(self, idle_unload_s: float) -> None:
         """Start a daemon thread that unloads the model after idle periods (#37).
@@ -545,6 +561,7 @@ class ArgusLens:
             with self._load_lock:
                 self._active -= 1
                 self._last_used = time.monotonic()
+                self._drained.notify_all()
 
     def _infer_locked(self, pil: Image.Image) -> tuple[str, str]:
         """Load (if needed) and run inference; retries on CUDA OOM (#9)."""
@@ -687,7 +704,13 @@ class ArgusLens:
         """Refine a live caption, then record it in the lineage store when a recorder is set."""
         result = self._refine(result, profile, trigger_word, pil)
         if self._recorder is not None:
-            self._recorder.record(asset, result, name=name, profile=profile, params={"trigger_word": trigger_word})
+            with self._record_lock:
+                if self._closed:
+                    logger.warning("lineage_skipped_engine_closed", name=name)
+                else:
+                    self._recorder.record(
+                        asset, result, name=name, profile=profile, params={"trigger_word": trigger_word}
+                    )
         return result
 
     def caption_batch(
