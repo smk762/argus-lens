@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the identity caption. Every endpoint and `argus-lens caption --category` now accept them, and
   `final_caption`/`selected_category` report the chosen variant.
 
+### Security
+- **Pillow 13 is now the floor** (`Pillow>=13.0`, was `>=10.0`). 13.0.0 fixes a batch of decoder
+  advisories, several reachable from `Image.open().load()` on an untrusted image, which is what
+  `/caption`, `/caption/url` and `/v1` do: heap overflows in the JPEG and FlashPix decoders
+  (GHSA-8g5g-8vmr-9782, GHSA-5x8w-8jj5-q52h), stale storage reuse in multi-frame loaders
+  (GHSA-v9pv-5gc8-w2m6) and decompression-bomb bypasses. Images and installs resolve dependencies
+  fresh, so rebuilding or reinstalling picks it up.
+- `uv.lock` moves anyio to 4.16.0, filelock to 4.2.12, setuptools to 84.2.1 and torch to 2.15.0,
+  past their open advisories.
+
 ## [0.14.0] - 2026-11-19
 
 ### Upgrading
