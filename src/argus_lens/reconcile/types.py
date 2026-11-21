@@ -19,9 +19,10 @@ if TYPE_CHECKING:
 class AttributeDispute:
     """A single attribute where prose and tags disagree.
 
-    ``kind`` is ``"color"``, ``"pose"`` or ``"count"``; ``subject`` is the thing
-    in question (``"dress"``, ``"posture"``, ``"people"``); ``tags_say`` / ``prose_says`` are the
-    conflicting values from each signal.
+    ``kind`` is ``"color"``, ``"pose"`` or ``"count"`` (or, for a claim,
+    ``"count"``, ``"text"`` or ``"posture"``); ``subject`` is the thing in
+    question (``"dress"``, ``"posture"``, ``"people"``); ``tags_say`` /
+    ``prose_says`` are the conflicting values from each signal.
 
     An empty ``tags_say`` makes it a *claim* (#87): something the prose states
     that no tag speaks to, so only a verifier that looks at the image can rule.

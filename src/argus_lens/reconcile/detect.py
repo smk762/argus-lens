@@ -10,8 +10,10 @@ can check them.
 
 from __future__ import annotations
 
+import re
+
 from argus_lens.assembly.subjects import exact_prose_counts, exact_tag_count
-from argus_lens.eval.metrics import _split_tags, tag_prose_contradiction
+from argus_lens.eval.metrics import _POSE_TERMS, _split_tags, _words, tag_prose_contradiction
 from argus_lens.reconcile.text_claims import detect_text_claims
 from argus_lens.reconcile.types import AttributeDispute
 from argus_lens.types import CaptionResult
@@ -42,6 +44,11 @@ def detect_claims(tags: str, prose: str) -> list[AttributeDispute]:
     * ``text``: the names and quoted strings the prose says it read
       ("a diploma for Professor Henrik Bohr"), all in one claim so the verifier
       transcribes the image once (see :mod:`argus_lens.reconcile.text_claims`).
+    * ``posture``: the one posture word the prose uses ("a woman sitting on a
+      bench") when the tags use none. Two different posture words ("one standing,
+      one sitting") describe several people and are skipped, as is a posture
+      word naming a thing ("a sitting room", "a standing desk"). Only a verifier
+      that ``reads_pose`` (argus-puppet) is asked about it.
     """
     claims: list[AttributeDispute] = []
     if exact_tag_count(_split_tags(tags)) is None:  # with a tag count, detect_disputes compares the two
@@ -50,7 +57,23 @@ def detect_claims(tags: str, prose: str) -> list[AttributeDispute]:
             claims.append(
                 AttributeDispute(kind="count", subject="people", tags_say=(), prose_says=(str(counts[0][0]),))
             )
+    posture = _prose_posture(prose)
+    if posture is not None and not set(_words(tags.replace(",", " "))) & _POSE_TERMS:
+        claims.append(AttributeDispute(kind="posture", subject="posture", tags_say=(), prose_says=(posture,)))
     texts = detect_text_claims(prose)
     if texts:
         claims.append(AttributeDispute(kind="text", subject="text", tags_say=(), prose_says=tuple(texts)))
     return claims
+
+
+# A posture word followed by one of these names a thing, not how someone holds themselves.
+_POSTURE_NOUN_USE = re.compile(
+    r"\b(?:sitting|standing|lying)\s+(?:rooms?|areas?|desks?|ovations?|water|stones?|orders?)\b",
+    re.IGNORECASE,
+)
+
+
+def _prose_posture(prose: str) -> str | None:
+    """The one posture word *prose* uses about someone, or ``None`` for none or several different ones."""
+    terms = set(_words(_POSTURE_NOUN_USE.sub(" ", prose))) & _POSE_TERMS
+    return next(iter(terms)) if len(terms) == 1 else None

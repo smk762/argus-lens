@@ -89,7 +89,8 @@ def caption(
     reconcile: str | None = Option(
         None,
         "--reconcile",
-        help="Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo, ocr",
+        help="Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo, ocr, pose "
+        "(with LENS_POSE_URL set, posture also goes to argus-puppet)",
     ),
     verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
@@ -349,7 +350,7 @@ def eval_command(
     reconcile: str | None = Option(
         None,
         "--reconcile",
-        help="Apply an attribute verifier before scoring: tag-prior, openai-compat, florence, molmo, ocr",
+        help="Apply an attribute verifier before scoring: tag-prior, openai-compat, florence, molmo, ocr, pose",
     ),
     verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),

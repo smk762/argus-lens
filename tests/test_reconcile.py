@@ -351,7 +351,7 @@ class _CountVerifier:
 
 def test_detect_claim_when_tags_state_no_headcount() -> None:
     """RAM++ tags say nothing about headcount, so the prose's one count becomes a claim."""
-    claims = detect_claims("soldier, uniform, man, hillside", _NORWAY)
+    claims = [c for c in detect_claims("soldier, uniform, man, hillside", _NORWAY) if c.kind == "count"]
     assert claims == [AttributeDispute(kind="count", subject="people", tags_say=(), prose_says=("6",))]
     assert claims[0].is_claim
 

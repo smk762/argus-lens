@@ -9,13 +9,20 @@ from argus_lens.reconcile.verifiers.florence import FlorenceGroundingVerifier
 from argus_lens.reconcile.verifiers.molmo import MolmoVerifier
 from argus_lens.reconcile.verifiers.ocr import OCR_URL_ENV, OcrVerifier, ocr_url_from_env
 from argus_lens.reconcile.verifiers.openai_compat import OpenAICompatVQAVerifier
-from argus_lens.reconcile.verifiers.routing import TextRoutingVerifier
+from argus_lens.reconcile.verifiers.pose import (
+    POSE_TIMEOUT_ENV,
+    POSE_URL_ENV,
+    PoseCheckFailed,
+    PoseVerifier,
+    pose_url_from_env,
+)
+from argus_lens.reconcile.verifiers.routing import PoseRoutingVerifier, TextRoutingVerifier
 from argus_lens.reconcile.verifiers.tag_prior import TagPriorVerifier
 
 if TYPE_CHECKING:
     from argus_lens.reconcile.types import AttributeVerifier
 
-VERIFIER_NAMES: tuple[str, ...] = ("tag-prior", "openai-compat", "florence", "molmo", "ocr")
+VERIFIER_NAMES: tuple[str, ...] = ("tag-prior", "openai-compat", "florence", "molmo", "ocr", "pose")
 TEXT_READER_NAMES: tuple[str, ...] = ("ocr", "florence", "openai-compat", "molmo")  # verifiers that read text
 TEXT_VERIFIER_ENV = "LENS_TEXT_VERIFIER"  # which reader checks text claims; overridden by --text-verifier
 
@@ -36,19 +43,25 @@ def build_verifier(
     (defaults target Ollama); ``florence`` and ``molmo`` load local models on
     first use. *device* defaults to ``"cpu"`` (Florence-2-base runs there; pass
     ``"cuda"`` for GPU / Molmo). ``ocr`` is argus-retina's OCR server at
-    *ocr_url* (or ``LENS_OCR_URL``) and answers only text claims.
+    *ocr_url* (or ``LENS_OCR_URL``) and answers only text claims. ``pose`` is
+    argus-puppet at ``LENS_POSE_URL`` (env only) and answers only posture.
 
     The text reader is *text_verifier*, else ``LENS_TEXT_VERIFIER``, else
     ``ocr`` when an OCR URL is configured, else *name* itself. A reader other
     than *name* gets the text claims first; when it fails, *name* reads them
     if it can (``tag-prior`` can't), so the check is not skipped. Unknown names
     raise ``ValueError``.
+
+    With ``LENS_POSE_URL`` set, posture goes to argus-puppet first
+    (:class:`PoseRoutingVerifier`): ``posture`` claims to it alone, ``pose``
+    disputes to it and, when it abstains, to the verifier built above. Unset,
+    nothing changes.
     """
     ocr_url = (ocr_url or "").strip() or ocr_url_from_env()
     text = (text_verifier or os.environ.get(TEXT_VERIFIER_ENV, "")).strip().lower() or ("ocr" if ocr_url else "")
     main = _build_one(name, base_url=base_url, model_id=model_id, api_key=api_key, device=device, ocr_url=ocr_url)
     if not text or text == main.name:
-        return main
+        return _with_pose(main, main)
     # *model_id* names one model. It is the main verifier's when that one loads a model; a reader of another
     # kind then takes its own default, since a Florence id is no Ollama tag and the reverse.
     reader_model = None if main.name in _MODEL_VERIFIERS else model_id
@@ -56,7 +69,14 @@ def build_verifier(
     if not getattr(reader, "reads_text", False):
         raise ValueError(f"text verifier {text!r} can't read text. Choose from: {', '.join(TEXT_READER_NAMES)}")
     readers = [reader, main] if getattr(main, "reads_text", False) else [reader]
-    return TextRoutingVerifier(main, readers)
+    return _with_pose(TextRoutingVerifier(main, readers), main)
+
+
+def _with_pose(verifier: AttributeVerifier, main: AttributeVerifier) -> AttributeVerifier:
+    """Route posture to argus-puppet ahead of *verifier* when ``LENS_POSE_URL`` is set and *main* isn't puppet."""
+    if getattr(main, "reads_pose", False) or not pose_url_from_env():
+        return verifier
+    return PoseRoutingVerifier(verifier, PoseVerifier())
 
 
 _MODEL_VERIFIERS: frozenset[str] = frozenset({"openai-compat", "florence", "molmo"})  # verifiers *model_id* configures
@@ -75,6 +95,8 @@ def _build_one(
     key = name.strip().lower()
     if key == "ocr":
         return OcrVerifier(ocr_url)
+    if key == "pose":
+        return PoseVerifier()
     if key == "tag-prior":
         return TagPriorVerifier()
     if key == "openai-compat":
@@ -93,6 +115,8 @@ def _build_one(
 
 __all__ = [
     "OCR_URL_ENV",
+    "POSE_TIMEOUT_ENV",
+    "POSE_URL_ENV",
     "TEXT_READER_NAMES",
     "TEXT_VERIFIER_ENV",
     "VERIFIER_NAMES",
@@ -100,6 +124,9 @@ __all__ = [
     "MolmoVerifier",
     "OcrVerifier",
     "OpenAICompatVQAVerifier",
+    "PoseCheckFailed",
+    "PoseRoutingVerifier",
+    "PoseVerifier",
     "TagPriorVerifier",
     "TextRoutingVerifier",
     "build_verifier",
