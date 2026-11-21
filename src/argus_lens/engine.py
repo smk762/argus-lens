@@ -361,6 +361,24 @@ class ArgusLens:
         return self._backend
 
     @property
+    def active(self) -> int:
+        """Inferences in flight now (an unload refuses while any are)."""
+        return self._active
+
+    @property
+    def idle_s(self) -> float | None:
+        """Seconds since the last inference boundary (start or end); None before the first."""
+        return (time.monotonic() - self._last_used) if self._last_used is not None else None
+
+    @property
+    def model_state(self) -> str:
+        """Where the model is, in cortex's ``ResidentState`` terms: ``unloaded``, ``cpu`` (loaded with
+        ``device="cpu"``) or ``gpu`` (loaded on any other device)."""
+        if not self._loaded:
+            return "unloaded"
+        return "cpu" if self._device == "cpu" else "gpu"
+
+    @property
     def loaded(self) -> bool:
         """True while the backend's model is resident (loaded and not yet unloaded)."""
         return self._loaded
@@ -407,7 +425,7 @@ class ArgusLens:
             "loaded": self._loaded,
             "coordinator": getattr(self._coordinator, "name", "none"),
             "free_vram_mb": free_vram_mb(),
-            "idle_s": (time.monotonic() - self._last_used) if self._last_used is not None else None,
+            "idle_s": self.idle_s,
         }
 
     def close(self) -> None:
