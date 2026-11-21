@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-21
+
 ### Added
 - **`ocr` text reader for reconcile (#141).** `text` claims (names and quotes the prose says it read) can be
   checked by argus-retina's OCR server (`ghcr.io/smk762/argus-retina-ocr`, PP-OCRv6 small, CPU) through
@@ -21,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (gated by `--fail-on-regression`) and of the raw backend output, plus their paired difference,
   which shows whether assembly removes hallucinations or adds them. New flags: `--judge-url`,
   `--judge-key` (or `ARGUS_JUDGE_API_KEY`), `--judge-threshold`. See `eval/README.md`.
+- **`/health` and `/admin/unload` follow argus-cortex's resident contract (#144),** which argus-iris
+  reads. `/health` carries `model_state` (`unloaded`, `cpu` or `gpu`), `busy` and `idle_s` at the top
+  level, beside the `gpu` block, so iris no longer logs lens as off-contract and can see a caption running.
+  `/admin/unload` answers `model_state` and `unloaded`, or `409 {"status": "busy", "active": n}` while a
+  caption runs, unloading nothing (before: `unloaded: false`).
 
 ### Changed
 - **A text claim is dropped only when the transcription contradicts it (#141).** Before, any claim the
@@ -31,8 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that drops 0 true claims and 3 of 6 false ones, and the #87 Nobel diploma case is still dropped. Matching
   also tolerates words run together ("N.Y.PUBLIC") and dropped accents ("Cafe" for "Café").
 - Requires argus-cortex 0.11 (for `OcrClient`).
+- **Hint words:** "leaning" and "leans" are pose only (they were pose and action, so a fragment's category
+  came from tie-breaking), and "looking at camera" is pose beside "looking at viewer", not identity, which
+  training captions drop.
+- A clause with no content words ("It is") is dropped whether or not the tagger returned tags; before, it
+  survived only without tags.
 
 ### Fixed
+- `ArgusLens.close()` waits for running captions before unloading, and no lineage write reaches a closed
+  recorder: a caption finishing after close is returned unrecorded, with a warning.
+- A title or abbreviation ("Prof.", "Gen.", "Ph.D.") no longer ends a read name's sentence: "signed by
+  Prof. Niels Bohr" was cut to "Prof." and dropped.
+- Eval prose matching: plural-only tag nouns (shorts, glasses, bangs, ...) match only themselves, so
+  "short hair" no longer counts as the `shorts` tag.
+- `/immich/pull` closes its Immich client on any setup error; a folder it cannot create (permission,
+  disk full) is a clear 500.
+- `workflows/curate_index.py caption`: a count-server failure keeps the caption, with `vlm_count: null`
+  and the error logged with `stage: "count"`.
 - A name after a reading verb no longer runs into the next sentence ("addressed to Henri Becquerel. Gold
   borders..." claimed "Henri Becquerel. Gold"), which no transcription would confirm.
 - The `training` variant's random drops (augmentation) could take every fragment and leave only the
@@ -831,7 +853,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/smk762/argus-lens/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/smk762/argus-lens/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-lens/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-lens/compare/v0.11.0...v0.12.0
