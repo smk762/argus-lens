@@ -46,7 +46,8 @@ PROMPT = (
 )
 
 _CLAIM_SPLIT = re.compile(r"[.!?;,\n]+")
-_THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+# An unclosed block (cut off by max_tokens) runs to the end: its scratch numbers are no score either.
+_THINK = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 

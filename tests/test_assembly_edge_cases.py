@@ -170,3 +170,9 @@ def test_plain_identity_phrases_are_still_excised() -> None:
         "A woman is wearing a red dress"
     )
     assert _clean_sentence("She has freckles and bright green eyes and wears a scarf.", None)[0] == "She wears a scarf"
+
+
+@pytest.mark.parametrize("modifier", ["off-white", "up-swept"])
+def test_a_hyphenated_modifier_that_starts_with_a_pivot_word_is_still_identity(modifier: str) -> None:
+    """ "off-white hair" is an identity phrase: the "off" in it is no preposition."""
+    assert _clean_sentence(f"A woman with {modifier} hair holding a cup.", None)[0] == "A woman holding a cup"

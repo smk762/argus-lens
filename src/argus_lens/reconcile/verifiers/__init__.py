@@ -49,11 +49,17 @@ def build_verifier(
     main = _build_one(name, base_url=base_url, model_id=model_id, api_key=api_key, device=device, ocr_url=ocr_url)
     if not text or text == main.name:
         return main
-    reader = _build_one(text, base_url=base_url, model_id=model_id, api_key=api_key, device=device, ocr_url=ocr_url)
+    # *model_id* names one model. It is the main verifier's when that one loads a model; a reader of another
+    # kind then takes its own default, since a Florence id is no Ollama tag and the reverse.
+    reader_model = None if main.name in _MODEL_VERIFIERS else model_id
+    reader = _build_one(text, base_url=base_url, model_id=reader_model, api_key=api_key, device=device, ocr_url=ocr_url)
     if not getattr(reader, "reads_text", False):
         raise ValueError(f"text verifier {text!r} can't read text. Choose from: {', '.join(TEXT_READER_NAMES)}")
     readers = [reader, main] if getattr(main, "reads_text", False) else [reader]
     return TextRoutingVerifier(main, readers)
+
+
+_MODEL_VERIFIERS: frozenset[str] = frozenset({"openai-compat", "florence", "molmo"})  # verifiers *model_id* configures
 
 
 def _build_one(

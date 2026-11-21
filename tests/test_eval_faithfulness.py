@@ -64,6 +64,7 @@ class _BrokenJudge:
         ("85", 85.0),
         ("Score: 12.5", 12.5),
         ("<think>maybe 20, maybe 30</think>\n90", 90.0),
+        ("<think>The image shows 2 people", None),  # cut off by max_tokens: scratch numbers are no score
         ("150", None),
         ("I cannot tell.", None),
         ("", None),
