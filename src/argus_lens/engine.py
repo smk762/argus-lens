@@ -22,6 +22,7 @@ from argus_lens.assembly.tag_reconcile import is_monochrome
 from argus_lens.backends.base import CaptionBackend
 from argus_lens.backends.hybrid import HybridPipeline
 from argus_lens.backends.replay import ReplayBackend, ReplayMiss
+from argus_lens.priority import priority_for_lease_kind, sibling_priority
 from argus_lens.retry import clear_gpu_cache, run_with_oom_retry
 from argus_lens.types import (
     CaptionResult,
@@ -592,8 +593,13 @@ class ArgusLens:
                     if use_lease
                     else contextlib.nullcontext()
                 )
-                with lease:
-                    return self._infer_locked(pil)
+                # A sibling the reconciler calls (argus-puppet) gets this work's priority class.
+                priority = sibling_priority.set(priority_for_lease_kind(kind))
+                try:
+                    with lease:
+                        return self._infer_locked(pil)
+                finally:
+                    sibling_priority.reset(priority)
         finally:
             with self._load_lock:
                 self._active -= 1
