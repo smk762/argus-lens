@@ -26,6 +26,7 @@ class MolmoVerifier:
     """Resolve colour/pose disputes by asking Molmo a single question each."""
 
     name = "molmo"
+    reads_text = True  # a "transcribe the text" question answers text claims
 
     def __init__(
         self,
@@ -82,8 +83,12 @@ class MolmoVerifier:
             from transformers import AutoModelForCausalLM, AutoProcessor  # noqa: PLC0415
 
             # Only reachable once the constructor saw remote code allowed.
-            processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-            model = AutoModelForCausalLM.from_pretrained(self.model_id, trust_remote_code=True, device_map=self.device)
+            # "auto" takes the checkpoint's own dtype, as the model card does. Without it transformers
+            # loads float32: ~30GB of weights, an OOM the reconciler would turn into a silent abstain.
+            processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True, torch_dtype="auto")
+            model = AutoModelForCausalLM.from_pretrained(
+                self.model_id, trust_remote_code=True, torch_dtype="auto", device_map=self.device
+            )
             self._processor = processor
             self._model = model
 

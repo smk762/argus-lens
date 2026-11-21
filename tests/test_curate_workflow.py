@@ -234,6 +234,24 @@ def test_run_json_records_count_url_and_refuses_a_different_one(library, monkeyp
         curate.main(["caption", str(run), "--count-model", "m", "--count-url", "http://b:1/v1"])
 
 
+def test_a_count_server_failure_keeps_the_caption(library, monkeypatch) -> None:
+    """The count server down: the caption is still written, with vlm_count null and the count error logged on
+    its own, so an outage never costs the primary inference (audit pack-argus-lens-50c2894ca8)."""
+    from argus_lens.backends.openai_compat import OpenAICompatBackend
+
+    def _down(self, image):
+        raise ConnectionError("count server down")
+
+    monkeypatch.setattr(OpenAICompatBackend, "caption_image", _down)
+    src, run = library
+    curate.main(["inventory", str(src), str(run)])
+    curate.main(["caption", str(run), "--limit", "1", "--count-model", "m", "--count-url", "http://a:1/v1"])
+    raw = list(curate.read_jsonl(run / "raw.jsonl"))
+    assert len(raw) == 1 and raw[0]["tags"] and raw[0]["vlm_count"] is None
+    errors = list(curate.read_jsonl(run / "errors.jsonl"))
+    assert [e["stage"] for e in errors] == ["count"] and "count server down" in errors[0]["error"]
+
+
 def test_forced_resume_is_recorded_in_run_json(library) -> None:
     """--force with different settings keeps the original ones and logs the forced mix."""
     src, run = library

@@ -32,6 +32,7 @@ class FlorenceGroundingVerifier:
     """Resolve colour disputes by grounding the subject and sampling pixels."""
 
     name = "florence"
+    reads_text = True  # <OCR> answers text claims
 
     def __init__(
         self,

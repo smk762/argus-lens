@@ -33,6 +33,10 @@ DEFAULT_CATEGORIES: tuple[str, ...] = (
 
 CAPTION_TARGET_STYLES: tuple[str, ...] = ("photo", "anime")
 
+# Composite variants assembly always builds next to the per-category ones. Any of them can be
+# selected as ``final_caption`` (and so as the ``.txt`` sidecar) through ``target_category`` (#136).
+COMPOSITE_VARIANTS: tuple[str, ...] = ("training", "training_prose", "zeroshot")
+
 
 @dataclass(frozen=True)
 class CategoryConfig:
@@ -81,7 +85,6 @@ IDENTITY_HINTS: tuple[str, ...] = (
     "brown hair",
     "black hair",
     "red hair",
-    "looking at camera",
     "age",
     "complexion",
     "skin",
@@ -217,6 +220,7 @@ POSE_HINTS: tuple[str, ...] = (
     "sitting",
     "kneeling",
     "leaning",
+    "leans",
     "posing",
     "full body",
     "upper body",
@@ -238,6 +242,7 @@ POSE_HINTS: tuple[str, ...] = (
     "crouching",
     "squatting",
     "looking at viewer",
+    "looking at camera",
     "looking back",
     "looking to the side",
     "looking up",
@@ -449,8 +454,6 @@ ACTION_HINTS: tuple[str, ...] = (
     "sticks out",
     "tongue out",
     "tongue extended",
-    "leaning",
-    "leans",
     "riding",
     "rides",
     "on horseback",
@@ -625,7 +628,8 @@ class CaptionTargetProfile:
     Attributes:
         target_style: ``"photo"`` or ``"anime"`` — affects tag budgets and
             classification heuristics.
-        target_category: Which category variant becomes ``final_caption``.
+        target_category: Which variant becomes ``final_caption``: a category name or one of
+            ``COMPOSITE_VARIANTS`` (``training``, ``training_prose``, ``zeroshot``).
         target_backend: Diffusion backend name (``"sdxl"``, ``"flux"``, etc.)
             — determines the CLIP/T5 token budget.
         checkpoint: Optional checkpoint name — used for style inference
@@ -676,6 +680,21 @@ def normalise_target_category(
     return "identity"
 
 
+def normalise_selected_variant(
+    variant: str | None,
+    categories: tuple[CategoryConfig, ...] | None = None,
+) -> str:
+    """Normalise the variant that becomes ``final_caption``: a category or a composite variant.
+
+    Like :func:`normalise_target_category`, but also accepts ``training``, ``training_prose``
+    and ``zeroshot``. Anything else falls back to ``"identity"``.
+    """
+    value = (variant or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in COMPOSITE_VARIANTS:
+        return value
+    return normalise_target_category(value, categories)
+
+
 def resolve_target_profile(
     *,
     target_style: str = "photo",
@@ -689,7 +708,7 @@ def resolve_target_profile(
 ) -> CaptionTargetProfile:
     """Build a fully resolved target profile."""
     style = normalise_target_style(target_style, checkpoint, target_backend)
-    category = normalise_target_category(target_category, categories)
+    category = normalise_selected_variant(target_category, categories)
     budget = TokenBudgetConfig.for_backend(target_backend, token_budget_override)
     threshold = resolve_redundancy_threshold(hybrid_preset, prose_bias)
     return CaptionTargetProfile(

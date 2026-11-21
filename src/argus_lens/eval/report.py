@@ -9,7 +9,9 @@ if TYPE_CHECKING:
 
 # Gate metrics and their direction. "lower" = smaller is better (contradictions,
 # overflow); "higher" = larger is better (coverage recall, CLIP alignment).
-# Redundancy is descriptive only and deliberately excluded from the gate.
+# Redundancy is descriptive only and deliberately excluded from the gate, as are
+# the raw (pre-assembly) unsupported rate and the assembly delta: the gate judges
+# what ships, the final caption.
 _METRIC_DIRECTION: dict[str, str] = {
     "contradiction_rate_mean": "lower",
     "items_with_contradiction_pct": "lower",
@@ -17,6 +19,8 @@ _METRIC_DIRECTION: dict[str, str] = {
     "over_budget_pct.zeroshot": "lower",
     "coverage_recall_mean": "higher",
     "clip_mean": "higher",
+    "unsupported_rate_final_mean": "lower",
+    "items_with_unsupported_pct": "lower",
 }
 
 DEFAULT_TOLERANCE = 0.01
@@ -35,6 +39,11 @@ def _get(aggregates: dict[str, Any], dotted: str) -> float | None:
 def _fmt(value: float | None) -> str:
     """Format a metric value, rendering ``None`` as ``n/a``."""
     return "n/a" if value is None else f"{value:.3f}"
+
+
+def _signed(value: float | None) -> str:
+    """Format a delta with its sign, rendering ``None`` as ``n/a``."""
+    return "n/a" if value is None else f"{value:+.3f}"
 
 
 def format_scorecard(scorecard: Scorecard) -> str:
@@ -65,6 +74,17 @@ def format_scorecard(scorecard: Scorecard) -> str:
         ("tag-coverage recall", _fmt(a.get("coverage_recall_mean")) + "   (higher better, labelled only)"),
         ("CLIPScore", _fmt(a.get("clip_mean")) + "   (higher better)"),
     ]
+    if a.get("faithfulness_errors") is not None:
+        rows += [
+            ("unsupported claims: final", _fmt(a.get("unsupported_rate_final_mean")) + "   (lower better)"),
+            ("unsupported claims: raw", _fmt(a.get("unsupported_rate_raw_mean")) + "   (backend output)"),
+            ("assembly delta (final − raw)", _signed(a.get("assembly_unsupported_delta_mean")) + "   (< 0: removed)"),
+            ("images with an unsupported claim", _fmt(a.get("items_with_unsupported_pct"))),
+            ("judge errors", str(a.get("faithfulness_errors"))),
+        ]
+        lines.insert(
+            3, f"judge: {scorecard.config.get('judge_model')}   threshold: {scorecard.config.get('judge_threshold')}"
+        )
     width = max(len(label) for label, _ in rows)
     lines += [f"  {label.ljust(width)}  {value}" for label, value in rows]
     return "\n".join(lines)

@@ -215,11 +215,12 @@ def reconcile_tags(tags: list[str], prose: str = "", *, monochrome: bool = False
 
     # --- person nouns (#85) ---
     for adult, child in _ADULT_CHILD:
-        if child not in keys or (prose and words & _CHILD_WORDS):
+        # No prose is no evidence either way: a mother and daughter keep both nouns.
+        if child not in keys or not prose or words & _CHILD_WORDS:
             continue
         if adult in keys:
             drop(child, f"dropped {child!r}: also tagged {adult!r} and the prose names no child")
-        elif prose and adult in words:
+        elif adult in words:
             replace(child, adult, f"{child!r} -> {adult!r}: the prose names a {adult} and no child")
     if prose and "man" in keys and "woman" in keys:
         female, male = bool(words & _FEMALE_WORDS), bool(words & _MALE_WORDS)

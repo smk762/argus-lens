@@ -9,7 +9,7 @@ import inspect
 import io
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,7 @@ logger = structlog.get_logger()
 # local coordinators ignore the kind.
 LEASE_KIND_CAPTION = "caption"
 LEASE_KIND_BATCH = "caption-batch"
+CLOSE_DRAIN_TIMEOUT_S = 30.0  # close() waits this long for running inferences before unloading
 
 # Backend string -> constructor lookup
 _BACKEND_REGISTRY: dict[str, type] = {}
@@ -189,19 +190,29 @@ def _find_images(directory: Path, glob: str, *, recursive: bool) -> list[Path]:
     camera's ``IMG_1.JPG`` is found by ``*.jpg``. Each directory entry is listed
     once and tested against every pattern, so a case-insensitive filesystem (or
     overlapping patterns) can't yield one image twice. A pattern with a path
-    separator keeps plain (case-sensitive) ``Path.glob`` semantics.
+    separator is passed to ``Path.glob`` unchanged (case-sensitive, no extension
+    shorthand), so ``raw/*.jpg`` means what it says. Such a pattern may not be
+    absolute or contain ``..`` (``ValueError``), and a match that resolves outside
+    *directory* is left out: a glob names files under the directory, nothing else.
     """
     name_patterns: list[str] = []
     found: set[Path] = set()
+    base: Path | None = None
     for pattern in glob.replace("{", "").replace("}", "").split(","):
         pattern = pattern.strip()
         if not pattern:
             continue
-        pattern = f"*.{pattern}" if not pattern.startswith("*") else pattern
         if "/" in pattern or "\\" in pattern:
-            found.update(directory.rglob(pattern) if recursive else directory.glob(pattern))
+            parts = pattern.replace("\\", "/").split("/")
+            if ".." in parts or not parts[0] or parts[0].endswith(":"):
+                raise ValueError(f"glob pattern must stay inside the directory: {pattern!r}")
+            if base is None:
+                base = directory.resolve()
+            matches = directory.rglob(pattern) if recursive else directory.glob(pattern)
+            found.update(p for p in matches if p.resolve().is_relative_to(base))
         else:
-            name_patterns.append(pattern.lower())
+            # Only a bare extension ("jpg") gets the shorthand; "IMG_*.jpg" is already a pattern.
+            name_patterns.append((pattern if any(c in pattern for c in "*?[") else f"*.{pattern}").lower())
     if name_patterns:
         candidates = directory.rglob("*") if recursive else directory.iterdir()
         found.update(p for p in candidates if any(fnmatch.fnmatchcase(p.name.lower(), pat) for pat in name_patterns))
@@ -326,9 +337,17 @@ class ArgusLens:
         self._oom_retry_interval_s = oom_retry_interval_s
         self._loaded = False
         self._load_lock = threading.Lock()
+        # Held from a cold engine's footprint-sized lease until its first inference returns, so
+        # concurrent cold requests don't each wait for room the first one's weights now fill.
+        self._cold_start_lock = threading.Lock()
         self._kwargs = kwargs
         self._last_used: float | None = None
         self._active = 0  # in-flight inferences; guarded by _load_lock
+        self._captions = 0  # live captions, inference through lineage write; guarded by _load_lock
+        self._drained = threading.Condition(self._load_lock)  # notified whenever _active or _captions drops
+        # Serialises lineage writes against close(): no record() reaches a closed recorder.
+        self._record_lock = threading.Lock()
+        self._closed = False
         # Weights are fetched once, outside the GPU lease (#64). Separate lock: a
         # multi-minute download must not block unload() or the busy counter.
         self._prefetched = False
@@ -359,6 +378,24 @@ class ArgusLens:
     def backend(self) -> CaptionBackend:
         """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
+
+    @property
+    def active(self) -> int:
+        """Inferences in flight now (an unload refuses while any are)."""
+        return self._active
+
+    @property
+    def idle_s(self) -> float | None:
+        """Seconds since the last inference boundary (start or end); None before the first."""
+        return (time.monotonic() - self._last_used) if self._last_used is not None else None
+
+    @property
+    def model_state(self) -> str:
+        """Where the model is, in cortex's ``ResidentState`` terms: ``unloaded``, ``cpu`` (loaded with
+        ``device="cpu"``) or ``gpu`` (loaded on any other device)."""
+        if not self._loaded:
+            return "unloaded"
+        return "cpu" if self._device == "cpu" else "gpu"
 
     @property
     def loaded(self) -> bool:
@@ -407,16 +444,40 @@ class ArgusLens:
             "loaded": self._loaded,
             "coordinator": getattr(self._coordinator, "name", "none"),
             "free_vram_mb": free_vram_mb(),
-            "idle_s": (time.monotonic() - self._last_used) if self._last_used is not None else None,
+            "idle_s": self.idle_s,
         }
 
-    def close(self) -> None:
-        """Stop the idle reaper (if running) and unload the model."""
+    def close(self, drain_timeout_s: float = CLOSE_DRAIN_TIMEOUT_S) -> None:
+        """Stop the idle reaper (if running), let in-flight inferences finish, unload the model and close the
+        lineage recorder.
+
+        Waits up to *drain_timeout_s* for running captions, from inference through their lineage write, since
+        ``unload()`` refuses while an inference runs and a caption composes and refines after it. A caption still
+        running when the wait times out is returned unrecorded, with a warning, never written to a closed store.
+        """
         if self._reaper_stop is not None:
             self._reaper_stop.set()
+        with self._drained:
+            if not self._drained.wait_for(lambda: self._active == 0 and self._captions == 0, timeout=drain_timeout_s):
+                logger.warning("close_with_captions_running", active=self._active, captions=self._captions)
         self.unload()
-        if self._recorder is not None:
-            self._recorder.close()
+        with self._record_lock:
+            self._closed = True
+            if self._recorder is not None:
+                self._recorder.close()
+
+    @contextlib.contextmanager
+    def _live_caption(self) -> Iterator[None]:
+        """Count one caption from its inference to its lineage write, so close() waits for all of it: the
+        composing and refining after inference can outlast the model call."""
+        with self._load_lock:
+            self._captions += 1
+        try:
+            yield
+        finally:
+            with self._load_lock:
+                self._captions -= 1
+                self._drained.notify_all()
 
     def _start_idle_reaper(self, idle_unload_s: float) -> None:
         """Start a daemon thread that unloads the model after idle periods (#37).
@@ -512,21 +573,32 @@ class ArgusLens:
             self._last_used = time.monotonic()
             resident = self._loaded
         try:
-            # The lease waits for min_vram_mb *free*, and a resident model is already
-            # counted as used: asking for the footprint again would wait on our own
-            # weights. Only a load needs room; a resident model just takes the lock.
-            min_vram_mb = 0 if resident else footprint
-            lease = (
-                self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb, kind=kind)
-                if use_lease
-                else contextlib.nullcontext()
-            )
-            with lease:
-                return self._infer_locked(pil)
+            with contextlib.ExitStack() as cold_start:
+                if use_lease and not resident:
+                    # Single-flight the load: requests that arrive while the model is cold queue
+                    # here, not on the coordinator. Whoever follows the loader finds the model
+                    # resident and asks for no room. (A failed load leaves it cold, and the next
+                    # request in line tries the load itself.)
+                    cold_start.enter_context(self._cold_start_lock)
+                    resident = self._loaded
+                    if resident:
+                        cold_start.close()
+                # The lease waits for min_vram_mb *free*, and a resident model is already
+                # counted as used: asking for the footprint again would wait on our own
+                # weights. Only a load needs room; a resident model just takes the lock.
+                min_vram_mb = 0 if resident else footprint
+                lease = (
+                    self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb, kind=kind)
+                    if use_lease
+                    else contextlib.nullcontext()
+                )
+                with lease:
+                    return self._infer_locked(pil)
         finally:
             with self._load_lock:
                 self._active -= 1
                 self._last_used = time.monotonic()
+                self._drained.notify_all()
 
     def _infer_locked(self, pil: Image.Image) -> tuple[str, str]:
         """Load (if needed) and run inference; retries on CUDA OOM (#9)."""
@@ -637,19 +709,20 @@ class ArgusLens:
             categories=self._categories,
         )
 
-        tags, prose = self._infer(pil, lease_kind)
+        with self._live_caption():
+            tags, prose = self._infer(pil, lease_kind)
 
-        result = compose_caption_result(
-            trigger_word=trigger_word,
-            tags=tags,
-            prose=prose,
-            target_profile=profile,
-            prose_enrichment=prose_enrichment,
-            categories=self._categories,
-            backend_name=self._backend.name,
-            monochrome=is_monochrome(pil),
-        )
-        return self._finish(result, profile, trigger_word, pil, asset, asset.name)
+            result = compose_caption_result(
+                trigger_word=trigger_word,
+                tags=tags,
+                prose=prose,
+                target_profile=profile,
+                prose_enrichment=prose_enrichment,
+                categories=self._categories,
+                backend_name=self._backend.name,
+                monochrome=is_monochrome(pil),
+            )
+            return self._finish(result, profile, trigger_word, pil, asset, asset.name)
 
     def _refine(self, result: CaptionResult, profile: Any, trigger_word: str, pil: Image.Image) -> CaptionResult:
         """Apply the optional LLM refiner (validated, falls back to *result*)."""
@@ -669,7 +742,13 @@ class ArgusLens:
         """Refine a live caption, then record it in the lineage store when a recorder is set."""
         result = self._refine(result, profile, trigger_word, pil)
         if self._recorder is not None:
-            self._recorder.record(asset, result, name=name, profile=profile, params={"trigger_word": trigger_word})
+            with self._record_lock:
+                if self._closed:
+                    logger.warning("lineage_skipped_engine_closed", name=name)
+                else:
+                    self._recorder.record(
+                        asset, result, name=name, profile=profile, params={"trigger_word": trigger_word}
+                    )
         return result
 
     def caption_batch(
@@ -742,21 +821,22 @@ class ArgusLens:
                 pil.save(buf, format="PNG")
                 h = _image_hash(buf.getvalue())
 
-                if h not in caption_cache:
-                    caption_cache[h] = self._infer(pil, LEASE_KIND_BATCH)
+                with self._live_caption():
+                    if h not in caption_cache:
+                        caption_cache[h] = self._infer(pil, LEASE_KIND_BATCH)
 
-                cached_tags, cached_prose = caption_cache[h]
-                composed = compose_caption_result(
-                    trigger_word=trigger_word,
-                    tags=cached_tags,
-                    prose=cached_prose,
-                    target_profile=profile,
-                    image_index=idx,
-                    categories=self._categories,
-                    backend_name=self._backend.name,
-                    monochrome=is_monochrome(pil),
-                )
-                results[name] = self._finish(composed, profile, trigger_word, pil, asset, name)
+                    cached_tags, cached_prose = caption_cache[h]
+                    composed = compose_caption_result(
+                        trigger_word=trigger_word,
+                        tags=cached_tags,
+                        prose=cached_prose,
+                        target_profile=profile,
+                        image_index=idx,
+                        categories=self._categories,
+                        backend_name=self._backend.name,
+                        monochrome=is_monochrome(pil),
+                    )
+                    results[name] = self._finish(composed, profile, trigger_word, pil, asset, name)
 
             if progress is not None:
                 progress(idx + 1, total, name, results[name])
@@ -814,18 +894,20 @@ class ArgusLens:
                     yield name, miss
                 continue
 
-            tags, prose = self._infer(pil, LEASE_KIND_BATCH)
-            result = compose_caption_result(
-                trigger_word=trigger_word,
-                tags=tags,
-                prose=prose,
-                target_profile=profile,
-                image_index=idx,
-                categories=self._categories,
-                backend_name=self._backend.name,
-                monochrome=is_monochrome(pil),
-            )
-            yield name, self._finish(result, profile, trigger_word, pil, asset, name)
+            with self._live_caption():  # not held across the yield: a paused consumer must not stall close()
+                tags, prose = self._infer(pil, LEASE_KIND_BATCH)
+                result = compose_caption_result(
+                    trigger_word=trigger_word,
+                    tags=tags,
+                    prose=prose,
+                    target_profile=profile,
+                    image_index=idx,
+                    categories=self._categories,
+                    backend_name=self._backend.name,
+                    monochrome=is_monochrome(pil),
+                )
+                result = self._finish(result, profile, trigger_word, pil, asset, name)
+            yield name, result
 
     def caption_directory(
         self,

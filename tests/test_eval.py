@@ -330,10 +330,21 @@ def test_noun_variants_do_not_match_unrelated_es_words() -> None:
 
 
 def test_noun_variants_cover_ies_plurals_both_ways() -> None:
-    """sky ↔ skies and glasses ↔ glass are matched in prose."""
+    """sky ↔ skies and dresses ↔ dress are matched in prose."""
     r = CaptionResult(final_caption="x", raw_tags="blue_sky", raw_prose="under grey skies")
     assert tag_prose_contradiction(r)["count"] == 1
     r = CaptionResult(final_caption="x", raw_tags="blue_skies", raw_prose="a grey sky")
     assert tag_prose_contradiction(r)["count"] == 1
-    r = CaptionResult(final_caption="x", raw_tags="red_glasses", raw_prose="a blue glass")
+    r = CaptionResult(final_caption="x", raw_tags="red_dresses", raw_prose="a blue dress")
     assert tag_prose_contradiction(r)["count"] == 1
+
+
+def test_plural_only_tag_nouns_do_not_match_a_different_word() -> None:
+    """'glasses' is not 'a glass', 'shorts' not 'short hair': no false contradiction (audit
+    pack-argus-lens-117f11a1ad)."""
+    r = CaptionResult(final_caption="x", raw_tags="red_glasses", raw_prose="a blue glass")
+    assert tag_prose_contradiction(r)["count"] == 0
+    r = CaptionResult(final_caption="x", raw_tags="black_shorts", raw_prose="blonde short hair")
+    assert tag_prose_contradiction(r)["count"] == 0
+    r = CaptionResult(final_caption="x", raw_tags="red_glasses", raw_prose="blue glasses")
+    assert tag_prose_contradiction(r)["count"] == 1  # the tag itself still matches

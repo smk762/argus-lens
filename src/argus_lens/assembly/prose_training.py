@@ -36,11 +36,30 @@ _ID_TAIL = (
 )
 # One identity noun phrase ("long wavy brown hair"), optionally coordinated
 # with more ("freckles and bright green eyes", "red hair, green eyes").
-_ID_NP = rf"(?:[\w-]+\s+){{0,4}}?{_IDENTITY_NOUNS}{_ID_TAIL}"
+# The words before the noun are modifiers only. A preposition, conjunction or carrying
+# verb, or a second determiner ("her hands in her hair", "a hat over her eyes", "a smile
+# and blue eyes"), means the phrase is headed by another noun: a pose or a prop, kept.
+_ID_DETERMINER = r"(?:a|an|the|her|his|their|its|my|your|our)"
+_ID_PIVOT = (
+    r"(?:in|on|at|of|to|by|for|from|into|onto|over|under|above|below|around|across|through|behind|beside|"
+    r"between|against|near|along|up|down|off|out|and|or|but|with|without|while|as|that|which|who|"
+    r"holding|covering|touching|framing|hiding|wearing)"
+)
+_ID_NP = (
+    # (?![\w-]), not \b: "off-white" and "up-swept" are modifiers, not the pivots "off" and "up".
+    rf"(?:{_ID_DETERMINER}\s+)?(?:(?!(?:{_ID_PIVOT}|{_ID_DETERMINER})(?![\w-]))[\w-]+\s+){{0,4}}?"
+    rf"{_IDENTITY_NOUNS}{_ID_TAIL}"
+)
 _ID_LIST = rf"{_ID_NP}(?:\s*(?:,\s*(?:and\s+)?|\s+and\s+){_ID_NP})*"
 _IDENTITY_PHRASE = re.compile(
     rf",?\s*\b(?:has|have|having)\s+{_ID_LIST}\s+and(?=\s)"
     rf"|,?\s*\b(?:with|has|have|having)\s+{_ID_LIST}\b",
+    re.IGNORECASE,
+)
+# An identity phrase coordinated after something else: "with a smile and blue eyes" keeps
+# "with a smile". Runs after _IDENTITY_PHRASE, so what precedes "and" is not identity.
+_COORDINATED_IDENTITY = re.compile(
+    rf"(\bwith\s+(?:(?!{_ID_PIVOT}\b)[\w-]+\s+){{0,4}}?(?!{_ID_PIVOT}\b)[\w-]+),?\s+and\s+{_ID_LIST}\b",
     re.IGNORECASE,
 )
 # A comma between coordinated adjectives of an identity noun: "with light-colored,
@@ -88,6 +107,8 @@ def _clean_sentence(
     original_clauses = {c.strip() for c in text.split(",")}
     removed.extend(m.group(0).strip(" ,") for m in _IDENTITY_PHRASE.finditer(text))
     text = _IDENTITY_PHRASE.sub("", text)
+    removed.extend(m.group(0)[len(m.group(1)) :].strip(" ,") for m in _COORDINATED_IDENTITY.finditer(text))
+    text = _COORDINATED_IDENTITY.sub(r"\1", text)
     kept: list[str] = []
     dropped_after: set[int] = set()  # indexes of kept clauses followed by a dropped one
     for clause in (c.strip() for c in text.split(",")):

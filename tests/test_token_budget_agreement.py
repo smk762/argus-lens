@@ -16,16 +16,18 @@ def test_packed_caption_fits_whole_text_estimate(backend: str, trigger: str) -> 
     """30 one-word tags packed into 60 tokens measure at most 60 as finished text."""
     kept: list[str] = []
     rejected: str | None = None
+    kept_at_rejection: list[str] = []
     for tag in _TAGS:
         added = try_add_fragment(tag, kept, max_segments=100, token_budget=60, backend=backend, trigger_word=trigger)
         if not added and rejected is None:
-            rejected = tag
+            rejected, kept_at_rejection = tag, list(kept)  # what the packer measured against, not what came later
     text = f"{trigger}, {', '.join(kept)}" if trigger else ", ".join(kept)
     assert estimate_tokens(text, backend) <= 60
     assert caption_tokens(kept, backend, trigger_word=trigger) == estimate_tokens(text, backend)
-    # Packing is tight: the next tag would have overflowed the whole-text estimate.
+    # Packing is tight: the rejected tag would have overflowed the caption as it stood when it was refused
+    # (audit pack-argus-lens-4830664ed2: measuring against the final list let a wrong refusal pass).
     assert rejected is not None
-    assert caption_tokens([*kept, rejected], backend, trigger_word=trigger) > 60
+    assert caption_tokens([*kept_at_rejection, rejected], backend, trigger_word=trigger) > 60
 
 
 def test_issue_80_example_no_longer_overruns() -> None:

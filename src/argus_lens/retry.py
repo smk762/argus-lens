@@ -51,6 +51,12 @@ def run_with_oom_retry(
 
     Between retries the function calls *cleanup_fn* (e.g. clear model
     cache, empty CUDA cache) and waits with exponential backoff.
+
+    The cleanup, the callbacks and the wait all run after the ``except`` block has
+    exited and with the error's traceback dropped. A live traceback holds the failed
+    frames, and their locals (the tensors that did not fit) stay allocated for as
+    long as it does, so nothing the cleanup frees would be the memory that ran out.
+    The ``last_error`` of :class:`OOMDeadlineExceededError` therefore has no traceback.
     """
     attempts = 0
     deadline = time.monotonic() + max(0.0, max_wait_s)
@@ -62,29 +68,32 @@ def run_with_oom_retry(
         except Exception as exc:
             if not is_oom_error(exc):
                 raise
+            # Keep the error, not its frames; everything else waits until the block has exited.
+            oom = exc.with_traceback(None)
 
-            attempts += 1
-            if cleanup_fn is not None:
-                cleanup_fn()
-            if on_oom is not None:
-                on_oom(exc, attempts)
+        attempts += 1
+        if cleanup_fn is not None:
+            cleanup_fn()
+        if on_oom is not None:
+            on_oom(oom, attempts)
 
-            now = time.monotonic()
-            if now >= deadline:
-                raise OOMDeadlineExceededError(
-                    attempts=attempts,
-                    max_wait_s=max_wait_s,
-                    last_error=exc,
-                ) from exc
+        now = time.monotonic()
+        if now >= deadline:
+            raise OOMDeadlineExceededError(
+                attempts=attempts,
+                max_wait_s=max_wait_s,
+                last_error=oom,
+            ) from oom
 
-            # Cap the exponent: past ~1000 attempts (interval_s=0 spins fast) 2**n is
-            # too large for a float and would raise OverflowError over the real OOM.
-            backoff = interval_s * 2.0 ** min(attempts - 1, _MAX_BACKOFF_EXPONENT)
-            wait_s = min(backoff, max(0.0, deadline - now))
-            if wait_s > 0:
-                if on_retry is not None:
-                    on_retry(wait_s, attempts)
-                time.sleep(wait_s)
+        # Cap the exponent: past ~1000 attempts (interval_s=0 spins fast) 2**n is
+        # too large for a float and would raise OverflowError over the real OOM.
+        backoff = interval_s * 2.0 ** min(attempts - 1, _MAX_BACKOFF_EXPONENT)
+        wait_s = min(backoff, max(0.0, deadline - now))
+        del oom
+        if wait_s > 0:
+            if on_retry is not None:
+                on_retry(wait_s, attempts)
+            time.sleep(wait_s)
 
 
 def cuda_free_vram_mb() -> int | None:

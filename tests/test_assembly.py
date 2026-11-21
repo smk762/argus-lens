@@ -563,3 +563,19 @@ class TestNewCategories:
         """Lighting descriptions classify as lighting."""
         assert classify_fragment("dramatic backlighting with harsh shadows") == "lighting"
         assert classify_fragment("golden hour rim light and silhouette") == "lighting"
+
+
+class _DropEverything(random.Random):
+    """An RNG whose diversity pass drops every fragment it may."""
+
+    def random(self) -> float:
+        """Always below the drop probability."""
+        return 0.0
+
+
+def test_diversity_pass_never_leaves_the_trigger_alone() -> None:
+    """Random drops are augmentation: when they take every fragment, one comes back (CI flake on #142)."""
+    buckets = {"setting": ["kitchen", "indoors", "window"]}
+    caption, removed = assemble_training_variant("sks", buckets, "photo", rng=_DropEverything())
+    assert caption.startswith("sks, ") and caption.removeprefix("sks, ") in buckets["setting"]
+    assert caption.removeprefix("sks, ") not in removed

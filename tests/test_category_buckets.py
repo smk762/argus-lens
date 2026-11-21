@@ -116,6 +116,23 @@ def test_final_caption_matches_selected_variant(category: str) -> None:
     assert "red dress" in result.final_caption
 
 
+@pytest.mark.parametrize("variant", ["training", "training_prose", "zeroshot", "Training-Prose"])
+def test_final_caption_can_be_a_composite_variant(variant: str) -> None:
+    """``target_category`` may name a composite variant; it no longer falls back to identity (#136)."""
+    profile = resolve_target_profile(target_style="photo", target_backend="sdxl", target_category=variant)
+    key = variant.lower().replace("-", "_")
+    assert profile.target_category == key
+    result = compose_caption_result(trigger_word="sks", tags="woman, red dress", prose="", target_profile=profile)
+    assert result.selected_category == key
+    assert result.final_caption == result.caption_variants[key]
+
+
+def test_unknown_target_category_still_falls_back_to_identity() -> None:
+    """An unrecognised name selects identity, as before."""
+    profile = resolve_target_profile(target_category="nonsense")
+    assert profile.target_category == "identity"
+
+
 @pytest.mark.parametrize("fragment", ["light brown hair", "a light jacket", "light blue shirt"])
 def test_light_as_adjective_is_not_lighting(fragment: str) -> None:
     """``light`` the shade, not the light, does not lead a fragment into the lighting bucket."""
@@ -129,3 +146,22 @@ def test_light_as_adjective_is_not_lighting(fragment: str) -> None:
 def test_no_lighting_split_without_a_turn(clause: str) -> None:
     """``the light`` mid-phrase (no comma or conjunction turn, or the shade) keeps the clause whole."""
     assert split_lighting_clauses(clause) == [clause]
+
+
+def test_no_hint_word_belongs_to_two_categories():
+    """A fragment's category must come from its words, not from tie-breaking between two categories that list
+    the same hint ("leaning" was in pose and action: audit pack-argus-lens-0e22b84a18)."""
+    import itertools
+
+    from argus_lens.types import DEFAULT_CATEGORY_CONFIGS
+
+    for a, b in itertools.combinations(DEFAULT_CATEGORY_CONFIGS, 2):
+        assert not set(a.hint_words) & set(b.hint_words), (a.name, b.name)
+
+
+def test_looking_at_camera_is_pose_like_looking_at_viewer():
+    """Gaze toward the camera is composition, kept in training captions, not identity, which training drops
+    (audit pack-argus-lens-e437056a78)."""
+    from argus_lens.assembly.classifier import classify_fragment
+
+    assert classify_fragment("looking at camera") == classify_fragment("looking at viewer") == "pose_composition"

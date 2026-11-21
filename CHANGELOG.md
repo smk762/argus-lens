@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Prose training captions kept losing poses and props.** Identity suppression let any four words sit
+  between "with" and an identity noun, so "with her hands in her hair" and "with a hat over her eyes" were
+  cut whole. Only modifiers may sit there now; "with a cane and a grey beard" loses the beard alone.
+- **Tags-only runs dropped `girl`/`boy` beside `woman`/`man`.** With no prose there is no evidence either
+  way, so both nouns are kept, as the other reconciliation rules already did.
+- **`caption_directory(glob=...)` with a directory in the pattern.** `raw/*.jpg` was rewritten to
+  `*.raw/*.jpg` and matched nothing; it is now globbed as written. A pattern that is absolute or contains
+  `..` raises `ValueError`, and a match that resolves outside the directory is left out.
+- **Cold-start bursts waited on the engine's own weights.** Concurrent first requests each asked the GPU
+  coordinator for the full footprint. The load is now single-flight: later requests wait for it, then lease
+  as resident.
+- **OOM retry could not free the memory that ran out.** Cleanup and backoff ran while the OOM's traceback
+  still held the failed frames. They now run after it is dropped; `OOMDeadlineExceededError.last_error`
+  carries no traceback.
+- **Molmo verifier loaded in float32** (about 30GB). It now loads in the checkpoint's dtype.
+- **Faithfulness judged a trigger word with underscores** (`sks_person`) as a claim.
+- **Text claims ran into the next sentence** after a two-letter surname or a suffix ("Henri Xu. The").
+
+## [0.15.0] - 2026-11-21
+
+### Added
+- **`ocr` text reader for reconcile (#141).** `text` claims (names and quotes the prose says it read) can be
+  checked by argus-retina's OCR server (`ghcr.io/smk762/argus-retina-ocr`, PP-OCRv6 small, CPU) through
+  cortex's `OcrClient`. With `--ocr-url` / `LENS_OCR_URL` set, text claims go to OCR and everything else to
+  the `--reconcile` verifier; `--text-verifier` / `LENS_TEXT_VERIFIER` picks another reader (`ocr`,
+  `florence`, `openai-compat`, `molmo`). A failed reader falls back to the `--reconcile` verifier when it
+  can read, `ReconcileChange.source` names the reader that decided, and with no reader left the failure is
+  counted, never skipped. `--reconcile ocr` checks text claims alone.
+- **`argus-lens eval --judge-model`: claim-level faithfulness.** A vision model behind any
+  OpenAI-compatible endpoint rates each caption claim 0–100 against the image, following the
+  HalDec-Bench protocol. The scorecard reports the unsupported-claim rate of the final caption
+  (gated by `--fail-on-regression`) and of the raw backend output, plus their paired difference,
+  which shows whether assembly removes hallucinations or adds them. New flags: `--judge-url`,
+  `--judge-key` (or `ARGUS_JUDGE_API_KEY`), `--judge-threshold`. See `eval/README.md`.
+- **`/health` and `/admin/unload` follow argus-cortex's resident contract (#144),** which argus-iris
+  reads. `/health` carries `model_state` (`unloaded`, `cpu` or `gpu`), `busy` and `idle_s` at the top
+  level, beside the `gpu` block, so iris no longer logs lens as off-contract and can see a caption running.
+  `/admin/unload` answers `model_state` and `unloaded`, or `409 {"status": "busy", "active": n}` while a
+  caption runs, unloading nothing (before: `unloaded: false`).
+
+### Changed
+- **A text claim is dropped only when the transcription contradicts it (#141).** Before, any claim the
+  transcription didn't contain lost its sentence. Transcriptions are rarely complete: on the lightbox tape
+  images, retina OCR missed curved, vertical and small scene text, and that rule dropped 14 of 25 true claims
+  (CINE RADIO, THE WINDMILL, Coca-Cola, ...). Now a claim goes when part of it was read and part not, or a
+  long word is a near miss ("72801-H" for "72804 H"); a claim nothing of which was read is kept. On the tape
+  that drops 0 true claims and 3 of 6 false ones, and the #87 Nobel diploma case is still dropped. Matching
+  also tolerates words run together ("N.Y.PUBLIC") and dropped accents ("Cafe" for "Café").
+- Requires argus-cortex 0.11 (for `OcrClient`).
+- **Hint words:** "leaning" and "leans" are pose only (they were pose and action, so a fragment's category
+  came from tie-breaking), and "looking at camera" is pose beside "looking at viewer", not identity, which
+  training captions drop.
+- A clause with no content words ("It is") is dropped whether or not the tagger returned tags; before, it
+  survived only without tags.
+
+### Fixed
+- `ArgusLens.close()` waits for running captions before unloading, and no lineage write reaches a closed
+  recorder: a caption finishing after close is returned unrecorded, with a warning.
+- A title or abbreviation ("Prof.", "Gen.", "Ph.D.") no longer ends a read name's sentence: "signed by
+  Prof. Niels Bohr" was cut to "Prof." and dropped.
+- Eval prose matching: plural-only tag nouns (shorts, glasses, bangs, ...) match only themselves, so
+  "short hair" no longer counts as the `shorts` tag.
+- `/immich/pull` closes its Immich client on any setup error; a folder it cannot create (permission,
+  disk full) is a clear 500.
+- `workflows/curate_index.py caption`: a count-server failure keeps the caption, with `vlm_count: null`
+  and the error logged with `stage: "count"`.
+- A name after a reading verb no longer runs into the next sentence ("addressed to Henri Becquerel. Gold
+  borders..." claimed "Henri Becquerel. Gold"), which no transcription would confirm.
+- The `training` variant's random drops (augmentation) could take every fragment and leave only the
+  trigger word, about once in 200 compositions for a short setting-only image. The first dropped fragment
+  that fits now comes back. This also made `test_coherence::test_corpus_variants_pass_post_check` flaky.
+- **`target_category` can select `training`, `training_prose` or `zeroshot`** (#136). Those names
+  used to fall back to `identity`, so `/caption/folder` and `/caption/manifest` sidecars always held
+  the identity caption. Every endpoint and `argus-lens caption --category` now accept them, and
+  `final_caption`/`selected_category` report the chosen variant.
+
+### Security
+- **Pillow 13 is now the floor** (`Pillow>=13.0`, was `>=10.0`). 13.0.0 fixes a batch of decoder
+  advisories, several reachable from `Image.open().load()` on an untrusted image, which is what
+  `/caption`, `/caption/url` and `/v1` do: heap overflows in the JPEG and FlashPix decoders
+  (GHSA-8g5g-8vmr-9782, GHSA-5x8w-8jj5-q52h), stale storage reuse in multi-frame loaders
+  (GHSA-v9pv-5gc8-w2m6) and decompression-bomb bypasses. Images and installs resolve dependencies
+  fresh, so rebuilding or reinstalling picks it up.
+- `uv.lock` moves anyio to 4.16.0, filelock to 4.2.12, setuptools to 84.2.1 and torch to 2.15.0,
+  past their open advisories.
+
 ## [0.14.0] - 2026-11-19
 
 ### Upgrading
@@ -785,7 +872,8 @@ additive/opt-in and are not wired into the default captioning path.
   tag+prose pipelines, the category-bucketed assembly engine, CLI, FastAPI
   server, and `.txt`/JSON/JSONL/CSV exporters.
 
-[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-lens/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/smk762/argus-lens/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/smk762/argus-lens/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-lens/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-lens/compare/v0.11.0...v0.12.0

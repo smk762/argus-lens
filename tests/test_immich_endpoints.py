@@ -231,6 +231,27 @@ def test_immich_pull_rejects_file_dest_folder(immich_env, album_assets, tmp_path
     assert "not a directory" in resp.json()["detail"]
 
 
+def test_immich_pull_closes_the_client_when_the_folder_cannot_be_made(
+    immich_env, album_assets, monkeypatch, tmp_path: Path
+) -> None:
+    """A PermissionError (or ENOSPC) making dest_folder is a clear 500, and the Immich client is closed, not
+    leaked with its pooled connections (audit pack-argus-lens-80fee66f06)."""
+    closed: list[bool] = []
+    monkeypatch.setattr(ImmichSource, "close", lambda self: closed.append(True))
+
+    def _denied(self, *a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", _denied)
+    client = TestClient(
+        create_app(default_backend=_StubBackend(), source_root=str(tmp_path)), raise_server_exceptions=False
+    )
+    resp = client.post("/immich/pull", json={"album_id": "al1", "dest_folder": "new"})
+    assert resp.status_code == 500
+    assert "cannot create dest_folder" in resp.json()["detail"]
+    assert closed == [True]
+
+
 def test_immich_pull_empty_asset_ids_pulls_nothing(immich_env, album_assets, monkeypatch, tmp_path: Path) -> None:
     """asset_ids=[] is an explicit empty selection, not 'the whole album'."""
 

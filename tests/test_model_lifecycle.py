@@ -220,3 +220,119 @@ def test_prefetch_hf_snapshot_skips_duplicate_weight_formats(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "huggingface_hub", None)  # not installed: silently skipped
     _download.prefetch_hf_snapshot("any/repo")
+
+
+def test_close_lets_a_running_caption_finish_and_record_before_closing_the_recorder():
+    """close() during an inference waits for it: the caption is recorded, then the recorder closes and the model
+    unloads. Before, the recorder closed at once and the caption's record() hit a closed store, and the model
+    stayed loaded (audit pack-argus-lens-57ac9d57af)."""
+    import threading
+
+    from argus_lens.backends.base import CaptionBackend
+    from argus_lens.engine import ArgusLens
+
+    started, release = threading.Event(), threading.Event()
+
+    class _Slow(CaptionBackend):
+        name = "slow"
+        requires_gpu = False
+
+        def load(self, device: str = "auto") -> None:
+            pass
+
+        def caption_image(self, image: Image.Image) -> str:
+            started.set()
+            release.wait(10)
+            return "a person standing"
+
+        def unload(self) -> None:
+            pass
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.closed = False
+            self.recorded: list[str] = []
+
+        def record(self, asset, result, **kw) -> None:
+            if self.closed:
+                raise RuntimeError("record() on a closed recorder")
+            self.recorded.append(kw["name"])
+
+        def close(self) -> None:
+            self.closed = True
+
+    recorder = _Recorder()
+    engine = ArgusLens(backend=_Slow(), recorder=recorder)
+    out: dict = {}
+    caption = threading.Thread(target=lambda: out.setdefault("result", engine.caption(_img())))
+    caption.start()
+    assert started.wait(10)
+    closer = threading.Thread(target=engine.close)
+    closer.start()
+    closer.join(0.2)
+    assert closer.is_alive() and not recorder.closed  # waiting for the inference
+    release.set()
+    caption.join(10)
+    closer.join(10)
+    assert out["result"].final_caption and len(recorder.recorded) == 1
+    assert recorder.closed and not engine.loaded
+
+
+def test_close_waits_for_the_caption_after_its_inference(monkeypatch):
+    """close() waits for the whole caption, not just the model call: composing (and refining) after inference
+    can outlast it. CI's torch job hit this window, where close() saw no inference running, closed the
+    recorder, and the caption went unrecorded."""
+    import threading
+
+    import argus_lens.engine as engine_mod
+    from argus_lens.backends.base import CaptionBackend
+    from argus_lens.engine import ArgusLens
+
+    composing, release = threading.Event(), threading.Event()
+    real_compose = engine_mod.compose_caption_result
+
+    def _slow_compose(**kw):
+        composing.set()
+        release.wait(10)
+        return real_compose(**kw)
+
+    monkeypatch.setattr(engine_mod, "compose_caption_result", _slow_compose)
+
+    class _Quick(CaptionBackend):
+        name = "quick"
+        requires_gpu = False
+
+        def load(self, device: str = "auto") -> None:
+            pass
+
+        def caption_image(self, image: Image.Image) -> str:
+            return "a person standing"
+
+        def unload(self) -> None:
+            pass
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.closed = False
+            self.recorded: list[str] = []
+
+        def record(self, asset, result, **kw) -> None:
+            assert not self.closed, "record() on a closed recorder"
+            self.recorded.append(kw["name"])
+
+        def close(self) -> None:
+            self.closed = True
+
+    recorder = _Recorder()
+    engine = ArgusLens(backend=_Quick(), recorder=recorder)
+    caption = threading.Thread(target=lambda: engine.caption(_img()))
+    caption.start()
+    assert composing.wait(10)  # inference is over; the caption is composing
+    closer = threading.Thread(target=engine.close)
+    closer.start()
+    closer.join(0.2)
+    assert closer.is_alive() and not recorder.closed
+    release.set()
+    caption.join(10)
+    closer.join(10)
+    assert recorder.recorded == ["image"] and recorder.closed

@@ -27,6 +27,8 @@ def _make_verifier(
     verifier_model: str | None,
     verifier_key: str | None,
     verifier_device: str,
+    text_verifier: str | None = None,
+    ocr_url: str | None = None,
 ) -> object | None:
     """Build an attribute verifier from CLI flags, or ``None`` when disabled."""
     if not reconcile:
@@ -40,9 +42,12 @@ def _make_verifier(
             model_id=verifier_model,
             api_key=verifier_key,
             device=verifier_device,
+            text_verifier=text_verifier,
+            ocr_url=ocr_url,
         )
     except ValueError as exc:  # an unknown name, or a model that needs HF_TRUST_REMOTE_CODE
-        raise typer.BadParameter(str(exc), param_hint="--reconcile") from exc
+        hint = "--reconcile" if not (text_verifier or ocr_url) else "--reconcile / --text-verifier / --ocr-url"
+        raise typer.BadParameter(str(exc), param_hint=hint) from exc
 
 
 @app.command()
@@ -51,7 +56,12 @@ def caption(
     backend: str = Option("hybrid", "--backend", "-b", help="Captioning backend"),
     trigger: str = Option("", "--trigger", "-t", help="Trigger word to prepend"),
     style: str = Option("photo", "--style", "-s", help="Target style: photo or anime"),
-    category: str = Option("identity", "--category", "-c", help="Target category for final_caption"),
+    category: str = Option(
+        "identity",
+        "--category",
+        "-c",
+        help="Variant for final_caption: a category, or training / training_prose / zeroshot",
+    ),
     target_backend: str = Option("sdxl", "--target-backend", help="Diffusion backend (sdxl, flux, sd3)"),
     hybrid_preset: str | None = Option(
         None, "--hybrid-preset", help="Tag/prose balance: tags, keywords, balanced, descriptive, prose"
@@ -79,12 +89,21 @@ def caption(
     reconcile: str | None = Option(
         None,
         "--reconcile",
-        help="Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo",
+        help="Fix prose colour/pose vs tags via a verifier: tag-prior, openai-compat, florence, molmo, ocr",
     ),
     verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
     verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
+    text_verifier: str | None = Option(
+        None,
+        "--text-verifier",
+        help="Reader for names/quotes the prose claims to read: ocr, florence, openai-compat, molmo "
+        "[LENS_TEXT_VERIFIER; ocr when an OCR URL is set, else the --reconcile verifier]",
+    ),
+    ocr_url: str | None = Option(
+        None, "--ocr-url", help="argus-retina OCR server, e.g. http://ocr:8133 [LENS_OCR_URL]"
+    ),
     refine: bool = Option(
         True, "--refine/--no-refine", help="Rewrite captions with an LLM, validated (on unless ARGUS_REFINE=off)"
     ),
@@ -120,7 +139,9 @@ def caption(
         else:
             kwargs["model_id"] = model_id
 
-    verifier = _make_verifier(reconcile, verifier_url, verifier_model, verifier_key, verifier_device)
+    verifier = _make_verifier(
+        reconcile, verifier_url, verifier_model, verifier_key, verifier_device, text_verifier, ocr_url
+    )
     refiner = None
     from argus_lens.refine import refine_opted_out
 
@@ -328,12 +349,33 @@ def eval_command(
     reconcile: str | None = Option(
         None,
         "--reconcile",
-        help="Apply an attribute verifier before scoring: tag-prior, openai-compat, florence, molmo",
+        help="Apply an attribute verifier before scoring: tag-prior, openai-compat, florence, molmo, ocr",
     ),
     verifier_url: str | None = Option(None, "--verifier-url", help="Base URL for the openai-compat verifier"),
     verifier_model: str | None = Option(None, "--verifier-model", help="Model id for the verifier"),
     verifier_key: str | None = Option(None, "--verifier-key", help="API key for the verifier"),
     verifier_device: str = Option("cpu", "--verifier-device", help="Device for florence/molmo verifiers (cpu|cuda)"),
+    text_verifier: str | None = Option(
+        None,
+        "--text-verifier",
+        help="Reader for names/quotes the prose claims to read: ocr, florence, openai-compat, molmo "
+        "[LENS_TEXT_VERIFIER; ocr when an OCR URL is set, else the --reconcile verifier]",
+    ),
+    ocr_url: str | None = Option(
+        None, "--ocr-url", help="argus-retina OCR server, e.g. http://ocr:8133 [LENS_OCR_URL]"
+    ),
+    judge_model: str | None = Option(
+        None, "--judge-model", help="Score each caption claim against the image with this vision model"
+    ),
+    judge_url: str = Option(
+        "http://localhost:11434/v1", "--judge-url", help="OpenAI-compatible endpoint serving --judge-model"
+    ),
+    judge_key: str | None = Option(
+        None, "--judge-key", envvar="ARGUS_JUDGE_API_KEY", help="API key for the judge endpoint"
+    ),
+    judge_threshold: float = Option(
+        50.0, "--judge-threshold", min=0, max=100, help="Judge scores (0-100) below this mark a claim unsupported"
+    ),
     verbose: bool = Option(False, "--verbose", "-v", help="Per-image progress"),
 ) -> None:
     """Score caption quality over a dataset and print a scorecard.
@@ -341,7 +383,9 @@ def eval_command(
     Works reference-free on any image directory (tag/prose contradiction,
     token-budget adherence, redundancy). A ``.jsonl`` manifest with
     ``expected_tags`` / ``target_caption`` additionally unlocks tag-coverage
-    recall and reference CLIPScore.
+    recall and reference CLIPScore. ``--judge-model`` adds faithfulness: the
+    share of claims, before and after assembly, that a vision judge says the
+    image doesn't support.
     """
     from dataclasses import replace
 
@@ -386,7 +430,9 @@ def eval_command(
             kwargs["florence_model_id" if backend == "florence2" else "model_id"] = model_id
         else:
             kwargs["model_id"] = model_id
-    verifier = _make_verifier(reconcile, verifier_url, verifier_model, verifier_key, verifier_device)
+    verifier = _make_verifier(
+        reconcile, verifier_url, verifier_model, verifier_key, verifier_device, text_verifier, ocr_url
+    )
     engine = ArgusLens(backend=backend, verifier=verifier, **kwargs)
 
     clip_scorer = None
@@ -399,6 +445,12 @@ def eval_command(
         """Echo per-image progress when verbose."""
         typer.echo(f"  [{current}/{total}] {getattr(item, 'image', '')}")
 
+    judge = None
+    if judge_model:
+        from argus_lens.eval.faithfulness import OpenAICompatJudge
+
+        judge = OpenAICompatJudge(model_id=judge_model, base_url=judge_url, api_key=judge_key)
+
     scorecard = run_eval(
         engine,
         dataset,
@@ -406,6 +458,8 @@ def eval_command(
         trigger_word=trigger,
         hybrid_preset=hybrid_preset,
         prose_bias=prose_bias,
+        judge=judge,
+        judge_threshold=judge_threshold,
         progress=_progress if verbose else None,
     )
 
@@ -422,6 +476,14 @@ def eval_command(
         typer.echo(f"\nAll {scorecard.n} images errored — no metrics computed.", err=True)
 
     if base is not None:
+        base_config = base.get("config") or {}
+        for key in ("judge_model", "judge_threshold"):
+            if base_config.get(key) and scorecard.config.get(key) and base_config[key] != scorecard.config[key]:
+                typer.echo(
+                    f"Warning: baseline {key} is {base_config[key]!r}, this run used {scorecard.config[key]!r}; "
+                    "unsupported-claim rates are not comparable across judges.",
+                    err=True,
+                )
         comparison = compare_to_baseline(scorecard.aggregates, base.get("aggregates", base))
         typer.echo("\n" + format_comparison(comparison))
         if fail_on_regression and comparison["regressed"]:

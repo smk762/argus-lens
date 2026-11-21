@@ -97,14 +97,14 @@ def filter_redundant_clauses_detailed(
 ) -> tuple[list[str], list[str]]:
     """Remove prose clauses whose content words overlap with *tags*.
 
+    A clause with no content words at all (only stopwords or one-letter words, e.g. "it is") says nothing a
+    caption needs, so it is removed too, with or without tags: whether it survives must not depend on whether
+    any tags exist.
+
     Returns ``(kept_clauses, removed_clauses)``.
     """
-    if not description or not tags:
-        clauses = _split_prose_sentences(description) if description else []
-        return clauses, []
-
-    tag_words = wd14_word_set(tags)
-    raw_clauses = _split_prose_sentences(description)
+    tag_words = wd14_word_set(tags) if tags else frozenset()
+    raw_clauses = _split_prose_sentences(description) if description else []
 
     kept: list[str] = []
     removed: list[str] = []
@@ -114,6 +114,9 @@ def filter_redundant_clauses_detailed(
         cw = _content_words(clause)
         if not cw:
             removed.append(clause)  # no content words: nothing to keep, but still accounted for
+            continue
+        if not tag_words:
+            kept.append(clause)
             continue
         overlap = len(cw & tag_words) / len(cw)
         if overlap < threshold:

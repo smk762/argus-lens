@@ -8,6 +8,8 @@ Reference-free (need only the image + the model's own output):
 * :func:`token_budget_adherence` — do the budget-bound variants fit SDXL/Flux limits?
 * :func:`redundancy_rate` — how much the deterministic filters had to strip.
 * :func:`clip_score` — image↔caption alignment (optional; needs the ``eval`` extra).
+* :func:`~argus_lens.eval.faithfulness.faithfulness` — share of claims a VLM judge
+  says the image doesn't support, before and after assembly (optional; needs a judge).
 
 Reference-based (need a labelled manifest):
 
@@ -22,12 +24,14 @@ from typing import TYPE_CHECKING
 
 from argus_lens.assembly.subjects import exact_prose_counts, exact_tag_count
 from argus_lens.assembly.token_budget import estimate_tokens
+from argus_lens.eval.faithfulness import DEFAULT_THRESHOLD, faithfulness
 from argus_lens.types import BACKEND_TOKEN_BUDGETS, DEFAULT_TOKEN_BUDGET
 
 if TYPE_CHECKING:
     from PIL import Image
 
     from argus_lens.eval.dataset import EvalItem
+    from argus_lens.eval.faithfulness import FaithfulnessJudge
     from argus_lens.types import CaptionResult
 
 # ---------------------------------------------------------------------------
@@ -153,14 +157,41 @@ _SIBILANT_ENDINGS = ("s", "x", "z", "ch", "sh")
 _VOWELS = frozenset("aeiou")
 
 
+# Plural-only nouns common in tags: stripping the "s" gives a different real word (shorts → short).
+_PLURALIA_TANTUM: frozenset[str] = frozenset(
+    {
+        "bangs",
+        "clothes",
+        "glasses",
+        "goggles",
+        "jeans",
+        "leggings",
+        "news",
+        "overalls",
+        "pajamas",
+        "pants",
+        "scissors",
+        "shorts",
+        "sunglasses",
+        "tights",
+        "trousers",
+    }
+)
+
+
 def _noun_variants(noun: str) -> set[str]:
     """Singular/plural surface forms of *noun* for prose matching.
 
     Regular English plurals only, so a variant is never a different real word:
     ``-es`` follows a sibilant (dress → dresses, never cap → capes), consonant +
     ``y`` becomes ``-ies`` (sky → skies). The reverse direction recovers the
-    singular of a plural tag noun (skies → sky, glasses → glass, eyes → eye).
+    singular of a plural tag noun (skies → sky, dresses → dress, eyes → eye).
+    Plural-only nouns (``_PLURALIA_TANTUM``: shorts, glasses, bangs) have no
+    singular of the same meaning, so they match only themselves: stripping
+    them would make "short hair" or "a glass window" count as the tag.
     """
+    if noun in _PLURALIA_TANTUM:
+        return {noun}
     variants = {noun}
     if noun.endswith(_SIBILANT_ENDINGS):
         variants.add(noun + "es")  # dress → dresses
@@ -384,11 +415,17 @@ def compute_metrics(
     *,
     image: Image.Image | None = None,
     clip_scorer: ClipScorer | None = None,
+    judge: FaithfulnessJudge | None = None,
+    judge_threshold: float = DEFAULT_THRESHOLD,
+    trigger_word: str = "",
 ) -> dict:
     """Compute every applicable metric for one captioned item.
 
     Reference-based metrics are included only when *item* carries labels;
-    CLIPScore only when a *clip_scorer* and *image* are supplied.
+    CLIPScore only when a *clip_scorer* and *image* are supplied; faithfulness
+    only when a *judge* and *image* are. A judge failure (endpoint down, bad
+    response) becomes ``{"error": ...}`` under ``faithfulness`` and leaves the
+    other metrics standing.
     """
     metrics: dict = {
         "contradiction": tag_prose_contradiction(result),
@@ -402,4 +439,12 @@ def compute_metrics(
         metrics["clip"] = clip_scorer.score(image, result.final_caption)
     else:
         metrics["clip"] = None
+    metrics["faithfulness"] = None
+    if judge is not None and image is not None:
+        try:
+            metrics["faithfulness"] = faithfulness(
+                judge, image, result, trigger_word=trigger_word, threshold=judge_threshold
+            )
+        except Exception as exc:  # noqa: BLE001 - a judge outage must not discard the caption's other metrics
+            metrics["faithfulness"] = {"error": f"{type(exc).__name__}: {exc}"}
     return metrics
