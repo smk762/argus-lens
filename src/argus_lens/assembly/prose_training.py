@@ -46,7 +46,8 @@ _ID_PIVOT = (
     r"holding|covering|touching|framing|hiding|wearing)"
 )
 _ID_NP = (
-    rf"(?:{_ID_DETERMINER}\s+)?(?:(?!(?:{_ID_PIVOT}|{_ID_DETERMINER})\b)[\w-]+\s+){{0,4}}?"
+    # (?![\w-]), not \b: "off-white" and "up-swept" are modifiers, not the pivots "off" and "up".
+    rf"(?:{_ID_DETERMINER}\s+)?(?:(?!(?:{_ID_PIVOT}|{_ID_DETERMINER})(?![\w-]))[\w-]+\s+){{0,4}}?"
     rf"{_IDENTITY_NOUNS}{_ID_TAIL}"
 )
 _ID_LIST = rf"{_ID_NP}(?:\s*(?:,\s*(?:and\s+)?|\s+and\s+){_ID_NP})*"

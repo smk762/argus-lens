@@ -211,7 +211,8 @@ def _find_images(directory: Path, glob: str, *, recursive: bool) -> list[Path]:
             matches = directory.rglob(pattern) if recursive else directory.glob(pattern)
             found.update(p for p in matches if p.resolve().is_relative_to(base))
         else:
-            name_patterns.append((pattern if pattern.startswith("*") else f"*.{pattern}").lower())
+            # Only a bare extension ("jpg") gets the shorthand; "IMG_*.jpg" is already a pattern.
+            name_patterns.append((pattern if any(c in pattern for c in "*?[") else f"*.{pattern}").lower())
     if name_patterns:
         candidates = directory.rglob("*") if recursive else directory.iterdir()
         found.update(p for p in candidates if any(fnmatch.fnmatchcase(p.name.lower(), pat) for pat in name_patterns))

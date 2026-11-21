@@ -152,6 +152,15 @@ def test_directory_still_skips_existing_sidecars(tmp_path: Path) -> None:
     assert list(engine.caption_directory(tmp_path, overwrite=True)) == ["a.jpg"]
 
 
+def test_file_name_pattern_is_matched_as_written(tmp_path: Path) -> None:
+    """Only a bare extension gets the ``*.`` shorthand: ``IMG_*.jpg`` is already a pattern."""
+    _write_image(tmp_path / "IMG_0001.jpg", "JPEG")
+    _write_image(tmp_path / "scan.jpg", "JPEG")
+    assert _find_images(tmp_path, "IMG_*.jpg", recursive=False) == [tmp_path / "IMG_0001.jpg"]
+    assert _find_images(tmp_path, "IMG_000?.jpg", recursive=False) == [tmp_path / "IMG_0001.jpg"]
+    assert _find_images(tmp_path, "jpg", recursive=False) == [tmp_path / "IMG_0001.jpg", tmp_path / "scan.jpg"]
+
+
 def test_directory_qualified_pattern_is_globbed_as_written(tmp_path: Path) -> None:
     """A pattern with a path separator gets no ``*.`` extension prefix: ``raw/*.jpg`` matches ``raw/a.jpg``."""
     _write_image(tmp_path / "raw" / "a.jpg", "JPEG")

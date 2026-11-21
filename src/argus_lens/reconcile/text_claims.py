@@ -59,6 +59,9 @@ _SENTENCE_OPENERS = {
     "the", "a", "an", "this", "that", "these", "those", "there", "here", "he", "she", "it", "they", "we",
     "his", "her", "its", "their", "in", "on", "at", "behind", "above", "below", "beside", "next", "to",
 }  # fmt: skip
+_FUNCTION_WORDS = {
+    "the", "a", "an", "of", "and", "or", "in", "on", "at", "to", "for", "by", "with", "from", "is", "it", "no",
+}  # fmt: skip
 _MATCH_RATIO = 0.8  # fuzzy token match: tolerates OCR noise ("Becquere1"), not a different name ("Bohr")
 # A long claimed word read at least this close (but under _MATCH_RATIO) was misread: "72804" vs "72801-H".
 _NEAR_MISS_RATIO = 0.6
@@ -186,7 +189,8 @@ def is_contradicted(claim: str, transcript: str) -> bool:
     if is_confirmed(claim, transcript):
         return False
     words = [t for t in _tokens(_fold(claim)) if t not in _TITLE_WORDS]
-    seen = [w for w in words if is_confirmed(w, transcript)]
+    # Function words are in almost any transcript ("THE EXIT"), so reading one is no evidence about this claim.
+    seen = [w for w in words if w not in _FUNCTION_WORDS and is_confirmed(w, transcript)]
     if seen:
         return True  # some words read, the claim as a whole not: the reader saw it and read it differently
     read = _tokens(_fold(transcript))

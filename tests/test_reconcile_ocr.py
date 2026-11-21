@@ -192,6 +192,8 @@ _TAPE = [
     ("crafted for quality", "Ball Ball", False),
     ("Plaza Vieja,", "PANINI~ PANINI JUGOS~ENS JUICES-TA Bohemia JA - SAN IGNACIO # 364", False),
     ("SANTANA ROW", "SANTANA ROW", False),
+    ("The Last Supper", "THE EXIT", False),  # only "the" was read, which is evidence of nothing
+    ("Bank of America", "HOUSE OF PIZZA", False),
 ]
 
 
@@ -341,3 +343,14 @@ def test_a_claim_with_every_word_read_is_never_contradicted():
     ]:
         assert is_confirmed(claim, transcript) and not is_contradicted(claim, transcript)
     assert is_contradicted("Professor Henrik Bohr", "Henri Becquerel")
+
+
+def test_text_reader_does_not_inherit_the_main_verifiers_model_id() -> None:
+    """--verifier-model names the main verifier's model; a reader of another kind keeps its own default."""
+    v = build_verifier("openai-compat", model_id="llava", text_verifier="florence")
+    assert v.default.model_id == "llava"
+    assert [r.name for r in v.text_readers] == ["florence", "openai-compat"]
+    assert v.text_readers[0].model_id != "llava"
+    # tag-prior loads no model, so the id can only be meant for the reader.
+    v = build_verifier("tag-prior", model_id="llava", text_verifier="openai-compat")
+    assert v.text_readers[0].model_id == "llava"
