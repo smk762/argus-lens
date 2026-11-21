@@ -18,7 +18,7 @@ try:
     from argus_cortex.limits import BadInput, TooLarge, read_upload
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
     from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
     from pydantic import BaseModel
 except ImportError as exc:
     raise ImportError("Server requires: pip install argus-lens[server]") from exc
@@ -727,6 +727,19 @@ def create_app(
     # Engine kwargs are forwarded so model_dir / florence_model_id are honoured.
     app.include_router(create_openai_router(allowed_backends=allowed, **kwargs), prefix="/v1")
 
+    _STATE_RANK = {"unloaded": 0, "cpu": 1, "gpu": 2}
+
+    def _resident_health() -> dict[str, Any]:
+        """cortex's ``ResidentHealth`` fields over every pooled engine, which argus-iris reads: the furthest-loaded
+        engine's ``model_state``, ``busy`` while any caption runs, and the most recent use as ``idle_s``."""
+        pool = list(engines.values())
+        idles = [i for i in (eng.idle_s for eng in pool) if i is not None]
+        return {
+            "model_state": max((eng.model_state for eng in pool), key=_STATE_RANK.__getitem__),
+            "busy": any(eng.active for eng in pool),
+            "idle_s": min(idles) if idles else None,
+        }
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
         """Service liveness/identity probe (mirrors argus-curator's /health shape).
@@ -751,6 +764,7 @@ def create_app(
         gpu = await asyncio.to_thread(engine.vram_status)
         gpu["resident"] = sorted(name for name, eng in list(engines.items()) if eng.loaded)
         return {
+            **_resident_health(),
             "status": "ok",
             "service": "argus-lens",
             "version": __version__,
@@ -771,15 +785,25 @@ def create_app(
         to require ``Authorization: Bearer <token>`` (otherwise the endpoint is open —
         keep it off untrusted networks to avoid unload/reload-thrash abuse).
         Every engine is unloaded, including backends a request switched to;
-        ``unloaded`` is true when any of them freed a model.
+        ``unloaded`` is true when any of them freed a model. The reply is cortex's ``ResidentActionReply``
+        (``model_state`` after the call); while a caption runs it is 409 with a ``ResidentBusyReply`` and nothing
+        is unloaded.
         """
+        active = sum(eng.active for eng in list(engines.values()))
+        if active:
+            return JSONResponse(status_code=409, content={"status": "busy", "active": active})
 
         def _unload_all() -> bool:
             """Unload each pooled engine; True if any was resident."""
             return any([eng.unload() for eng in list(engines.values())])
 
         unloaded = await asyncio.to_thread(_unload_all)
-        return {"unloaded": unloaded, "gpu": await asyncio.to_thread(engine.vram_status)}
+        return {
+            "status": "ok",
+            "model_state": _resident_health()["model_state"],
+            "unloaded": unloaded,
+            "gpu": await asyncio.to_thread(engine.vram_status),
+        }
 
     @app.get("/profiles")
     async def profiles() -> dict[str, Any]:

@@ -85,6 +85,71 @@ def test_admin_unload_frees_the_model(monkeypatch) -> None:
     assert body["gpu"]["loaded"] is False
 
 
+def test_health_and_unload_follow_the_resident_contract(monkeypatch) -> None:
+    """argus-iris reads /health as cortex's ResidentHealth and /admin/unload as its ResidentActionReply: off that
+    shape, iris logged lens as off-contract and could not see a caption running."""
+    import io
+
+    from argus_cortex.gpu_wire import ResidentActionReply, ResidentHealth
+
+    monkeypatch.delenv("LENS_SOURCE_PATH", raising=False)
+    monkeypatch.delenv("ARGUS_ADMIN_TOKEN", raising=False)
+    app = create_app(default_backend=_StubBackend())
+    client = TestClient(app)
+
+    cold = ResidentHealth.model_validate(client.get("/health").json())
+    assert (cold.model_state, cold.busy, cold.idle_s) == ("unloaded", False, None)
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, format="PNG")
+    buf.seek(0)
+    assert client.post("/caption", files={"file": ("x.png", buf, "image/png")}).status_code == 200
+    warm = ResidentHealth.model_validate(client.get("/health").json())
+    assert warm.model_state == "gpu" and warm.busy is False and warm.idle_s is not None
+
+    reply = ResidentActionReply.model_validate(client.post("/admin/unload").json())
+    assert (reply.model_state, reply.unloaded) == ("unloaded", True)
+    again = ResidentActionReply.model_validate(client.post("/admin/unload").json())
+    assert (again.model_state, again.unloaded) == ("unloaded", False)
+
+
+def test_unload_while_captioning_is_refused_busy(monkeypatch) -> None:
+    """A caption in flight: /health says busy and /admin/unload answers 409 without unloading anything."""
+    import io
+    import threading
+
+    from argus_cortex.gpu_wire import ResidentBusyReply, ResidentHealth
+
+    started, release = threading.Event(), threading.Event()
+
+    class _Slow(_StubBackend):
+        def caption_image(self, image: Image.Image) -> str:
+            started.set()
+            release.wait(10)
+            return super().caption_image(image)
+
+    monkeypatch.delenv("LENS_SOURCE_PATH", raising=False)
+    monkeypatch.delenv("ARGUS_ADMIN_TOKEN", raising=False)
+    client = TestClient(create_app(default_backend=_Slow()))
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, format="PNG")
+    buf.seek(0)
+    caption = threading.Thread(
+        target=lambda: client.post("/caption", files={"file": ("x.png", buf, "image/png")}), daemon=True
+    )
+    caption.start()
+    try:
+        assert started.wait(10)
+        assert ResidentHealth.model_validate(client.get("/health").json()).busy is True
+        refused = client.post("/admin/unload")
+        assert refused.status_code == 409
+        assert ResidentBusyReply.model_validate(refused.json()).active == 1
+    finally:
+        release.set()
+        caption.join(10)
+    assert ResidentHealth.model_validate(client.get("/health").json()).model_state == "gpu"  # nothing was unloaded
+
+
 def test_admin_unload_requires_token_when_configured(monkeypatch) -> None:
     """With ARGUS_ADMIN_TOKEN set, /admin/unload rejects unauthenticated calls (#42)."""
     monkeypatch.setenv("ARGUS_ADMIN_TOKEN", "secret")

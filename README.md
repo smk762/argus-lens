@@ -328,7 +328,7 @@ engine.vram_status()     # {backend, loaded, coordinator, free_vram_mb, idle_s}
 
 For `argus-lens serve`, set `ARGUS_IDLE_UNLOAD_S` (seconds) to turn on the same idle unload; it is off when unset. Separately, the WD14, RAM++ and BLIP-2 backends share a process-wide model cache that evicts a model no caller holds after `ARGUS_MODEL_IDLE_SECONDS` of idleness (default 300).
 
-The server exposes `GET /health` (now includes a `gpu` block) and `POST /admin/unload`, so an external scheduler can free lens's VRAM on demand.
+The server exposes `GET /health` and `POST /admin/unload`, so an external scheduler can free lens's VRAM on demand. Both follow argus-cortex's resident contract, which argus-iris reads: `/health` carries `model_state` (`unloaded`, `cpu` or `gpu`, the furthest-loaded of the pooled engines), `busy` (a caption is running) and `idle_s` at the top level, beside the `gpu` block; `/admin/unload` answers `model_state` and `unloaded`, or `409 {"status": "busy", "active": n}` while a caption runs, unloading nothing.
 
 **Coordinator** — gate heavy inference behind the suite's shared GPU lease ([`argus_cortex.gpu`](https://github.com/smk762/argus-cortex)), so lens, argus-curator and any other argus GPU service on the host take turns. Selected via env (defaults to `none`, i.e. unchanged behaviour):
 
