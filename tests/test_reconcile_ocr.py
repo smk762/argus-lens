@@ -319,3 +319,25 @@ def test_a_title_abbreviation_does_not_cut_the_name_it_heads():
 def test_a_dotted_name_word_still_ends_its_sentence():
     """The cut the abbreviation rule guards still happens: "Becquerel. Gold" is two sentences."""
     assert detect_text_claims("A plaque that reads Henri Becquerel. Gold frame.") == ["Henri Becquerel"]
+
+
+def test_a_short_surname_or_suffix_still_ends_its_sentence():
+    """A dotted word too short to be told from an initial ("Xu.", "Jr.") ends the sentence when a word that only
+    opens one follows; "The" is never part of the name (audit pack-argus-lens-cb0a9f3f93)."""
+    assert detect_text_claims("The diploma is signed by Henri Xu. The frame is gold.") == ["Henri Xu"]
+    assert detect_text_claims("A certificate awarded to John Smith Jr. His medal is gold.") == ["John Smith Jr"]
+    assert detect_text_claims("A portrait of Dr. John Smith. The diploma reads Henri Becquerel.") == ["Henri Becquerel"]
+    # An initial inside a name is not a sentence end, and neither is a title before "The".
+    assert detect_text_claims("The plaque names John F. Kennedy. It is bronze.") == ["John F. Kennedy"]
+    assert detect_text_claims("A book titled The Last Supper sits there.") == ["The Last Supper"]
+
+
+def test_a_claim_with_every_word_read_is_never_contradicted():
+    """A missing title or reordered lines confirm the claim; contradiction needs a word that was not read."""
+    for claim, transcript in [
+        ("Professor Henrik Bohr", "Henrik Bohr"),
+        ("Professor Henrik Bohr", "BOHR\nHENRIK"),
+        ("N.Y. PUBLIC LIBRARY", "LIBRARY PUBLIC N.Y"),
+    ]:
+        assert is_confirmed(claim, transcript) and not is_contradicted(claim, transcript)
+    assert is_contradicted("Professor Henrik Bohr", "Henri Becquerel")

@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from argus_lens.assembly.classifier import _content_words
 from argus_lens.assembly.coherence import _split_trigger, check_caption
 from argus_lens.assembly.filtering import filter_redundant_clauses_detailed
@@ -137,3 +139,34 @@ def test_a_clause_with_no_content_words_goes_with_or_without_tags():
     prose = "A woman in a red coat. It is."
     assert filter_redundant_clauses_detailed(prose, "") == (["A woman in a red coat"], ["It is"])
     assert filter_redundant_clauses_detailed(prose, "blue sky") == (["A woman in a red coat"], ["It is"])
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "A woman with her hands in her hair stands by a window.",
+        "A woman with a hat over her eyes sits on a bench.",
+        "A woman with flowers in her hair dances.",
+        "A woman with a scarf covering her hair walks through a market.",
+    ],
+)
+def test_a_pose_or_prop_that_mentions_an_identity_noun_is_kept(sentence: str) -> None:
+    """Only modifiers may sit between "with" and the identity noun: "her hands in her hair" is a pose, not hair."""
+    cleaned, removed = _clean_sentence(sentence, None)
+    assert cleaned == sentence.rstrip(".")
+    assert removed == []
+
+
+def test_identity_coordinated_after_a_prop_goes_alone() -> None:
+    """ "with a cane and a grey beard" loses the beard and keeps the cane."""
+    cleaned, removed = _clean_sentence("A man with a cane and a grey beard crosses the street.", None)
+    assert cleaned == "A man with a cane crosses the street"
+    assert removed == ["and a grey beard"]
+
+
+def test_plain_identity_phrases_are_still_excised() -> None:
+    """The modifier-only rule still takes determiners, adjectives and coordinated identity nouns."""
+    assert _clean_sentence("A woman with her long wavy brown hair is wearing a red dress.", None)[0] == (
+        "A woman is wearing a red dress"
+    )
+    assert _clean_sentence("She has freckles and bright green eyes and wears a scarf.", None)[0] == "She wears a scarf"

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Prose training captions kept losing poses and props.** Identity suppression let any four words sit
+  between "with" and an identity noun, so "with her hands in her hair" and "with a hat over her eyes" were
+  cut whole. Only modifiers may sit there now; "with a cane and a grey beard" loses the beard alone.
+- **Tags-only runs dropped `girl`/`boy` beside `woman`/`man`.** With no prose there is no evidence either
+  way, so both nouns are kept, as the other reconciliation rules already did.
+- **`caption_directory(glob=...)` with a directory in the pattern.** `raw/*.jpg` was rewritten to
+  `*.raw/*.jpg` and matched nothing; it is now globbed as written. A pattern that is absolute or contains
+  `..` raises `ValueError`, and a match that resolves outside the directory is left out.
+- **Cold-start bursts waited on the engine's own weights.** Concurrent first requests each asked the GPU
+  coordinator for the full footprint. The load is now single-flight: later requests wait for it, then lease
+  as resident.
+- **OOM retry could not free the memory that ran out.** Cleanup and backoff ran while the OOM's traceback
+  still held the failed frames. They now run after it is dropped; `OOMDeadlineExceededError.last_error`
+  carries no traceback.
+- **Molmo verifier loaded in float32** (about 30GB). It now loads in the checkpoint's dtype.
+- **Faithfulness judged a trigger word with underscores** (`sks_person`) as a claim.
+- **Text claims ran into the next sentence** after a two-letter surname or a suffix ("Henri Xu. The").
+
 ## [0.15.0] - 2026-11-21
 
 ### Added

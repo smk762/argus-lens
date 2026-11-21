@@ -184,3 +184,24 @@ def test_no_loader_hardcodes_remote_code_on() -> None:
         if hits:
             found[str(path.relative_to(SRC))] = hits
     assert found == ALLOWED
+
+
+@pytest.mark.usefixtures("remote_code_on")
+def test_molmo_loads_in_the_checkpoint_dtype(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both loads pass ``torch_dtype="auto"``: the transformers default is float32, about 30GB for Molmo-7B."""
+    calls: dict[str, dict[str, Any]] = {}
+
+    def loader(kind: str) -> Any:
+        def from_pretrained(model_id: str, **kwargs: Any) -> object:
+            calls[kind] = kwargs
+            return object()
+
+        return types.SimpleNamespace(from_pretrained=from_pretrained)
+
+    fake = types.SimpleNamespace(AutoModelForCausalLM=loader("model"), AutoProcessor=loader("processor"))
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    verifier = MolmoVerifier(device="cuda")
+    verifier._ensure_model()
+    assert calls["model"]["torch_dtype"] == "auto" and calls["processor"]["torch_dtype"] == "auto"
+    assert calls["model"]["device_map"] == "cuda"
+    assert verifier._model is not None and verifier._processor is not None

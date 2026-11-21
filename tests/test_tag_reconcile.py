@@ -81,9 +81,16 @@ def test_girl_without_adult_tag_follows_the_prose() -> None:
 
 
 def test_tags_trusted_without_prose() -> None:
-    """With no prose only the both-tagged rule applies; beard and a lone girl stay."""
+    """With no prose no rule has evidence: beard and a lone girl stay."""
     rec = reconcile_tags(_tags("girl, beard"), "")
     assert rec.tags == ["girl", "beard"]
+
+
+def test_child_noun_kept_beside_the_adult_one_without_prose() -> None:
+    """A tags-only run can't tell a woman tagged ``girl`` from a mother and daughter, so both stay."""
+    rec = reconcile_tags(_tags("woman, girl, man, boy, park"), "")
+    assert rec.tags == ["woman", "girl", "man", "boy", "park"]
+    assert rec.dropped == [] and rec.notes == []
 
 
 def test_man_dropped_when_prose_describes_only_a_woman() -> None:

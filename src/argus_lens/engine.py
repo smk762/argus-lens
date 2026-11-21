@@ -190,19 +190,28 @@ def _find_images(directory: Path, glob: str, *, recursive: bool) -> list[Path]:
     camera's ``IMG_1.JPG`` is found by ``*.jpg``. Each directory entry is listed
     once and tested against every pattern, so a case-insensitive filesystem (or
     overlapping patterns) can't yield one image twice. A pattern with a path
-    separator keeps plain (case-sensitive) ``Path.glob`` semantics.
+    separator is passed to ``Path.glob`` unchanged (case-sensitive, no extension
+    shorthand), so ``raw/*.jpg`` means what it says. Such a pattern may not be
+    absolute or contain ``..`` (``ValueError``), and a match that resolves outside
+    *directory* is left out: a glob names files under the directory, nothing else.
     """
     name_patterns: list[str] = []
     found: set[Path] = set()
+    base: Path | None = None
     for pattern in glob.replace("{", "").replace("}", "").split(","):
         pattern = pattern.strip()
         if not pattern:
             continue
-        pattern = f"*.{pattern}" if not pattern.startswith("*") else pattern
         if "/" in pattern or "\\" in pattern:
-            found.update(directory.rglob(pattern) if recursive else directory.glob(pattern))
+            parts = pattern.replace("\\", "/").split("/")
+            if ".." in parts or not parts[0] or parts[0].endswith(":"):
+                raise ValueError(f"glob pattern must stay inside the directory: {pattern!r}")
+            if base is None:
+                base = directory.resolve()
+            matches = directory.rglob(pattern) if recursive else directory.glob(pattern)
+            found.update(p for p in matches if p.resolve().is_relative_to(base))
         else:
-            name_patterns.append(pattern.lower())
+            name_patterns.append((pattern if pattern.startswith("*") else f"*.{pattern}").lower())
     if name_patterns:
         candidates = directory.rglob("*") if recursive else directory.iterdir()
         found.update(p for p in candidates if any(fnmatch.fnmatchcase(p.name.lower(), pat) for pat in name_patterns))
@@ -327,6 +336,9 @@ class ArgusLens:
         self._oom_retry_interval_s = oom_retry_interval_s
         self._loaded = False
         self._load_lock = threading.Lock()
+        # Held from a cold engine's footprint-sized lease until its first inference returns, so
+        # concurrent cold requests don't each wait for room the first one's weights now fill.
+        self._cold_start_lock = threading.Lock()
         self._kwargs = kwargs
         self._last_used: float | None = None
         self._active = 0  # in-flight inferences; guarded by _load_lock
@@ -560,17 +572,27 @@ class ArgusLens:
             self._last_used = time.monotonic()
             resident = self._loaded
         try:
-            # The lease waits for min_vram_mb *free*, and a resident model is already
-            # counted as used: asking for the footprint again would wait on our own
-            # weights. Only a load needs room; a resident model just takes the lock.
-            min_vram_mb = 0 if resident else footprint
-            lease = (
-                self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb, kind=kind)
-                if use_lease
-                else contextlib.nullcontext()
-            )
-            with lease:
-                return self._infer_locked(pil)
+            with contextlib.ExitStack() as cold_start:
+                if use_lease and not resident:
+                    # Single-flight the load: requests that arrive while the model is cold queue
+                    # here, not on the coordinator. Whoever follows the loader finds the model
+                    # resident and asks for no room. (A failed load leaves it cold, and the next
+                    # request in line tries the load itself.)
+                    cold_start.enter_context(self._cold_start_lock)
+                    resident = self._loaded
+                    if resident:
+                        cold_start.close()
+                # The lease waits for min_vram_mb *free*, and a resident model is already
+                # counted as used: asking for the footprint again would wait on our own
+                # weights. Only a load needs room; a resident model just takes the lock.
+                min_vram_mb = 0 if resident else footprint
+                lease = (
+                    self._coordinator.lease(caller=self._backend.name, min_vram_mb=min_vram_mb, kind=kind)
+                    if use_lease
+                    else contextlib.nullcontext()
+                )
+                with lease:
+                    return self._infer_locked(pil)
         finally:
             with self._load_lock:
                 self._active -= 1
