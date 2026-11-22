@@ -59,7 +59,8 @@ _IDENTITY_PHRASE = re.compile(
 # An identity phrase coordinated after something else: "with a smile and blue eyes" keeps
 # "with a smile". Runs after _IDENTITY_PHRASE, so what precedes "and" is not identity.
 _COORDINATED_IDENTITY = re.compile(
-    rf"(\bwith\s+(?:(?!{_ID_PIVOT}\b)[\w-]+\s+){{0,4}}?(?!{_ID_PIVOT}\b)[\w-]+),?\s+and\s+{_ID_LIST}\b",
+    # (?![\w-]) as in _ID_NP: "with off-white collar" has no pivot "off".
+    rf"(\bwith\s+(?:(?!{_ID_PIVOT}(?![\w-]))[\w-]+\s+){{0,4}}?(?!{_ID_PIVOT}(?![\w-]))[\w-]+),?\s+and\s+{_ID_LIST}\b",
     re.IGNORECASE,
 )
 # A comma between coordinated adjectives of an identity noun: "with light-colored,

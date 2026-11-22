@@ -188,7 +188,8 @@ def _noun_variants(noun: str) -> set[str]:
     singular of a plural tag noun (skies → sky, dresses → dress, eyes → eye).
     Plural-only nouns (``_PLURALIA_TANTUM``: shorts, glasses, bangs) have no
     singular of the same meaning, so they match only themselves: stripping
-    them would make "short hair" or "a glass window" count as the tag.
+    them would make "short hair" or "a glass window" count as the tag. Nor is one
+    generated from a singular tag: "glass" never matches "glasses", "short" never "shorts".
     """
     if noun in _PLURALIA_TANTUM:
         return {noun}
@@ -207,7 +208,7 @@ def _noun_variants(noun: str) -> set[str]:
         variants.update({noun[:-2], noun[:-1]})  # glasses → glass; horses → horse
     elif len(noun) > 1 and noun.endswith("s") and not noun.endswith("ss"):
         variants.add(noun[:-1])  # eyes → eye
-    return variants
+    return variants - (_PLURALIA_TANTUM - {noun})
 
 
 # Clause boundaries: commas/sentence punctuation and the connectives that start

@@ -221,7 +221,16 @@ def test_concurrent_cold_requests_ask_for_the_footprint_once() -> None:
     backend = _Local()
     eng = ArgusLens(backend=backend, coordinator=_Coordinator())
     image = Image.new("RGB", (4, 4))
-    threads = [threading.Thread(target=eng._infer, args=(image,)) for _ in range(3)]
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        """Infer once, keeping any error for the main thread to fail on."""
+        try:
+            eng._infer(image)
+        except BaseException as exc:  # noqa: BLE001 - re-raised by the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run, daemon=True) for _ in range(3)]
     threads[0].start()
     assert first_in_lease.wait(5)
     for t in threads[1:]:
@@ -235,6 +244,8 @@ def test_concurrent_cold_requests_ask_for_the_footprint_once() -> None:
     release_first.set()
     for t in threads:
         t.join(5)
+    assert not any(t.is_alive() for t in threads), "a request was left waiting"
+    assert errors == []
     assert requested == [2500, 0, 0]
     assert backend.loads == 1
 
@@ -266,3 +277,37 @@ def test_failed_cold_load_lets_the_next_request_load() -> None:
     eng._infer(image)
     eng._infer(image)
     assert requested == [2500, 2500, 0]
+
+
+def test_brace_group_keeps_its_prefix_for_every_alternative(tmp_path: Path) -> None:
+    """``IMG_*.{jpg,png}`` is ``IMG_*.jpg`` and ``IMG_*.png``, not ``IMG_*.jpg`` plus every PNG (pack eff813aee1)."""
+    _write_image(tmp_path / "IMG_1.jpg", "JPEG")
+    _write_image(tmp_path / "IMG_2.png")
+    _write_image(tmp_path / "scan.png")
+    _write_image(tmp_path / "raw" / "a.png")
+    _write_image(tmp_path / "raw" / "b.jpg", "JPEG")
+    _write_image(tmp_path / "c.jpg", "JPEG")
+    assert _find_images(tmp_path, "IMG_*.{jpg,png}", recursive=False) == [
+        tmp_path / "IMG_1.jpg",
+        tmp_path / "IMG_2.png",
+    ]
+    assert _find_images(tmp_path, "raw/*.{png,jpg}", recursive=False) == [
+        tmp_path / "raw" / "a.png",
+        tmp_path / "raw" / "b.jpg",
+    ]
+    assert _find_images(tmp_path, "{IMG_*,c*}.jpg, raw/a.png", recursive=False) == [
+        tmp_path / "IMG_1.jpg",
+        tmp_path / "c.jpg",
+        tmp_path / "raw" / "a.png",
+    ]
+
+
+def test_name_pattern_leaves_out_a_symlink_out_of_the_directory(tmp_path: Path) -> None:
+    """A name match that resolves outside the directory is left out, like a path match (pack be50589163)."""
+    root = tmp_path / "root"
+    _write_image(root / "a.jpg", "JPEG")
+    _write_image(tmp_path / "outside" / "secret.jpg", "JPEG")
+    (root / "x.jpg").symlink_to(tmp_path / "outside" / "secret.jpg")
+    (root / "link").symlink_to(tmp_path / "outside", target_is_directory=True)
+    assert _find_images(root, "jpg", recursive=False) == [root / "a.jpg"]
+    assert _find_images(root, "*.jpg", recursive=True) == [root / "a.jpg"]

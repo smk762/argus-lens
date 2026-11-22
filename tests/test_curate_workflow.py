@@ -263,3 +263,33 @@ def test_forced_resume_is_recorded_in_run_json(library) -> None:
     (forced,) = config["forced_resumes"]
     assert forced["caption"]["wd14_threshold"] == 0.5
     assert forced["diffs"]["wd14_threshold"]["now"] == 0.5
+
+
+def test_resume_after_a_torn_append_recaptions_it_and_keeps_raw_jsonl_readable(library) -> None:
+    """A kill mid-append leaves a partial last row: resume drops it and captions that image again, rather than
+    gluing the next row onto it so both are unreadable (audit pack-argus-lens-8a321af269)."""
+    src, run = library
+    curate.main(["inventory", str(src), str(run)])
+    curate.main(["caption", str(run)])
+    raw = run / "raw.jsonl"
+    lines = raw.read_text().splitlines()
+    raw.write_text("\n".join(lines[:-1]) + "\n" + lines[-1][: len(lines[-1]) // 2])  # torn mid-row
+    curate.main(["caption", str(run)])
+    rows = [json.loads(line) for line in raw.read_text().splitlines()]  # every line parses
+    assert len(rows) == 4 and len({r["sha256"] for r in rows}) == 4
+    assert raw.read_text().endswith("\n")
+
+
+def test_trim_torn_tail(tmp_path) -> None:
+    """Whole files are left alone; a torn tail goes back to the last newline, a lone torn row to empty."""
+    path = tmp_path / "raw.jsonl"
+    path.write_bytes(b'{"a": 1}\n')
+    curate.trim_torn_tail(path)
+    assert path.read_bytes() == b'{"a": 1}\n'
+    path.write_bytes(b'{"a": 1}\n{"b": ')
+    curate.trim_torn_tail(path)
+    assert path.read_bytes() == b'{"a": 1}\n'
+    path.write_bytes(b'{"b": ')
+    curate.trim_torn_tail(path)
+    assert path.read_bytes() == b""
+    curate.trim_torn_tail(tmp_path / "missing.jsonl")  # nothing to trim

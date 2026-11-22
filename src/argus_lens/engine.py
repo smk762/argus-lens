@@ -183,23 +183,65 @@ class ImageAsset:
     data: bytes | None = field(default=None, repr=False, compare=False)
 
 
+def _split_top_level(text: str) -> list[str]:
+    """Split *text* on the commas that sit outside any ``{...}`` group."""
+    parts, depth, start = [], 0, 0
+    for i, c in enumerate(text):
+        if c == "{":
+            depth += 1
+        elif c == "}" and depth:
+            depth -= 1
+        elif c == "," and not depth:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _expand_braces(pattern: str) -> list[str]:
+    """Expand ``{a,b}`` groups, carrying the text around a group onto every alternative.
+
+    ``IMG_*.{jpg,png}`` -> ``IMG_*.jpg``, ``IMG_*.png``; ``raw/*.{png,jpg}`` -> ``raw/*.png``, ``raw/*.jpg``.
+    Groups nest. An unmatched brace is dropped, as before.
+    """
+    start = pattern.find("{")
+    if start < 0:
+        return [pattern.replace("}", "")]
+    depth = 0
+    for end in range(start, len(pattern)):
+        if pattern[end] == "{":
+            depth += 1
+        elif pattern[end] == "}":
+            depth -= 1
+            if not depth:
+                break
+    else:
+        return _expand_braces(pattern[:start] + pattern[start + 1 :])
+    prefix, body, suffix = pattern[:start], pattern[start + 1 : end], pattern[end + 1 :]
+    return [
+        expanded for alternative in _split_top_level(body) for expanded in _expand_braces(prefix + alternative + suffix)
+    ]
+
+
 def _find_images(directory: Path, glob: str, *, recursive: bool) -> list[Path]:
     """Return the files under *directory* matching *glob*, sorted and de-duplicated.
 
-    *glob* is a comma list, optionally brace-wrapped (``*.{png,jpg}``); a bare
-    entry is an extension. File-name patterns match case-insensitively, so a
+    *glob* is a comma list; brace groups expand with their prefix and suffix
+    (``IMG_*.{png,jpg}`` is ``IMG_*.png,IMG_*.jpg``), and a bare entry is an extension. File-name patterns match case-insensitively, so a
     camera's ``IMG_1.JPG`` is found by ``*.jpg``. Each directory entry is listed
     once and tested against every pattern, so a case-insensitive filesystem (or
     overlapping patterns) can't yield one image twice. A pattern with a path
     separator is passed to ``Path.glob`` unchanged (case-sensitive, no extension
     shorthand), so ``raw/*.jpg`` means what it says. Such a pattern may not be
-    absolute or contain ``..`` (``ValueError``), and a match that resolves outside
-    *directory* is left out: a glob names files under the directory, nothing else.
+    absolute or contain ``..`` (``ValueError``). Any match, by name or by path, that
+    resolves outside *directory* (a symlinked file or folder) is left out: a glob
+    names files under the directory, nothing else.
     """
     name_patterns: list[str] = []
     found: set[Path] = set()
-    base: Path | None = None
-    for pattern in glob.replace("{", "").replace("}", "").split(","):
+    base = directory.resolve()
+    patterns = [p for entry in _split_top_level(glob) for p in _expand_braces(entry)]
+    for pattern in patterns:
         pattern = pattern.strip()
         if not pattern:
             continue
@@ -207,17 +249,14 @@ def _find_images(directory: Path, glob: str, *, recursive: bool) -> list[Path]:
             parts = pattern.replace("\\", "/").split("/")
             if ".." in parts or not parts[0] or parts[0].endswith(":"):
                 raise ValueError(f"glob pattern must stay inside the directory: {pattern!r}")
-            if base is None:
-                base = directory.resolve()
-            matches = directory.rglob(pattern) if recursive else directory.glob(pattern)
-            found.update(p for p in matches if p.resolve().is_relative_to(base))
+            found.update(directory.rglob(pattern) if recursive else directory.glob(pattern))
         else:
             # Only a bare extension ("jpg") gets the shorthand; "IMG_*.jpg" is already a pattern.
             name_patterns.append((pattern if any(c in pattern for c in "*?[") else f"*.{pattern}").lower())
     if name_patterns:
         candidates = directory.rglob("*") if recursive else directory.iterdir()
         found.update(p for p in candidates if any(fnmatch.fnmatchcase(p.name.lower(), pat) for pat in name_patterns))
-    return sorted(p for p in found if p.is_file())
+    return sorted(p for p in found if p.is_file() and p.resolve().is_relative_to(base))
 
 
 def _drop_sidecar_collisions(image_paths: list[Path], directory: Path) -> list[Path]:
@@ -274,6 +313,10 @@ def _load_image(source: str | Path | bytes | Image.Image) -> tuple[ImageAsset, I
         asset = ImageAsset(name=path.name, sha256=hashlib.sha256(data).hexdigest(), uri=str(path), data=data)
         return asset, Image.open(io.BytesIO(data)).convert("RGB")
     raise FileNotFoundError(f"Image not found: {source}")
+
+
+class EngineClosed(RuntimeError):
+    """A caption was asked of an engine after ``close()``: it would reload a model nothing will unload."""
 
 
 class ArgusLens:
@@ -455,15 +498,17 @@ class ArgusLens:
         Waits up to *drain_timeout_s* for running captions, from inference through their lineage write, since
         ``unload()`` refuses while an inference runs and a caption composes and refines after it. A caption still
         running when the wait times out is returned unrecorded, with a warning, never written to a closed store.
+        Once drained the engine is closed: a later inference raises :class:`EngineClosed` rather than reload the
+        model with the idle reaper stopped.
         """
         if self._reaper_stop is not None:
             self._reaper_stop.set()
         with self._drained:
             if not self._drained.wait_for(lambda: self._active == 0 and self._captions == 0, timeout=drain_timeout_s):
                 logger.warning("close_with_captions_running", active=self._active, captions=self._captions)
+            self._closed = True  # under _load_lock: no inference starts between the drain and the unload
         self.unload()
         with self._record_lock:
-            self._closed = True
             if self._recorder is not None:
                 self._recorder.close()
 
@@ -535,6 +580,8 @@ class ArgusLens:
         if self._loaded:
             return
         with self._load_lock:
+            if self._closed:
+                raise EngineClosed("this engine is closed; build a new one to caption")
             if not self._loaded:
                 self._warn_if_low_vram()
                 self._backend.load(self._device)
@@ -570,6 +617,8 @@ class ArgusLens:
         # unload()/the idle reaper can't free the model between the read and the
         # lease: a model sized as resident stays resident until this inference ends.
         with self._load_lock:
+            if self._closed:
+                raise EngineClosed("this engine is closed; build a new one to caption")
             self._active += 1
             self._last_used = time.monotonic()
             resident = self._loaded

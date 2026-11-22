@@ -45,14 +45,19 @@ _WRITTEN_MATERIAL_RE = re.compile(
     r"handwriting|handwritten|printed|menus?|headlines?|manuscripts?|scrolls?|tablets?|placards?)\b",
     re.IGNORECASE,
 )
-# A sentence ends at . ! ? followed by space/end, but not after a title abbreviation ("Dr. Who").
-_SENTENCE_END_RE = re.compile(r"(?<!\bDr)(?<!\bMr)(?<!\bMrs)(?<!\bMs)(?<!\bProf)(?<!\bMme)(?<!\bRev)[.!?](?=\s|$)")
+# A sentence ends at . ! ? followed by space/end; _ends_sentence() skips a "." after an abbreviation ("Dr. Who").
+_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
 _TITLE_WORDS = {re.sub(r"\W", "", t).lower() for t in _TITLES.strip("(?:)").split("|")}
-# Dotted words that never end a name's sentence: the titles, plus common abbreviations of titles, ranks and
-# suffixes a name carries ("Gen. Grant", "Sgt. York", "Martin Luther King Jr.").
-_ABBREVIATIONS = _TITLE_WORDS | {
+# The titles written with a dot ("Prof.", "Dr."): a dot after one never ends the sentence.
+_DOTTED_TITLES = {re.sub(r"\W", "", t).lower() for t in _TITLES.strip("(?:)").split("|") if t.endswith("\\.")}
+# Common abbreviations of titles, ranks and suffixes a name carries ("Gen. Grant", "Sgt. York", "King Jr.").
+_NAME_ABBREVIATIONS = {
     "gen", "col", "capt", "sgt", "cpl", "lt", "maj", "adm", "cmdr", "hon", "gov", "sen", "rep", "jr", "sr", "st",
 }  # fmt: skip
+# Dotted words that never end a name's sentence: the titles, plus the abbreviations above.
+_ABBREVIATIONS = _TITLE_WORDS | _NAME_ABBREVIATIONS
+# A "." after one of these is an abbreviation's dot, not a full stop. Not every title word: "the queen." ends one.
+_SENTENCE_ABBREVIATIONS = _DOTTED_TITLES | _NAME_ABBREVIATIONS
 # Capitalised words that open a sentence and are no part of a name. After a dotted word they show the dot was
 # a full stop, whatever the word's length: "Henri Xu. The frame", "John Smith Jr. His medal".
 _SENTENCE_OPENERS = {
@@ -68,10 +73,30 @@ _NEAR_MISS_RATIO = 0.6
 _NEAR_MISS_MIN_LEN = 5  # shorter words near-miss by chance ("MOES" vs "House")
 
 
+def _ends_sentence(prose: str, m: re.Match[str]) -> bool:
+    """True unless *m* is the dot of an abbreviation (``_SENTENCE_ABBREVIATIONS``: "St. Mary's", "King Jr. Day").
+
+    An abbreviation other than a title still ends the sentence when the next word only opens one
+    ("John Smith Jr. His medal"; ``_SENTENCE_OPENERS``), as in :func:`_to_sentence_end`.
+    """
+    if m.group() != ".":
+        return True
+    before = re.search(r"(\w+)\Z", prose[: m.start()])
+    word = before.group(1).lower() if before else ""
+    if word not in _SENTENCE_ABBREVIATIONS:
+        return True
+    if word in _DOTTED_TITLES:
+        return False
+    following = re.match(r"\s+(\w+)", prose[m.end() :])
+    return bool(following) and following.group(1).lower() in _SENTENCE_OPENERS
+
+
 def _sentences(prose: str) -> list[tuple[int, int]]:
     """Return the (start, end) span of each sentence in *prose*, end exclusive of trailing space."""
     spans, start = [], 0
     for m in _SENTENCE_END_RE.finditer(prose):
+        if not _ends_sentence(prose, m):
+            continue
         spans.append((start, m.end()))
         start = m.end()
         while start < len(prose) and prose[start].isspace():
@@ -197,6 +222,7 @@ def is_contradicted(claim: str, transcript: str) -> bool:
     return any(
         len(w) >= _NEAR_MISS_MIN_LEN and any(SequenceMatcher(None, w, r).ratio() >= _NEAR_MISS_RATIO for r in read)
         for w in words
+        if w not in _FUNCTION_WORDS  # as above: a long function word ("between") read is no evidence either
     )
 
 

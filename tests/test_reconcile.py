@@ -652,3 +652,14 @@ def test_dominant_color_is_the_area_mean() -> None:
     img.paste((20, 20, 20), (0, 80, 100, 100))
     # mean is (152, 152, 152) -> gray; a bicubic 1x1 weights the light centre and reads (167, ...) -> silver
     assert dominant_color_name(img) == "gray"
+
+
+def test_drop_text_claim_does_not_split_at_a_name_abbreviation() -> None:
+    """ "St." and "Jr." don't end a sentence, so the whole sentence naming the claim goes (pack 07af37d387)."""
+    prose = "A plaque for St. Mary's names Professor Henrik Bohr. The frame is gold."
+    assert drop_text_claim(prose, "Professor Henrik Bohr") == "The frame is gold."
+    prose = "A sign for the Martin Luther King Jr. Memorial reads Professor Henrik Bohr. The frame is gold."
+    assert drop_text_claim(prose, "Professor Henrik Bohr") == "The frame is gold."
+    # ... but a sentence opener after it still shows a full stop, and "the queen." still ends one.
+    prose = "It names John Smith Jr. His medal reads Professor Henrik Bohr. They met the queen. It is gold."
+    assert drop_text_claim(prose, "Professor Henrik Bohr") == "It names John Smith Jr. They met the queen. It is gold."

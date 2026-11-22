@@ -234,9 +234,9 @@ def judge(stance: str | None, dispute: AttributeDispute) -> str | None:
     claimed = {p.lower() for p in dispute.prose_says}
     if rule is None or not claimed:
         return None
-    judged = claimed <= JUDGED_TERMS
-    if judged and rule.writes in claimed:
+    if rule.writes and rule.writes in claimed:  # confirming needs only the written word, not every claimed one
         return rule.writes
+    judged = claimed <= JUDGED_TERMS
     if judged and claimed <= rule.rules_out:
         if dispute.is_claim:
             return rule.writes or stance

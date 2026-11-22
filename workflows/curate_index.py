@@ -66,6 +66,34 @@ def read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
             yield row
 
 
+def trim_torn_tail(path: Path) -> None:
+    """Cut a torn last line (no trailing newline) off *path* before appending to it.
+
+    A kill mid-append leaves a partial row; ``read_jsonl`` skips it, but the next append would be glued onto it,
+    making that new row unreadable too, so its image would be re-captioned on every run. The partial row was
+    never readable, so dropping it loses nothing: its image is simply captioned again.
+    """
+    if not path.exists():
+        return
+    with path.open("r+b") as fh:
+        end = fh.seek(0, os.SEEK_END)
+        pos = end
+        while pos > 0:
+            step = min(64 * 1024, pos)
+            fh.seek(pos - step)
+            chunk = fh.read(step)
+            if pos == end and chunk.endswith(b"\n"):
+                return  # the common case: the last row is whole
+            newline = chunk.rfind(b"\n")
+            if newline >= 0:
+                fh.truncate(pos - step + newline + 1)
+                break
+            pos -= step
+        else:
+            fh.truncate(0)  # one torn row and nothing else
+    print(f"warning: dropped a torn last line from {path.name}", file=sys.stderr)
+
+
 def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> int:
     """Atomically write *rows* to *path*; return the row count."""
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -290,6 +318,8 @@ def cmd_caption(args: argparse.Namespace) -> None:
     print(f"{len(done)} already captioned, {len(todo)} to go")
 
     started = time.monotonic()
+    trim_torn_tail(raw_path)
+    trim_torn_tail(run / "errors.jsonl")
     with raw_path.open("a", encoding="utf-8") as out, (run / "errors.jsonl").open("a", encoding="utf-8") as err:
         for i, row in enumerate(todo, 1):
             path = root / row["rel_path"]
