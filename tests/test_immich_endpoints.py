@@ -499,3 +499,46 @@ def test_immich_caption_stream_replays_by_original_bytes_sha256(immich_env, albu
     assert progress[0]["final_caption"] == "a recorded caption"
     # Keyed by the original-bytes sha256, not a dropped PIL identity (None, None).
     assert backend.looked_up == [(sha, None)]
+
+
+def test_stream_clients_stay_open_until_a_cancelled_worker_thread_returns() -> None:
+    """A disconnect cancels the stream's to_thread task but not its thread: the Immich clients close only when that
+    thread returns, so a download or write-back is never cut off mid-way (audit pack-argus-lens-41418bfda5)."""
+    import asyncio
+    import threading
+
+    from argus_lens.server import _SharedClients
+
+    class _Client:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    source, sink = _Client(), _Client()
+    started, finish = threading.Event(), threading.Event()
+
+    def _write_back() -> str:
+        started.set()
+        assert finish.wait(5)
+        assert not source.closed and not sink.closed  # still usable for the rest of the write
+        return "done"
+
+    async def _scenario() -> None:
+        clients = _SharedClients(source, None, sink)
+        task = asyncio.ensure_future(clients.run(_write_back))
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()  # the client disconnected
+        await asyncio.gather(task, return_exceptions=True)
+        clients.release()  # the stream's finally
+        assert not source.closed and not sink.closed  # the thread is still writing
+        finish.set()
+        for _ in range(500):
+            if source.closed:
+                break
+            await asyncio.sleep(0.01)
+        assert source.closed and sink.closed
+        with pytest.raises(RuntimeError, match="closed"):
+            await clients.run(lambda: None)  # nothing new touches a closed client
+
+    asyncio.run(_scenario())

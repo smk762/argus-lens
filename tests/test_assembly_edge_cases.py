@@ -176,3 +176,13 @@ def test_plain_identity_phrases_are_still_excised() -> None:
 def test_a_hyphenated_modifier_that_starts_with_a_pivot_word_is_still_identity(modifier: str) -> None:
     """ "off-white hair" is an identity phrase: the "off" in it is no preposition."""
     assert _clean_sentence(f"A woman with {modifier} hair holding a cup.", None)[0] == "A woman holding a cup"
+
+
+@pytest.mark.parametrize("modifier", ["off-white", "up-swept", "down-turned"])
+def test_a_hyphenated_pivot_modifier_does_not_stop_coordinated_identity(modifier: str) -> None:
+    """ "with an up-swept collar and blue eyes" keeps the collar and drops the eyes: the "up" is no pivot (pack
+    75917efea7)."""
+    assert (
+        _clean_sentence(f"A woman with a {modifier} collar and blue eyes.", None)[0]
+        == f"A woman with a {modifier} collar"
+    )

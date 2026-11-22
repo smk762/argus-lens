@@ -348,3 +348,12 @@ def test_plural_only_tag_nouns_do_not_match_a_different_word() -> None:
     assert tag_prose_contradiction(r)["count"] == 0
     r = CaptionResult(final_caption="x", raw_tags="red_glasses", raw_prose="blue glasses")
     assert tag_prose_contradiction(r)["count"] == 1  # the tag itself still matches
+
+
+def test_singular_tag_does_not_pluralise_into_a_plural_only_noun() -> None:
+    """'glass' is not 'glasses', 'short' not 'shorts': a generated plural never names a different thing (audit
+    pack-argus-lens-864519483c)."""
+    r = CaptionResult(final_caption="x", raw_tags="red_glass", raw_prose="wearing blue glasses")
+    assert tag_prose_contradiction(r)["count"] == 0
+    r = CaptionResult(final_caption="x", raw_tags="red_short", raw_prose="in blue shorts")
+    assert tag_prose_contradiction(r)["count"] == 0

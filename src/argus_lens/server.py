@@ -175,6 +175,52 @@ def _immich_album_assets(
     return assets
 
 
+class _SharedClients:
+    """Immich clients a stream shares with its worker threads, closed once the stream and the last thread are done.
+
+    Cancelling an ``asyncio.to_thread`` task doesn't stop its thread. A stream that closed its clients in its
+    ``finally`` (a client disconnect) would close the pool under a download or write-back still running, which could
+    leave half an Immich update. The stream holds one reference until :meth:`release`; each :meth:`run` call holds
+    another while its thread runs. A thread that starts after everything was released refuses to run.
+    """
+
+    def __init__(self, *clients: Any) -> None:
+        self._clients = [c for c in clients if c is not None]
+        self._lock = threading.Lock()
+        self._users = 1  # the stream's own hold, given up by release()
+        self._closed = False
+
+    async def run(self, fn: Any, *args: Any) -> Any:
+        """Run ``fn(*args)`` in a worker thread that keeps the clients open until it returns."""
+
+        def _call() -> Any:
+            """Take a hold before touching the clients, refusing if they are already closed."""
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("the stream has ended; its Immich clients are closed")
+                self._users += 1
+            try:
+                return fn(*args)
+            finally:
+                self._release()
+
+        return await asyncio.to_thread(_call)
+
+    def release(self) -> None:
+        """Give up the stream's hold: the clients close now, or when the last running thread returns."""
+        self._release()
+
+    def _release(self) -> None:
+        """Drop one hold; the last one out closes every client."""
+        with self._lock:
+            self._users -= 1
+            if self._users or self._closed:
+                return
+            self._closed = True
+        for client in self._clients:
+            client.close()
+
+
 def _result_to_dict(result: CaptionResult) -> dict[str, Any]:
     """Convert a ``CaptionResult`` dataclass into a JSON-serialisable dict."""
     return asdict(result)
@@ -1350,6 +1396,8 @@ def create_app(
             finally:
                 tmp.unlink(missing_ok=True)
 
+        clients = _SharedClients(source)
+
         async def _ndjson() -> Any:
             """Yield a progress line per asset, then a final completion summary line."""
             downloaded = skipped = failed = 0
@@ -1358,7 +1406,7 @@ def create_app(
             async def _fetch(asset: dict[str, Any], target: Path) -> None:
                 """Download one asset under the concurrency cap, off the event loop."""
                 async with sem:
-                    await asyncio.to_thread(_download, asset, target)
+                    await clients.run(_download, asset, target)
 
             # Plan every asset first (duplicate/skip decisions are order-
             # dependent), then let downloads overlap under the semaphore while
@@ -1426,7 +1474,7 @@ def create_app(
                 for t in pending:
                     t.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
-                source.close()
+                clients.release()  # a download still running in its thread keeps the client open until it ends
 
         return StreamingResponse(
             _ndjson(),
@@ -1526,6 +1574,8 @@ def create_app(
                     outcome["error"] = f"write_back failed (caption computed; description may already be set): {exc}"
             return outcome
 
+        clients = _SharedClients(source, sink)
+
         async def _ndjson() -> Any:
             """Yield a progress line per asset, then a final completion summary line."""
             captioned = 0
@@ -1534,7 +1584,7 @@ def create_app(
                 for i, asset in enumerate(assets):
                     # Fetch + caption + write-back is blocking network/GPU work —
                     # run off the event loop so the stream flushes each line promptly.
-                    outcome = await asyncio.to_thread(_caption_one, asset)
+                    outcome = await clients.run(_caption_one, asset)
                     if "error" in outcome:
                         failed += 1
                     else:
@@ -1543,7 +1593,7 @@ def create_app(
                 logger.info("immich_caption_done", captioned=captioned, failed=failed)
                 yield json.dumps({"type": "complete", "total": total, "captioned": captioned, "failed": failed}) + "\n"
             finally:
-                _close()
+                clients.release()  # a caption still in its thread finishes its write-back before the clients close
 
         return StreamingResponse(
             _ndjson(),

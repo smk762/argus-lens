@@ -565,3 +565,11 @@ def test_lens_never_imports_argus_puppet(path: Path) -> None:
             imported.add(node.module)
     banned = {"argus_puppet", "rtmlib", "mmpose", "controlnet_aux"}
     assert not [m for m in imported if m.split(".")[0] in banned]
+
+
+def test_judge_confirms_a_written_word_beside_an_unjudged_one() -> None:
+    """Confirm needs only the stance's word among the claimed ones: {standing, kneeling} under a standing stance is
+    standing, not the unjudged "kneeling" the keep-the-prose branch would return (pack f73dfee976)."""
+    dispute = AttributeDispute("pose", "posture", ("sitting",), ("standing", "kneeling"))
+    assert judge("standing", dispute) == "standing"
+    assert judge("standing", AttributeDispute("posture", "posture", (), ("standing", "kneeling"))) == "standing"

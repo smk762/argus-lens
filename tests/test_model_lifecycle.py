@@ -336,3 +336,35 @@ def test_close_waits_for_the_caption_after_its_inference(monkeypatch):
     caption.join(10)
     closer.join(10)
     assert recorder.recorded == ["image"] and recorder.closed
+
+
+def test_a_closed_engine_refuses_to_caption_and_never_reloads():
+    """After close() a caption raises EngineClosed instead of loading the model again with the idle reaper stopped,
+    which would pin it forever (audit pack-argus-lens-2d94645017)."""
+    from argus_lens.backends.base import CaptionBackend
+    from argus_lens.engine import ArgusLens, EngineClosed
+
+    class _Counting(CaptionBackend):
+        name = "counting"
+        requires_gpu = False
+        loads = 0
+
+        def load(self, device: str = "auto") -> None:
+            self.loads += 1
+
+        def caption_image(self, image: Image.Image) -> str:
+            return "a person standing"
+
+        def unload(self) -> None:
+            pass
+
+    backend = _Counting()
+    engine = ArgusLens(backend=backend, idle_unload_s=60)
+    engine.caption(_img())
+    engine.close()
+    assert backend.loads == 1 and not engine.loaded
+    with pytest.raises(EngineClosed):
+        engine.caption(_img())
+    with pytest.raises(EngineClosed):
+        engine._ensure_loaded()
+    assert backend.loads == 1 and not engine.loaded

@@ -107,6 +107,7 @@ def test_ocr_failure_raises_and_never_drops_a_claim() -> None:
 
 def test_ocr_needs_a_url(monkeypatch: pytest.MonkeyPatch) -> None:
     """No --ocr-url and no LENS_OCR_URL: a clear error, never a default host."""
+    monkeypatch.delenv("LENS_OCR_URL", raising=False)  # a developer's exported URL must not mask the contract
     with pytest.raises(ValueError, match="LENS_OCR_URL"):
         OcrVerifier()
     monkeypatch.setenv("LENS_OCR_URL", "http://ocr.invalid:8133")
