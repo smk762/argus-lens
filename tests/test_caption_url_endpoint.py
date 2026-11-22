@@ -106,11 +106,11 @@ def _stub_net(monkeypatch, handler, dns: dict[str, list[str]]) -> list[httpx.Req
 def test_allowed_host_captions(client, monkeypatch):
     """A host named in LENS_URL_ALLOWED_HOSTS captions as before, pinned to its checked address."""
     monkeypatch.setenv("LENS_URL_ALLOWED_HOSTS", "immich.lan")
-    seen = _stub_net(monkeypatch, lambda r: httpx.Response(200, content=_png()), {"immich.lan": ["192.168.1.20"]})
+    seen = _stub_net(monkeypatch, lambda r: httpx.Response(200, content=_png()), {"immich.lan": ["192.168.200.20"]})
     resp = client.post("/caption/url", json={"image_url": "http://immich.lan:8080/a.png"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["final_caption"]
-    assert [(str(r.url), r.headers["host"]) for r in seen] == [("http://192.168.1.20:8080/a.png", "immich.lan:8080")]
+    assert [(str(r.url), r.headers["host"]) for r in seen] == [("http://192.168.200.20:8080/a.png", "immich.lan:8080")]
 
 
 def test_connect_failure_detail_is_generic(client, monkeypatch):

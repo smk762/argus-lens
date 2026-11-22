@@ -84,7 +84,7 @@ def test_bare_cors_trusts_only_the_localhost_studio() -> None:
 
 def test_named_origins_from_flag_and_env(monkeypatch) -> None:
     """--cors-origin / LENS_CORS_ORIGINS replace the localhost default."""
-    lan = "http://192.168.1.5:3000"
+    lan = "http://192.168.200.5:3000"
     assert _post(_client(cors_origins=[lan]), lan) == 200
     assert _post(_client(cors_origins=[lan]), _STUDIO) == 403
     monkeypatch.setenv("LENS_CORS_ORIGINS", f" {lan} , ")

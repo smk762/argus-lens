@@ -116,7 +116,7 @@ def test_load_image_url_http_error(net):
     [
         "127.0.0.1",
         "10.1.2.3",
-        "192.168.1.10",
+        "192.168.200.10",
         "172.16.0.5",
         "169.254.169.254",
         "100.64.0.1",
@@ -186,23 +186,23 @@ def test_redirect_loop_capped(net):
 def test_allowed_host_bypasses_private_check(net, monkeypatch):
     """A host named in LENS_URL_ALLOWED_HOSTS may resolve to a LAN address."""
     monkeypatch.setenv("LENS_URL_ALLOWED_HOSTS", "immich.lan, other.lan")
-    net.dns["immich.lan"] = ["192.168.1.20"]
+    net.dns["immich.lan"] = ["192.168.200.20"]
     net.routes["http://immich.lan:2283/thumb.png"] = httpx.Response(200, content=_PNG)
     _, pil = _load_image("http://immich.lan:2283/thumb.png")
     assert pil.size == (64, 64)
-    assert net.seen == [("http://192.168.1.20:2283/thumb.png", "immich.lan:2283", "immich.lan")]
+    assert net.seen == [("http://192.168.200.20:2283/thumb.png", "immich.lan:2283", "immich.lan")]
 
 
 def test_allowed_host_with_port_only_allows_that_port(net, monkeypatch):
     """A ``host:port`` entry in LENS_URL_ALLOWED_HOSTS allows that port and no other."""
     monkeypatch.setenv("LENS_URL_ALLOWED_HOSTS", "immich.lan:2283")
-    net.dns["immich.lan"] = ["192.168.1.20"]
+    net.dns["immich.lan"] = ["192.168.200.20"]
     net.routes["http://immich.lan:2283/thumb.png"] = httpx.Response(200, content=_PNG)
     _, pil = _load_image("http://immich.lan:2283/thumb.png")
     assert pil.size == (64, 64)
     with pytest.raises(UrlRefused):
         _load_image("http://immich.lan:8080/thumb.png")
-    assert [s[0] for s in net.seen] == ["http://192.168.1.20:2283/thumb.png"]
+    assert [s[0] for s in net.seen] == ["http://192.168.200.20:2283/thumb.png"]
 
 
 def test_url_fetch_off(net, monkeypatch):
