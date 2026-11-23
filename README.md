@@ -339,13 +339,13 @@ For `argus-lens serve`, set `ARGUS_IDLE_UNLOAD_S` (seconds) to turn on the same 
 
 The server exposes `GET /health` and `POST /admin/unload`, so an external scheduler can free lens's VRAM on demand. Both follow argus-cortex's resident contract, which argus-iris reads: `/health` carries `model_state` (`unloaded`, `cpu` or `gpu`, the furthest-loaded of the pooled engines), `busy` (a caption is running) and `idle_s` at the top level, beside the `gpu` block; `/admin/unload` answers `model_state` and `unloaded`, or `409 {"status": "busy", "active": n}` while a caption runs, unloading nothing.
 
-**Coordinator** — gate heavy inference behind the suite's shared GPU lease ([`argus_cortex.gpu`](https://github.com/smk762/argus-cortex)), so lens, argus-curator and any other argus GPU service on the host take turns. Selected via env (defaults to `none`, i.e. unchanged behaviour):
+**Coordinator** — gate heavy inference behind the suite's shared GPU lease ([`argus_cortex.gpu`](https://github.com/smk762/argus-cortex)), so lens, argus-curator and any other argus GPU service on the host take turns. Selected via env (defaults to `none`, i.e. unchanged behaviour, unless `ARGUS_GPU_BROKER_URL` is set):
 
 | `ARGUS_GPU_COORDINATOR` | Behaviour | Needs |
 |---|---|---|
-| `none` (default) | no gating | — |
+| `none` (default without a broker URL) | no gating | — |
 | `lease` | one argus GPU job at a time via a host-wide file lock, started only once the card has room | POSIX; NVML (`nvidia-ml-py`, pulled in by the `local`/`torch`/`wd14-gpu` extras) for the VRAM wait |
-| `broker` | [argus-iris](https://github.com/smk762/argus-iris), the suite's GPU broker, grants each lease: it queues by priority, places the work on a node and evicts idle models first; falls back to `ARGUS_GPU_BROKER_FALLBACK` when iris is unreachable | `ARGUS_GPU_BROKER_URL`; httpx + PyYAML (`argus-cortex[remote,yaml]`, pulled in by the same extras) |
+| `broker` (default with `ARGUS_GPU_BROKER_URL`) | [argus-iris](https://github.com/smk762/argus-iris), the suite's GPU broker, grants each lease: it queues by priority, places the work on a node and evicts idle models first; falls back to `ARGUS_GPU_BROKER_FALLBACK` when iris is unreachable | `ARGUS_GPU_BROKER_URL`; httpx + PyYAML (`argus-cortex[remote,yaml]`, pulled in by the same extras) |
 
 ```bash
 # Share the GPU with argus-curator: both name the same lock file
@@ -358,15 +358,14 @@ The default lock is `<tempdir>/argus-gpu.lock`, the same file argus-curator uses
 
 Extra knobs (all optional, and host-wide: every argus service should agree on them): `ARGUS_GPU_MIN_VRAM_MB` overrides the per-backend footprint the lease waits for (e.g. for Florence-2-large or a non-default hybrid); `ARGUS_GPU_LEASE_TIMEOUT_S` caps how long the lease waits (default 300 s, raising `GpuLeaseTimeout`, a `TimeoutError`); `ARGUS_GPU_LEASE_PATH` sets the lock file; `ARGUS_GPU_DEVICE` picks the card the VRAM wait probes. `ARGUS_ADMIN_TOKEN` protects `POST /admin/unload`.
 
-**The argus-iris broker.** With `ARGUS_GPU_COORDINATOR=broker`, each lease is a request to iris rather than a local lock (#118):
+**The argus-iris broker.** Set `ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` and each lease is a request to iris rather than a local lock (#118); `ARGUS_GPU_COORDINATOR` can stay unset. `argus-lens serve` registers [`gpu-tenant.yaml`](gpu-tenant.yaml) with iris at startup (the image ships it at `/app/gpu-tenant.yaml`, where argus-cortex looks), re-registers every five minutes and signs off on shutdown, so iris knows the resident before the first caption. It never blocks startup: an unreachable broker is retried in the background. Iris places the resident on the node whose agent sees the `argus-lens` container, at that node's host and the container's published port, so the manifest names no host.
 
 | Variable | Value |
 |---|---|
 | `ARGUS_GPU_BROKER_URL` | where iris listens, e.g. `http://<GPU_BROKER_HOST>:8120`; an IP in Docker, which does not resolve LAN host names |
 | `ARGUS_GPU_BROKER_TOKEN` | the suite's shared caller token, sent as `Authorization: Bearer` (host `.env`, never a repo) |
-| `ARGUS_GPU_TENANT_MANIFEST` | path to the committed [`gpu-tenant.yaml`](gpu-tenant.yaml) (the image ships it at `/app/gpu-tenant.yaml`, compose's default), or name the tenant alone with `ARGUS_GPU_TENANT=argus-lens` |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none`: the coordinator used when iris is unreachable or answers 5xx |
-| `ARGUS_ADMIN_TOKEN` | the suite's shared admin token, so iris can call `POST /admin/unload` to evict lens's model |
+| `ARGUS_ADMIN_TOKEN` | the suite's shared admin token; lens sends it to iris when it registers, so iris can call `POST /admin/unload` to evict lens's model |
 
 `gpu-tenant.yaml` declares two kinds of work. `caption` (one image someone waits on: `/caption`, `/caption/url`, the `/v1` shim) is `interactive`. `caption-batch` (`/caption/batch`, `/caption/stream`, folder, manifest and Immich runs, `caption_directory`) is `batch` and preemptible. Every image takes its own lease, so a yield lands at the next image boundary. Library callers pass `lease_kind=LEASE_KIND_BATCH` to `caption()` when they loop. The manifest also lists the loaded model as an `argus-http` resident that iris evicts through `/admin/unload`; lens has no evict-to-CPU or wake route, so the next caption reloads it. Leave `ARGUS_IDLE_UNLOAD_S` unset on the broker: iris owns idle eviction.
 
@@ -503,9 +502,9 @@ Copy or create a `.env` file for the Docker deployment:
 | `HF_TRUST_REMOTE_CODE` | `false` | Only needed for legacy `microsoft/Florence-2-*` weights. See [Security](#security) |
 | `ARGUS_ALLOWED_BACKENDS` | -- | Comma-separated backends a caption request may pick with `backend` (the default is always allowed; unset: any registered backend) |
 | `ARGUS_IDLE_UNLOAD_S` | -- | Free the model's VRAM after this many idle seconds; it reloads on the next caption (unset: stay loaded). Leave unset with the broker |
-| `ARGUS_GPU_COORDINATOR` | `none` | `none`, `lease` or `broker`; see [GPU sharing](#gpu-sharing-lifecycle--coordinator) |
-| `ARGUS_GPU_BROKER_URL` / `ARGUS_GPU_BROKER_TOKEN` | -- | The argus-iris broker and its caller token (`broker` only) |
-| `ARGUS_GPU_TENANT_MANIFEST` | `/app/gpu-tenant.yaml` | The tenant manifest the broker registers (`broker` only) |
+| `ARGUS_GPU_COORDINATOR` | `broker` with a broker URL, else `none` | `none`, `lease` or `broker`; see [GPU sharing](#gpu-sharing-lifecycle--coordinator) |
+| `ARGUS_GPU_BROKER_URL` / `ARGUS_GPU_BROKER_TOKEN` | -- | The argus-iris broker and its caller token; the URL alone selects `broker` |
+| `ARGUS_GPU_TENANT_MANIFEST` | `./gpu-tenant.yaml`, else `/app/gpu-tenant.yaml` | The tenant manifest the broker registers (`broker` only) |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` | Coordinator used when the broker is unreachable (`lease` or `none`) |
 | `ARGUS_ADMIN_TOKEN` | -- | Bearer token for `POST /admin/unload` (`Authorization: Bearer <token>`, checked by `argus_cortex.auth`; a missing or wrong token is a `401`; unset: open) |
 | `ARGUS_MODEL_IDLE_SECONDS` | `300` | Idle seconds before the shared WD14/RAM++/BLIP-2 model cache evicts an unused model |

@@ -21,3 +21,10 @@ def _pose_unset(monkeypatch):
     """A developer's LENS_POSE_URL must not route posture to a live argus-puppet in tests."""
     monkeypatch.delenv("LENS_POSE_URL", raising=False)
     monkeypatch.delenv("LENS_POSE_TIMEOUT_S", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _gpu_broker_unset(monkeypatch):
+    """A developer's ARGUS_GPU_BROKER_URL alone selects the broker (cortex 0.15): keep tests off a live iris."""
+    for name in ("ARGUS_GPU_COORDINATOR", "ARGUS_GPU_BROKER_URL", "ARGUS_GPU_TENANT_MANIFEST", "ARGUS_GPU_TENANT"):
+        monkeypatch.delenv(name, raising=False)

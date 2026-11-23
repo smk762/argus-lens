@@ -365,7 +365,8 @@ class ArgusLens:
 
         *coordinator* (a ``GpuCoordinator``) gates heavy inference behind a
         capacity lease (#38); it defaults to the environment
-        (``ARGUS_GPU_COORDINATOR``), i.e. ``none`` unless configured.
+        (``ARGUS_GPU_COORDINATOR``, or the broker when ``ARGUS_GPU_BROKER_URL`` alone is set), i.e. ``none``
+        unless configured.
         *idle_unload_s* enables a background reaper that unloads the model after
         that many idle seconds (#37).
 
@@ -422,6 +423,11 @@ class ArgusLens:
     def backend(self) -> CaptionBackend:
         """Return the resolved ``CaptionBackend`` instance."""
         return self._backend
+
+    @property
+    def coordinator(self) -> Any:
+        """The ``GpuCoordinator`` this engine leases the GPU from (``argus_cortex.gpu``)."""
+        return self._coordinator
 
     @property
     def active(self) -> int:

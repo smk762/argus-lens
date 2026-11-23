@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Zero-config argus-iris registration** (argus-cortex 0.15). `argus-lens serve` registers `gpu-tenant.yaml` with
+  the GPU broker at startup (a FastAPI lifespan around `argus_cortex.gpu.aregistered`, reusing the default engine's
+  coordinator), re-registers every five minutes, and sends `DELETE /tenants/argus-lens` on shutdown, so iris knows
+  the `lens-captioner` resident before the first caption and gets `ARGUS_ADMIN_TOKEN` for `/admin/unload` from the
+  registration. It never blocks startup and does nothing without `ARGUS_GPU_BROKER_URL`.
+
+### Changed
+- **argus-cortex `>=0.15,<0.16`** (was `>=0.11,<0.12`). `ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` are now
+  all the broker needs: the URL alone selects it and the manifest is found at `/app/gpu-tenant.yaml`.
+  `docker-compose.yaml` no longer defaults `ARGUS_GPU_COORDINATOR` to `none` (which would have overridden that) and
+  drops `ARGUS_GPU_TENANT_MANIFEST` / `ARGUS_GPU_TENANT`; `.env.example` drops them too. Set
+  `ARGUS_GPU_COORDINATOR=none` to ignore a broker URL.
+- `gpu-tenant.yaml`: the `lens-captioner` resident drops `base_url: http://morpheus:8100`. The broker places it on
+  the node whose agent reports the `argus-lens` container, at that node's host and the container's published port.
+
 - **`pose` verifier: posture words checked against argus-puppet's measured pose** (argus-puppet#1). With
   `LENS_POSE_URL` set (and optionally `LENS_POSE_TIMEOUT_S`), reconcile sends posture to argus-puppet's
   `POST /pose` ahead of the `--reconcile` verifier and reads the primary person's `labels.stance` (wire 1.1).

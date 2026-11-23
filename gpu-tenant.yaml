@@ -2,10 +2,13 @@
 # Validated by argus-cortex's TenantManifest (gpu-tenant-schema.json,
 # tenant_version 1.0); tests/test_gpu_tenant.py fails if it stops validating.
 #
-# With ARGUS_GPU_COORDINATOR=broker, lens registers this with the broker on its
-# first lease (ARGUS_GPU_TENANT_MANIFEST points at it; the Docker image ships it
-# at /app/gpu-tenant.yaml). Tokens never go here: ARGUS_GPU_BROKER_TOKEN and
-# ARGUS_ADMIN_TOKEN live in the host's .env.
+# With ARGUS_GPU_BROKER_URL set, `argus-lens serve` registers this with the
+# broker at startup and keeps it registered (the Docker image ships it at
+# /app/gpu-tenant.yaml, where argus-cortex finds it). The broker places the
+# resident on the node whose iris-agent reports the `container`, at that node's
+# host and the container's published port, and takes ARGUS_ADMIN_TOKEN from the
+# registration for /admin/unload. Tokens never go here: ARGUS_GPU_BROKER_TOKEN
+# and ARGUS_ADMIN_TOKEN live in the host's .env.
 #
 # VRAM figures are MiB, for the default backend (hybrid = wd14 + florence2), and
 # match gpu/capacity.py. The broker uses its learned p95 when that is larger, so
@@ -39,12 +42,13 @@ kinds:
 residents:
   # The captioning model(s) the server keeps loaded between requests. Lens has
   # no evict (GPU to CPU) or wake route: an unload frees VRAM and host RAM, and
-  # the next caption reloads the model lazily.
+  # the next caption reloads the model lazily. No base_url: the broker finds
+  # the service through the node agent that sees this container (compose's
+  # container_name; one published port, so no `port` either).
   - name: lens-captioner
     adapter: argus-http
     target: in-process
     vram_mb: 4000
-    base_url: http://morpheus:8100
     container: argus-lens
     health_path: /health
     unload_path: /admin/unload
