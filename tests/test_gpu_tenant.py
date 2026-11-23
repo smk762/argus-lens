@@ -94,15 +94,21 @@ def test_batch_and_stream_lease_as_batch_kind() -> None:
 
 
 def test_broker_coordinator_from_env(monkeypatch) -> None:
-    """ARGUS_GPU_COORDINATOR=broker builds cortex's broker client, tenant read from the manifest."""
+    """ARGUS_GPU_BROKER_URL alone builds cortex's broker client, the manifest found in the working directory."""
     pytest.importorskip("httpx")
     from argus_cortex.gpu_broker import BrokerCoordinator
 
-    monkeypatch.setenv("ARGUS_GPU_COORDINATOR", "broker")
+    monkeypatch.chdir(MANIFEST.parent)
     monkeypatch.setenv("ARGUS_GPU_BROKER_URL", "http://broker.invalid:8120")
-    monkeypatch.setenv("ARGUS_GPU_TENANT_MANIFEST", str(MANIFEST))
-    monkeypatch.delenv("ARGUS_GPU_TENANT", raising=False)
     coord = coordinator_from_env()
     assert isinstance(coord, BrokerCoordinator)
     assert coord.tenant == "argus-lens"
     assert coord.manifest is not None and coord.manifest.tenant == "argus-lens"
+
+
+def test_resident_names_no_host() -> None:
+    """The broker places the resident by its container, so the manifest carries no host of its own."""
+    resident = load_tenant_manifest(MANIFEST).residents[0]
+    assert resident.base_url is None
+    assert resident.container == "argus-lens"
+    assert resident.admin_auth is True

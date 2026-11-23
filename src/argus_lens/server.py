@@ -9,6 +9,8 @@ import math
 import os
 import threading
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,7 @@ except ImportError as exc:
 
 import httpx
 import structlog
+from argus_cortex.gpu import aregistered
 from argus_cortex.net import FetchFailed, UrlRefused
 from argus_cortex.xmp import XmpError
 from PIL import Image
@@ -646,10 +649,22 @@ def create_app(
     second model onto its GPU; unset means any registered backend.
     """
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Keep lens registered with the argus-iris GPU broker while it serves.
+
+        Registration at startup, not at the first lease, lets the broker see the ``lens-captioner`` resident
+        (``gpu-tenant.yaml``) as soon as the model could load, and the broker learns lens's admin token for
+        ``/admin/unload``. A no-op unless ``ARGUS_GPU_BROKER_URL`` selects the broker; it never blocks startup.
+        """
+        async with aregistered(engine.coordinator):
+            yield
+
     app = FastAPI(
         title="Argus Lens",
         description="Structured image captioning API",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     if cors_origins is None and (env_origins := os.environ.get("LENS_CORS_ORIGINS")):

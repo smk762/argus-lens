@@ -25,18 +25,19 @@ services:
       - ARGUS_REFINE_VARIANTS=${ARGUS_REFINE_VARIANTS:-}
       # Share the GPU politely with ComfyUI etc. on the same host. With `lease`,
       # every argus GPU service (argus-curator too) must name the same lock file
-      # on the same host directory, mounted below. With `broker`, argus-iris
-      # grants the lease (and `lease` below is the fallback when it is down).
-      - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR:-none}
+      # on the same host directory, mounted below. Setting ARGUS_GPU_BROKER_URL
+      # (and ARGUS_GPU_BROKER_TOKEN) alone selects argus-iris, the broker: lens
+      # registers /app/gpu-tenant.yaml at startup, and `lease` below is the
+      # fallback when iris is down. Unset everything for no gating.
+      - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR:-}
       - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
       - ARGUS_GPU_BROKER_URL=${ARGUS_GPU_BROKER_URL:-}
       - ARGUS_GPU_BROKER_TOKEN=${ARGUS_GPU_BROKER_TOKEN:-}
       - ARGUS_GPU_BROKER_FALLBACK=${ARGUS_GPU_BROKER_FALLBACK:-lease}
-      - ARGUS_GPU_TENANT_MANIFEST=${ARGUS_GPU_TENANT_MANIFEST:-/app/gpu-tenant.yaml}
-      - ARGUS_GPU_TENANT=${ARGUS_GPU_TENANT:-}
       # Leave unset on the broker: iris owns idle eviction.
       - ARGUS_IDLE_UNLOAD_S=${ARGUS_IDLE_UNLOAD_S:-}
-      # Bearer token for POST /admin/unload; the broker calls it to evict.
+      # Bearer token for POST /admin/unload; lens hands it to the broker when it
+      # registers, and the broker calls the route with it to evict.
       - ARGUS_ADMIN_TOKEN=${ARGUS_ADMIN_TOKEN:-}
       # Record live captions into the cortex lineage store (the replay tape).
       - LENS_RECORD_LINEAGE=${LENS_RECORD_LINEAGE:-}
