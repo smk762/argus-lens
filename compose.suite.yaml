@@ -1,0 +1,21 @@
+# Optional: mount the suite settings file (argus_cortex.settings) into the lens container, read-only.
+#
+#   python -m argus_cortex.settings --init                      # creates ~/.config/argus/suite.env, mode 600
+#   COMPOSE_FILE=docker-compose.yaml:compose.suite.yaml         # in .env, or pass both files with -f
+#
+# A separate file because compose cannot make a bind mount optional: with it in docker-compose.yaml, a host
+# without a suite file would not start. ARGUS_SUITE_ENV names another file than ~/.config/argus/suite.env.
+#
+# Known limit (smk762/argus-cortex#218): argus-cortex reads the file only when it belongs to the user the process
+# runs as, or to root, and nobody else can write it. The lens image runs as root, so a file owned by your own user
+# is refused inside the container (a warning in the log, then it is treated as absent). Today the mounted file
+# must be owned by root: mount a root-owned copy (mode 600) and name it with ARGUS_SUITE_ENV. Anything set in .env
+# or the environment still wins over the file.
+services:
+  argus-lens:
+    volumes:
+      - type: bind
+        source: "${ARGUS_SUITE_ENV:-${HOME}/.config/argus/suite.env}"
+        target: /etc/argus/suite.env
+        read_only: true
+        bind: {create_host_path: false}

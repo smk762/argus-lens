@@ -4,6 +4,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_suite_file(monkeypatch):
+    """A developer's suite file (``~/.config/argus/suite.env``) and suite-wide peer URLs never reach a test."""
+    monkeypatch.setenv("ARGUS_ENV_FILE", "off")
+    for name in ("ARGUS_OCR_URL", "ARGUS_PUPPET_URL", "ARGUS_PEER", "ARGUS_BUILD"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _refine_off(monkeypatch):
     """Refinement is on by default in serve/CLI; keep tests off the network unless they opt in."""
     monkeypatch.setenv("ARGUS_REFINE", "off")

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import structlog
+from argus_cortex.peers import peer_env, peer_url
 
 from argus_lens.priority import sibling_priority
 from argus_lens.reconcile.types import Verdict
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 POSE_URL_ENV = "LENS_POSE_URL"  # argus-puppet's origin, e.g. http://puppet:8220; no default host
+POSE_PEER = "puppet"  # cortex's peer name: the suite-wide ARGUS_PUPPET_URL is read after LENS_POSE_URL
 POSE_TIMEOUT_ENV = "LENS_POSE_TIMEOUT_S"  # per-read timeout of one pose call, seconds
 DEFAULT_TIMEOUT_S = 30.0
 MAX_REPLY_BYTES = 8 * 1024 * 1024  # a PoseResult for puppet's 20-person cap is well under this
@@ -92,8 +94,13 @@ class PoseCheckFailed(RuntimeError):
 
 
 def pose_url_from_env() -> str | None:
-    """argus-puppet's URL from ``LENS_POSE_URL``, or ``None`` when unset or blank."""
-    return os.environ.get(POSE_URL_ENV, "").strip() or None
+    """argus-puppet's URL: ``LENS_POSE_URL``, then the suite-wide ``ARGUS_PUPPET_URL``, or ``None`` when neither is set.
+
+    Resolved by :func:`argus_cortex.peers.peer_url`, so each name is read from the environment and then the suite
+    file. A blank value falls through to the next name and ``off`` stops there (no pose check). A value that is not
+    an absolute http(s) URL raises :class:`~argus_cortex.peers.PeerRefused`, naming the variable.
+    """
+    return peer_url(POSE_PEER, POSE_URL_ENV)
 
 
 def pose_timeout_from_env() -> float:
@@ -264,7 +271,10 @@ class PoseVerifier:
         if client is None:
             url = pose_url_from_env()
             if not url:
-                raise ValueError(f"the pose verifier needs argus-puppet's URL: set {POSE_URL_ENV}")
+                raise ValueError(
+                    f"the pose verifier needs argus-puppet's URL: set {POSE_URL_ENV} "
+                    f"(or the suite-wide {peer_env(POSE_PEER)})"
+                )
             client = PuppetClient(url, timeout=timeout or pose_timeout_from_env())
         self._client = client
 

@@ -6,8 +6,17 @@ services:
     container_name: ${LENS_CONTAINER_NAME:-argus-lens}
     ports:
       - "${ARGUS_PORT:-8080}:8080"
+    # How the suite finds this service (argus-cortex#212): argus-iris's node agents read these labels and build
+    # the service directory from them. `argus.peer` is the name callers ask for.
+    labels:
+      argus.peer: lens
+      argus.service: argus-lens
+      argus.health: /health
+      argus.port: "8080"
     environment:
       - ARGUS_BACKEND=${ARGUS_BACKEND:-hybrid}
+      # The argus.peer label above, repeated for the process: /health reports it as `peer`.
+      - ARGUS_PEER=lens
       # Cloud backends each read their own key variable.
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - REPLICATE_API_TOKEN=${REPLICATE_API_TOKEN:-}

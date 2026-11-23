@@ -19,6 +19,7 @@ try:
     from argus_cortex.auth import bearer
     from argus_cortex.limits import BadInput, TooLarge, read_upload
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
+    from argus_cortex.service import install_health
     from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
     from fastapi.responses import JSONResponse, StreamingResponse
     from pydantic import BaseModel
@@ -801,9 +802,12 @@ def create_app(
             "idle_s": min(idles) if idles else None,
         }
 
-    @app.get("/health")
-    async def health() -> dict[str, Any]:
-        """Service liveness/identity probe (mirrors argus-curator's /health shape).
+    def _immich_configured() -> bool:
+        """Whether both Immich variables are set (read per request, as the Immich endpoints do)."""
+        return bool(os.environ.get("IMMICH_URL") and os.environ.get("IMMICH_API_KEY"))
+
+    async def _health_fields() -> dict[str, Any]:
+        """Lens's own ``/health`` fields, beside cortex's ``ServiceHealth`` ones.
 
         Includes GPU residency + free VRAM so an external scheduler can
         attribute and reclaim this backend's memory (#37). The VRAM probe runs
@@ -811,9 +815,10 @@ def create_app(
 
         Write capabilities are advertised as booleans (#78) so a UI can gate
         controls before a refused write: ``read_only`` (sidecar/XMP writes,
-        Immich pulls and write-back are refused), ``immich`` (``IMMICH_URL`` and
-        ``IMMICH_API_KEY`` are set) and ``immich_write_back`` (Immich is
-        configured and the server is not read-only).
+        Immich pulls and write-back are refused; a ``ServiceHealth`` field),
+        ``immich`` (``IMMICH_URL`` and ``IMMICH_API_KEY`` are set) and
+        ``immich_write_back`` (Immich is configured and the server is not
+        read-only).
 
         ``backend`` names the default caption backend (what a request without
         ``backend`` uses) and ``allowed_backends`` the names a request may pick
@@ -821,22 +826,36 @@ def create_app(
         engine; ``gpu.resident`` lists every backend whose model is loaded,
         including ones a request switched to (#107).
         """
-        immich = bool(os.environ.get("IMMICH_URL") and os.environ.get("IMMICH_API_KEY"))
+        immich = _immich_configured()
         gpu = await asyncio.to_thread(engine.vram_status)
         gpu["resident"] = sorted(name for name, eng in list(engines.items()) if eng.loaded)
         return {
             **_resident_health(),
-            "status": "ok",
-            "service": "argus-lens",
-            "version": __version__,
             "backend": default_name,
             "allowed_backends": sorted(allowed) if allowed is not None else None,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
-            "read_only": read_only,
             "immich": immich,
             "immich_write_back": immich and not read_only,
             "gpu": gpu,
         }
+
+    def _capabilities() -> dict[str, bool]:
+        """What this server can do now, as ``ServiceHealth.capabilities``: the same facts as the booleans above."""
+        immich = _immich_configured()
+        return {"caption": True, "immich": immich, "immich_write_back": immich and not read_only}
+
+    # GET /health is cortex's ServiceHealth (service, version, status, started_at, read_only, capabilities) with
+    # lens's own fields and the resident contract's model_state / busy / idle_s / gpu beside it, all top-level.
+    # No readiness and no checks: the model loads lazily, so an unloaded model is a normal state, and argus-iris
+    # reads this route and treats a non-200 as a failure. It always answers 200, as it did before the contract.
+    install_health(
+        app,
+        service="argus-lens",
+        version=__version__,
+        capabilities=_capabilities,
+        read_only=bool(read_only),
+        extra=_health_fields,
+    )
 
     @app.post("/admin/unload", dependencies=[Depends(_require_admin)])
     async def admin_unload() -> dict[str, Any]:

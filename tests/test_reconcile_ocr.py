@@ -355,3 +355,33 @@ def test_text_reader_does_not_inherit_the_main_verifiers_model_id() -> None:
     # tag-prior loads no model, so the id can only be meant for the reader.
     v = build_verifier("tag-prior", model_id="llava", text_verifier="openai-compat")
     assert v.text_readers[0].model_id == "llava"
+
+
+# --- the OCR URL is a cortex peer: LENS_OCR_URL, then ARGUS_OCR_URL (argus-cortex#209) -----------------------------
+
+
+def test_ocr_url_is_lens_own_variable_then_the_suite_wide_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LENS_OCR_URL wins; blank falls through to ARGUS_OCR_URL; ``off`` stops there; neither set is None."""
+    from argus_lens.reconcile.verifiers.ocr import ocr_url_from_env
+
+    assert ocr_url_from_env() is None
+    monkeypatch.setenv("ARGUS_OCR_URL", "http://suite-ocr.test:8133/")
+    assert ocr_url_from_env() == "http://suite-ocr.test:8133"
+    monkeypatch.setenv("LENS_OCR_URL", "")
+    assert ocr_url_from_env() == "http://suite-ocr.test:8133"
+    monkeypatch.setenv("LENS_OCR_URL", "http://ocr.test:8133")
+    assert ocr_url_from_env() == "http://ocr.test:8133"
+    monkeypatch.setenv("LENS_OCR_URL", "off")
+    assert ocr_url_from_env() is None
+
+
+def test_a_malformed_ocr_url_is_refused_not_read_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo raises, naming the variable and never the value, rather than leaving text claims unchecked."""
+    from argus_cortex.peers import PeerRefused
+
+    from argus_lens.reconcile.verifiers.ocr import ocr_url_from_env
+
+    monkeypatch.setenv("LENS_OCR_URL", "ocr.test:8133")
+    with pytest.raises(PeerRefused, match="LENS_OCR_URL") as refused:
+        ocr_url_from_env()
+    assert "ocr.test" not in str(refused.value)
