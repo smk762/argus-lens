@@ -8,7 +8,6 @@ talks to it over HTTP through cortex's :class:`~argus_cortex.moderation.OcrClien
 from __future__ import annotations
 
 import io
-import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -16,14 +15,22 @@ if TYPE_CHECKING:
 
     from argus_lens.reconcile.types import AttributeDispute
 
+from argus_cortex.peers import peer_env, peer_url
+
 from argus_lens.reconcile.types import Verdict
 
 OCR_URL_ENV = "LENS_OCR_URL"  # the retina OCR server's origin, e.g. http://ocr:8133; no default host
+OCR_PEER = "ocr"  # cortex's peer name: the suite-wide ARGUS_OCR_URL is read after LENS_OCR_URL
 
 
 def ocr_url_from_env() -> str | None:
-    """The OCR server URL from ``LENS_OCR_URL``, or ``None`` when unset or blank."""
-    return os.environ.get(OCR_URL_ENV, "").strip() or None
+    """The OCR server URL: ``LENS_OCR_URL``, then the suite-wide ``ARGUS_OCR_URL``, or ``None`` when neither is set.
+
+    Resolved by :func:`argus_cortex.peers.peer_url`, so each name is read from the environment and then the suite
+    file. A blank value falls through to the next name and ``off`` stops there (no OCR server for lens). A value
+    that is not an absolute http(s) URL raises :class:`~argus_cortex.peers.PeerRefused`, naming the variable.
+    """
+    return peer_url(OCR_PEER, OCR_URL_ENV)
 
 
 class OcrVerifier:
@@ -41,7 +48,10 @@ class OcrVerifier:
         if client is None:
             url = base_url or ocr_url_from_env()
             if not url:
-                raise ValueError(f"the ocr verifier needs the OCR server's URL: pass --ocr-url or set {OCR_URL_ENV}")
+                raise ValueError(
+                    f"the ocr verifier needs the OCR server's URL: pass --ocr-url or set {OCR_URL_ENV} "
+                    f"(or the suite-wide {peer_env(OCR_PEER)})"
+                )
             from argus_cortex.moderation import OcrClient  # noqa: PLC0415 - only this verifier needs it
 
             client = OcrClient(url, timeout=timeout)

@@ -204,3 +204,70 @@ def test_server_env_enables_refiner_and_idle_unload(monkeypatch) -> None:
     create_app(default_backend=_StubBackend())
     assert captured["refiner"].rewriter.model_id == "qwen3:8b"
     assert captured["idle_unload_s"] == 120.0
+
+
+# --- cortex's ServiceHealth on /health (argus-cortex#212) ---------------------------------------------------------
+
+# Every field /health returned before it served ServiceHealth; UIs, argus-iris and argus-lightbox read them.
+_LEGACY_HEALTH_FIELDS = {
+    "status",
+    "service",
+    "version",
+    "backend",
+    "allowed_backends",
+    "source_root",
+    "read_only",
+    "immich",
+    "immich_write_back",
+    "gpu",
+    "model_state",
+    "busy",
+    "idle_s",
+}
+
+
+def test_health_is_service_health_and_keeps_every_earlier_field(tmp_path: Path, monkeypatch) -> None:
+    """One body is cortex's ServiceHealth, its ResidentHealth, and everything lens's /health carried before."""
+    from argus_cortex.gpu_wire import ResidentHealth
+    from argus_cortex.service import ServiceHealth
+
+    monkeypatch.delenv("IMMICH_URL", raising=False)
+    monkeypatch.delenv("IMMICH_API_KEY", raising=False)
+    client = TestClient(create_app(default_backend=_StubBackend(), source_root=str(tmp_path), read_only=True))
+    response = client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) >= _LEGACY_HEALTH_FIELDS
+    assert set(body["gpu"]) == {"backend", "loaded", "coordinator", "free_vram_mb", "idle_s", "resident"}
+
+    health = ServiceHealth.model_validate(body)
+    assert (health.service, health.version, health.status, health.read_only) == ("argus-lens", __version__, "ok", True)
+    assert health.capabilities == {"caption": True, "immich": False, "immich_write_back": False}
+    assert health.capability_names == ("caption",)
+    assert health.checks == {}
+    resident = ResidentHealth.model_validate(body)
+    assert (resident.model_state, resident.busy) == ("unloaded", False)
+    assert (body["backend"], body["allowed_backends"], body["source_root"]) == ("stub", None, str(tmp_path.resolve()))
+
+
+def test_health_answers_200_whatever_the_model_state() -> None:
+    """argus-iris raises on a non-200 from a resident's /health, so an unloaded model is still a 200 (no readiness
+    gate), with or without ``?checks=0``; the route is left out of the OpenAPI document."""
+    client = TestClient(create_app(default_backend=_StubBackend()))
+    for path in ("/health", "/health?checks=0"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.json()["model_state"] == "unloaded"
+        assert response.json()["status"] == "ok"
+    assert "/health" not in client.get("/openapi.json").json()["paths"]
+
+
+def test_health_capabilities_follow_immich_and_read_only(monkeypatch) -> None:
+    """The capability map says the same as the top-level ``immich`` / ``immich_write_back`` booleans."""
+    monkeypatch.setenv("IMMICH_URL", "http://immich.invalid:2283")
+    monkeypatch.setenv("IMMICH_API_KEY", "made-up")
+    body = TestClient(create_app(default_backend=_StubBackend())).get("/health").json()
+    assert body["capabilities"] == {"caption": True, "immich": True, "immich_write_back": True}
+    assert (body["immich"], body["immich_write_back"]) == (True, True)
+    body = TestClient(create_app(default_backend=_StubBackend(), read_only=True)).get("/health").json()
+    assert body["capabilities"] == {"caption": True, "immich": True, "immich_write_back": False}

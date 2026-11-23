@@ -573,3 +573,36 @@ def test_judge_confirms_a_written_word_beside_an_unjudged_one() -> None:
     dispute = AttributeDispute("pose", "posture", ("sitting",), ("standing", "kneeling"))
     assert judge("standing", dispute) == "standing"
     assert judge("standing", AttributeDispute("posture", "posture", (), ("standing", "kneeling"))) == "standing"
+
+
+# --- the puppet URL is a cortex peer: LENS_POSE_URL, then ARGUS_PUPPET_URL (argus-cortex#209) ----------------------
+
+
+def test_pose_url_is_lens_own_variable_then_the_suite_wide_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LENS_POSE_URL wins; blank falls through to ARGUS_PUPPET_URL; ``off`` stops there; neither set is None."""
+    from argus_lens.reconcile.verifiers.pose import pose_url_from_env
+
+    assert pose_url_from_env() is None
+    monkeypatch.setenv("ARGUS_PUPPET_URL", "http://suite-puppet.test:8220/")
+    assert pose_url_from_env() == "http://suite-puppet.test:8220"
+    assert PoseVerifier()._client.allow_hosts == ("suite-puppet.test:8220",)
+    monkeypatch.setenv("LENS_POSE_URL", "")
+    assert pose_url_from_env() == "http://suite-puppet.test:8220"
+    monkeypatch.setenv("LENS_POSE_URL", _PUPPET)
+    assert pose_url_from_env() == _PUPPET.rstrip("/")
+    monkeypatch.setenv("LENS_POSE_URL", "off")
+    assert pose_url_from_env() is None
+
+
+def test_a_malformed_puppet_url_is_refused_not_read_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo in either variable raises, naming the variable and never the value: it must not turn the check off."""
+    from argus_cortex.peers import PeerRefused
+
+    from argus_lens.reconcile.verifiers.pose import pose_url_from_env
+
+    monkeypatch.setenv("ARGUS_PUPPET_URL", "suite-puppet.test:8220")
+    with pytest.raises(PeerRefused, match="ARGUS_PUPPET_URL") as refused:
+        pose_url_from_env()
+    assert "suite-puppet.test" not in str(refused.value)
+    with pytest.raises(PeerRefused):
+        build_verifier("tag-prior")

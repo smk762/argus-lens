@@ -13,9 +13,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coordinator), re-registers every five minutes, and sends `DELETE /tenants/argus-lens` on shutdown, so iris knows
   the `lens-captioner` resident before the first caption and gets `ARGUS_ADMIN_TOKEN` for `/admin/unload` from the
   registration. It never blocks startup and does nothing without `ARGUS_GPU_BROKER_URL`.
+- **`/health` is the suite's `ServiceHealth`** (argus-cortex#212), served by `argus_cortex.service.install_health`.
+  Every field it had is still there with the same name and meaning (`status`, `service`, `version`, `backend`,
+  `allowed_backends`, `source_root`, `read_only`, `immich`, `immich_write_back`, `gpu`, and the resident contract's
+  top-level `model_state`, `busy`, `idle_s`). New beside them: `service_version`, `started_at`, `wire` (empty: lens has
+  no versioned wire constant), `capabilities` (a map: `caption`, `immich`, `immich_write_back`), `checks` (empty),
+  `build` (`ARGUS_BUILD`) and `peer` (`ARGUS_PEER`). It still always answers `200`: there is no readiness gate, since
+  the model loads lazily and argus-iris treats a non-200 from a resident as a failure.
+- **Suite-wide names for reconcile's sibling services** (argus-cortex#209). The OCR server is `LENS_OCR_URL`, then
+  `ARGUS_OCR_URL`; argus-puppet is `LENS_POSE_URL`, then `ARGUS_PUPPET_URL`. Each is read from the environment and
+  then the suite settings file (`~/.config/argus/suite.env`), through `argus_cortex.peers`.
+- **Suite settings file.** `argus-lens serve` calls `argus_cortex.settings.apply()` at startup, so shared values kept
+  in the suite file (`HF_TOKEN`, `CORTEX_PG_URL`, a cloud key) reach the code that reads the environment; a variable
+  already set is never replaced. `compose.suite.yaml` is an opt-in override that mounts the file read-only at
+  `/etc/argus/suite.env` (`COMPOSE_FILE=docker-compose.yaml:compose.suite.yaml`). The lens image runs as root, so the
+  mounted file must be root-owned today (argus-cortex#218).
+- `docker-compose.yaml` labels the container for argus-iris's service directory (`argus.peer: lens`,
+  `argus.service: argus-lens`, `argus.health: /health`, `argus.port: "8080"`) and sets `ARGUS_PEER=lens`.
 
 ### Changed
-- **argus-cortex `>=0.15,<0.16`** (was `>=0.11,<0.12`). `ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` are now
+- **argus-cortex `>=0.16.1,<0.17`** (was `>=0.15,<0.16` on `dev`, `>=0.11,<0.12` in 0.15.0). Behaviour that changes
+  with it:
+  - **A suite-wide OCR or puppet URL now turns that reconcile check on.** With `LENS_OCR_URL` or `LENS_POSE_URL`
+    unset or blank, a `--reconcile` run uses `ARGUS_OCR_URL` / `ARGUS_PUPPET_URL` when one is set (environment or
+    suite file), where it used to run without that check. Set lens's variable to `off` to opt out. Blank no longer
+    means "off" when the suite-wide name is set.
+  - **A malformed OCR or puppet URL is an error** (`PeerRefused`, a `ValueError` naming the variable and never the
+    value) as soon as the verifier is built, including a malformed suite-wide URL when lens's own is unset. A
+    trailing slash is dropped.
+  - **cortex reads the suite file for its own variables**: `LENS_READ_ONLY` (through `env_flag`),
+    `ARGUS_ADMIN_TOKEN`, the `ARGUS_GPU_*` variables and `CORTEX_*` are found in `~/.config/argus/suite.env` or
+    `/etc/argus/suite.env` when the environment does not set them. With no suite file nothing changes.
+  - **`/health` is no longer in `/openapi.json`**, sends `Cache-Control: no-store`, and its key order changed.
+  - `.env.example` drops `ARGUS_GPU_BROKER_FALLBACK` (still read, default `lease` in `docker-compose.yaml`).
+- **argus-cortex 0.15** (from `>=0.11,<0.12`). `ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` are now
   all the broker needs: the URL alone selects it and the manifest is found at `/app/gpu-tenant.yaml`.
   `docker-compose.yaml` no longer defaults `ARGUS_GPU_COORDINATOR` to `none` (which would have overridden that) and
   drops `ARGUS_GPU_TENANT_MANIFEST` / `ARGUS_GPU_TENANT`; `.env.example` drops them too. Set

@@ -540,8 +540,13 @@ def serve(
         typer.echo("Server requires: pip install argus-lens[server]", err=True)
         raise typer.Exit(1) from _exc
 
+    from argus_cortex import settings
+
     from argus_lens.server import create_app
 
+    # Shared values kept in the suite file (HF_TOKEN, CORTEX_PG_URL, a cloud key) reach the code that reads
+    # os.environ. Only unset variables are filled, so this service's own environment still wins.
+    settings.apply()
     app = create_app(
         default_backend=backend,
         cors=cors,
