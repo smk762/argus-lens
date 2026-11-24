@@ -17,8 +17,9 @@ from __future__ import annotations
 import re
 
 from argus_lens.assembly.subjects import hedge_prose_count, rewrite_prose_count
-from argus_lens.eval.metrics import _COLORS, _canon_color, _noun_variants
+from argus_lens.eval.metrics import _noun_variants
 from argus_lens.reconcile.types import AttributeDispute
+from argus_lens.vocabulary import COLORS, canon_color
 
 # Split into clauses while KEEPING the delimiters, so the prose rejoins verbatim.
 _CLAUSE_SPLIT = re.compile(r"([.,;:!?]|\band\b|\bwith\b|\bbut\b|\bwhile\b)", re.IGNORECASE)
@@ -47,7 +48,7 @@ def _recolor_clause(clause: str, subject: str, correct: str, value: str) -> str:
     if not _clause_has_subject(lowered, subject):
         return clause
     subject_idx = [i for i, w in enumerate(lowered) if w in _noun_variants(subject)]
-    wrong = [i for i, w in enumerate(lowered) if w in _COLORS and _canon_color(w) != correct]
+    wrong = [i for i, w in enumerate(lowered) if w in COLORS and canon_color(w) != correct]
     if not wrong:
         return clause
     # Nearest wrong colour to any subject occurrence (ties → the earlier token).
@@ -59,7 +60,7 @@ def _recolor_clause(clause: str, subject: str, correct: str, value: str) -> str:
 def apply_fix(prose: str, dispute: AttributeDispute, value: str) -> str:
     """Return *prose* rewritten so *dispute.subject* reads as *value*."""
     if dispute.kind == "color":
-        correct = _canon_color(value.lower())
+        correct = canon_color(value.lower())
         parts = _CLAUSE_SPLIT.split(prose)
         return "".join(_recolor_clause(part, dispute.subject, correct, value) for part in parts)
 

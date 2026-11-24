@@ -26,6 +26,7 @@ from argus_lens.assembly.subjects import exact_prose_counts, exact_tag_count
 from argus_lens.assembly.token_budget import estimate_tokens
 from argus_lens.eval.faithfulness import DEFAULT_THRESHOLD, faithfulness
 from argus_lens.types import BACKEND_TOKEN_BUDGETS, DEFAULT_TOKEN_BUDGET
+from argus_lens.vocabulary import COLORS, POSE_GROUPS, POSE_TERMS, canon_color
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -33,64 +34,6 @@ if TYPE_CHECKING:
     from argus_lens.eval.dataset import EvalItem
     from argus_lens.eval.faithfulness import FaithfulnessJudge
     from argus_lens.types import CaptionResult
-
-# ---------------------------------------------------------------------------
-# Vocabularies
-# ---------------------------------------------------------------------------
-
-# Canonical colours plus spelling/near-synonym folds, so "grey" vs "gray" or
-# "blond" vs "blonde" never read as a contradiction.
-_COLOR_CANON: dict[str, str] = {
-    "grey": "gray",
-    "blond": "blonde",
-    "violet": "purple",
-    "crimson": "red",
-    "scarlet": "red",
-    "golden": "gold",
-}
-_COLORS: frozenset[str] = frozenset(
-    {
-        "red",
-        "orange",
-        "yellow",
-        "green",
-        "blue",
-        "purple",
-        "violet",
-        "pink",
-        "brown",
-        "black",
-        "white",
-        "gray",
-        "grey",
-        "blonde",
-        "blond",
-        "silver",
-        "gold",
-        "golden",
-        "tan",
-        "beige",
-        "cyan",
-        "teal",
-        "navy",
-        "maroon",
-        "crimson",
-        "scarlet",
-        "turquoise",
-    }
-)
-
-# Mutually-exclusive posture terms: tags asserting one and prose asserting
-# another (from the same group) is a contradiction.
-_POSE_GROUPS: tuple[frozenset[str], ...] = (
-    frozenset({"standing", "sitting", "lying", "kneeling", "crouching", "squatting"}),
-)
-_POSE_TERMS: frozenset[str] = frozenset().union(*_POSE_GROUPS)
-
-
-def _canon_color(word: str) -> str:
-    """Fold a colour word onto its canonical spelling."""
-    return _COLOR_CANON.get(word, word)
 
 
 def _words(text: str) -> list[str]:
@@ -146,8 +89,8 @@ def _tag_color_map(tags: str) -> dict[str, set[str]]:
     mapping: dict[str, set[str]] = defaultdict(set)
     for tag in _split_tags(tags):
         toks = tag.lower().replace("_", " ").split()
-        colors = [_canon_color(t) for t in toks if t in _COLORS]
-        nouns = [t for t in toks if t not in _COLORS and t not in _NON_NOUN]
+        colors = [canon_color(t) for t in toks if t in COLORS]
+        nouns = [t for t in toks if t not in COLORS and t not in _NON_NOUN]
         if colors and nouns:
             mapping[nouns[-1]].update(colors)
     return dict(mapping)
@@ -232,7 +175,7 @@ def _prose_colors_for_noun(clauses: list[list[str]], noun: str) -> set[str]:
     found: set[str] = set()
     for words in clauses:
         if set(words) & variants:
-            found |= {_canon_color(w) for w in words if w in _COLORS}
+            found |= {canon_color(w) for w in words if w in COLORS}
     return found
 
 
@@ -265,8 +208,8 @@ def tag_prose_contradiction(result: CaptionResult) -> dict:
 
     # Posture contradictions
     tag_words = set(_words(tags.replace(",", " ")))
-    prose_pose = set(prose_words) & _POSE_TERMS
-    for group in _POSE_GROUPS:
+    prose_pose = set(prose_words) & POSE_TERMS
+    for group in POSE_GROUPS:
         t = group & tag_words
         p = group & prose_pose
         if t and p:
