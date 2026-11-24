@@ -60,7 +60,7 @@ class StanceRule:
     rules_out: frozenset[str]
 
 
-# Lens posture words (eval.metrics._POSE_GROUPS) puppet can judge at all. "kneeling" and "squatting" have no puppet
+# Lens posture words (vocabulary.POSE_GROUPS) puppet can judge at all. "kneeling" and "squatting" have no puppet
 # stance (a kneel or a squat reads as crouching, seated or unknown), so a claim naming either is never judged.
 JUDGED_TERMS: frozenset[str] = frozenset({"standing", "sitting", "lying", "crouching"})
 

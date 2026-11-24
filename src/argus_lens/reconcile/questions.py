@@ -10,8 +10,8 @@ from __future__ import annotations
 import re
 
 from argus_lens.assembly.subjects import _NUMBER_WORDS
-from argus_lens.eval.metrics import _COLORS, _POSE_TERMS, _canon_color
 from argus_lens.reconcile.types import AttributeDispute
+from argus_lens.vocabulary import COLORS, POSE_TERMS, canon_color
 
 _POSE_CHOICES = "standing, sitting, lying down, kneeling, or crouching"
 
@@ -55,8 +55,8 @@ def parse_answer(answer: str, kind: str) -> str | None:
             if w in _NUMBER_WORDS and w not in {"both", "pair", "couple"}:
                 return str(_NUMBER_WORDS[w])
         return None
-    vocab = _COLORS if kind == "color" else _POSE_TERMS
+    vocab = COLORS if kind == "color" else POSE_TERMS
     for w in words:
         if w in vocab:
-            return _canon_color(w) if kind == "color" else w
+            return canon_color(w) if kind == "color" else w
     return None
