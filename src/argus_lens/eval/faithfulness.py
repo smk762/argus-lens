@@ -27,6 +27,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Protocol
 
+from argus_lens.reconcile.verifiers.openai_compat import chat_completion, encode_data_url
+
 if TYPE_CHECKING:
     from PIL import Image
 
@@ -120,9 +122,6 @@ class OpenAICompatJudge:
 
     def score_claims(self, image: Image.Image, claims: list[str]) -> list[float | None]:
         """Ask the judge about each claim; the image is encoded once."""
-        # Imported here: the reconcile package imports eval.metrics, which imports this module.
-        from argus_lens.reconcile.verifiers.openai_compat import chat_completion, encode_data_url  # noqa: PLC0415
-
         image_url = encode_data_url(image)
         return [
             parse_score(
