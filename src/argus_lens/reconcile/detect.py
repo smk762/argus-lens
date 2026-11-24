@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 from argus_lens.assembly.subjects import exact_prose_counts, exact_tag_count
-from argus_lens.eval.metrics import _split_tags, _words, tag_prose_contradiction
+from argus_lens.contradiction import split_tags, tag_prose_contradiction, words_of
 from argus_lens.reconcile.text_claims import detect_text_claims
 from argus_lens.reconcile.types import AttributeDispute
 from argus_lens.types import CaptionResult
@@ -52,14 +52,14 @@ def detect_claims(tags: str, prose: str) -> list[AttributeDispute]:
       that ``reads_pose`` (argus-puppet) is asked about it.
     """
     claims: list[AttributeDispute] = []
-    if exact_tag_count(_split_tags(tags)) is None:  # with a tag count, detect_disputes compares the two
+    if exact_tag_count(split_tags(tags)) is None:  # with a tag count, detect_disputes compares the two
         counts = exact_prose_counts(prose)
         if len(counts) == 1:
             claims.append(
                 AttributeDispute(kind="count", subject="people", tags_say=(), prose_says=(str(counts[0][0]),))
             )
     posture = _prose_posture(prose)
-    if posture is not None and not set(_words(tags.replace(",", " "))) & POSE_TERMS:
+    if posture is not None and not set(words_of(tags.replace(",", " "))) & POSE_TERMS:
         claims.append(AttributeDispute(kind="posture", subject="posture", tags_say=(), prose_says=(posture,)))
     texts = detect_text_claims(prose)
     if texts:
@@ -76,5 +76,5 @@ _POSTURE_NOUN_USE = re.compile(
 
 def _prose_posture(prose: str) -> str | None:
     """The one posture word *prose* uses about someone, or ``None`` for none or several different ones."""
-    terms = set(_words(_POSTURE_NOUN_USE.sub(" ", prose))) & POSE_TERMS
+    terms = set(words_of(_POSTURE_NOUN_USE.sub(" ", prose))) & POSE_TERMS
     return next(iter(terms)) if len(terms) == 1 else None

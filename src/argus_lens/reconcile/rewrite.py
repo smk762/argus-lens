@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 
 from argus_lens.assembly.subjects import hedge_prose_count, rewrite_prose_count
-from argus_lens.eval.metrics import _noun_variants
+from argus_lens.contradiction import noun_variants
 from argus_lens.reconcile.types import AttributeDispute
 from argus_lens.vocabulary import COLORS, canon_color
 
@@ -38,7 +38,7 @@ def _cased(replacement: str, original: str) -> str:
 
 def _clause_has_subject(words: list[str], subject: str) -> bool:
     """True when the tokenised *words* mention the subject noun (any form)."""
-    return bool(set(words) & _noun_variants(subject))
+    return bool(set(words) & noun_variants(subject))
 
 
 def _recolor_clause(clause: str, subject: str, correct: str, value: str) -> str:
@@ -47,7 +47,7 @@ def _recolor_clause(clause: str, subject: str, correct: str, value: str) -> str:
     lowered = [m.group(0).lower() for m in tokens]
     if not _clause_has_subject(lowered, subject):
         return clause
-    subject_idx = [i for i, w in enumerate(lowered) if w in _noun_variants(subject)]
+    subject_idx = [i for i, w in enumerate(lowered) if w in noun_variants(subject)]
     wrong = [i for i, w in enumerate(lowered) if w in COLORS and canon_color(w) != correct]
     if not wrong:
         return clause
