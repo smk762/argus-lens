@@ -476,7 +476,8 @@ class PatchEmbed(nn.Module):
 
     def forward(self, x):
         B, C, H, W = x.shape
-        # FIXME look at relaxing size constraints
+        # Permanent: every block's input_resolution and shifted-window attn_mask buffer are fixed at init from
+        # img_size (and the checkpoint was trained at it); the backend resizes every image to it first. workaround: ok
         assert H == self.img_size[0] and W == self.img_size[1], (
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         )

@@ -66,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks posture alone.
 
 ### Fixed
+- **Replay lookups count as in flight.** `unload()` (and `POST /admin/unload`) refuses, and `close()` waits, while a
+  replay lookup runs, as they already did for live inference; before, the replay backend could be unloaded under a
+  running lookup, and a lookup starting during `close()` was not refused.
+- **`/immich/caption/stream` closes its Immich clients on any album-listing error**, not only on an HTTP error, like
+  `/immich/pull` does.
+- **`workflows/curate_index.py caption` trims a torn last row before building the resume set.** A last row that was
+  whole JSON but lost its newline counted as done and was then cut off, so its image was never captioned.
 - **Prose training captions kept losing poses and props.** Identity suppression let any four words sit
   between "with" and an identity noun, so "with her hands in her hair" and "with a hat over her eyes" were
   cut whole. Only modifiers may sit there now; "with a cane and a grey beard" loses the beard alone.
