@@ -718,8 +718,20 @@ class ArgusLens:
         streamed/reported miss ties back to the file the caller sent, rather than
         the ingest name (``"bytes"``) a raw-bytes source carries.
         """
-        self._ensure_loaded()
-        result = self._backend.lookup(sha256=asset.sha256, uri=asset.uri)  # type: ignore[attr-defined]
+        # Counted busy like a live inference, so unload() refuses and close() drains while a lookup runs.
+        with self._load_lock:
+            if self._closed:
+                raise EngineClosed("this engine is closed; build a new one to caption")
+            self._active += 1
+            self._last_used = time.monotonic()
+        try:
+            self._ensure_loaded()
+            result = self._backend.lookup(sha256=asset.sha256, uri=asset.uri)  # type: ignore[attr-defined]
+        finally:
+            with self._load_lock:
+                self._active -= 1
+                self._last_used = time.monotonic()
+                self._drained.notify_all()
         if result is None:
             raise ReplayMiss(sha256=asset.sha256, uri=asset.uri, name=name or asset.name)
         return result

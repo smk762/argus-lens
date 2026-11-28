@@ -1562,7 +1562,7 @@ def create_app(
                 assets = await asyncio.to_thread(_immich_album_assets, source, req.album_id, req.asset_ids)
             except _IMMICH_UPSTREAM_ERRORS as exc:
                 raise _immich_502(exc) from exc
-        except HTTPException:
+        except BaseException:  # the stream has not taken the clients yet: close them on any way out
             _close()
             raise
         total = len(assets)

@@ -280,6 +280,20 @@ def test_resume_after_a_torn_append_recaptions_it_and_keeps_raw_jsonl_readable(l
     assert raw.read_text().endswith("\n")
 
 
+def test_resume_recaptions_a_whole_last_row_that_lost_its_newline(library) -> None:
+    """A kill just before the newline leaves a last row that parses: it must not count as done and then be trimmed,
+    or that image is never captioned (audit pack-argus-lens-1481aa3801)."""
+    src, run = library
+    curate.main(["inventory", str(src), str(run)])
+    curate.main(["caption", str(run)])
+    raw = run / "raw.jsonl"
+    raw.write_text(raw.read_text().rstrip("\n"))  # whole JSON, no trailing newline
+    curate.main(["caption", str(run)])
+    rows = [json.loads(line) for line in raw.read_text().splitlines()]
+    assert len(rows) == 4 and len({r["sha256"] for r in rows}) == 4
+    assert raw.read_text().endswith("\n")
+
+
 def test_trim_torn_tail(tmp_path) -> None:
     """Whole files are left alone; a torn tail goes back to the last newline, a lone torn row to empty."""
     path = tmp_path / "raw.jsonl"

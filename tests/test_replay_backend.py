@@ -243,6 +243,39 @@ def test_engine_short_circuits_to_recorded_caption() -> None:
     assert result.metadata["replay"]["asset_sha256"] == sha
 
 
+def test_unload_and_close_wait_for_an_in_flight_replay_lookup() -> None:
+    """A replay lookup counts as in flight: unload() refuses and close() drains until it returns
+    (audit pack-argus-lens-dd13e68596)."""
+    data = _png_bytes()
+    backend = _backend_with({("sha256", hashlib.sha256(data).hexdigest()): _RECORDED_ROW})
+    entered, release = threading.Event(), threading.Event()
+    real_lookup = backend.lookup
+
+    def _slow_lookup(**kw: Any) -> Any:
+        entered.set()
+        assert release.wait(5)
+        return real_lookup(**kw)
+
+    backend.lookup = _slow_lookup  # type: ignore[method-assign]
+    engine = ArgusLens(backend=backend)
+    results: list[Any] = []
+    worker = threading.Thread(target=lambda: results.append(engine.caption(data)))
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert engine.unload() is False  # the lookup is still running
+        closer = threading.Thread(target=engine.close)
+        closer.start()
+        closer.join(0.2)
+        assert closer.is_alive()  # close() drains rather than unloading under the lookup
+    finally:
+        release.set()
+        worker.join(5)
+    closer.join(5)
+    assert not closer.is_alive()
+    assert results and results[0].final_caption == _RECORDED_ROW[0]
+
+
 def test_engine_raises_replay_miss_for_unknown_asset() -> None:
     """An unknown asset surfaces as ReplayMiss from the engine."""
     backend = _backend_with({})  # empty tape
