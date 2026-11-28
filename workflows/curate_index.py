@@ -311,6 +311,9 @@ def cmd_caption(args: argparse.Namespace) -> None:
         )
 
     raw_path = run / "raw.jsonl"
+    # Trim before reading: a last row that parses but lacks its newline would count as done, then be cut off.
+    trim_torn_tail(raw_path)
+    trim_torn_tail(run / "errors.jsonl")
     done = {r["sha256"] for r in read_jsonl(raw_path)}
     todo = [r for r in read_jsonl(run / "manifest.jsonl") if "duplicate_of" not in r and r["sha256"] not in done]
     if args.limit:
@@ -318,8 +321,6 @@ def cmd_caption(args: argparse.Namespace) -> None:
     print(f"{len(done)} already captioned, {len(todo)} to go")
 
     started = time.monotonic()
-    trim_torn_tail(raw_path)
-    trim_torn_tail(run / "errors.jsonl")
     with raw_path.open("a", encoding="utf-8") as out, (run / "errors.jsonl").open("a", encoding="utf-8") as err:
         for i, row in enumerate(todo, 1):
             path = root / row["rel_path"]
