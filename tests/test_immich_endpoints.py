@@ -425,6 +425,23 @@ def test_immich_caption_stream_empty_asset_ids_captions_nothing(immich_env, albu
     assert _events(resp) == [{"type": "complete", "total": 0, "captioned": 0, "failed": 0}]
 
 
+def test_immich_caption_stream_closes_the_clients_on_any_album_listing_error(immich_env, monkeypatch) -> None:
+    """An album listing that fails with an error that isn't an upstream one still closes the Immich source and
+    sink rather than leaking their pooled connections (audit pack-argus-lens-27cd997b82)."""
+    closed: list[str] = []
+    monkeypatch.setattr(ImmichSource, "close", lambda self: closed.append("source"))
+    monkeypatch.setattr(ImmichSink, "close", lambda self: closed.append("sink"))
+
+    def _broken(self, album_id):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(ImmichSource, "list_album_assets", _broken)
+    client = TestClient(create_app(default_backend=_StubBackend()), raise_server_exceptions=False)
+    resp = client.post("/immich/caption/stream", json={"album_id": "al1", "write_back": True})
+    assert resp.status_code == 500
+    assert sorted(closed) == ["sink", "source"]
+
+
 def test_immich_caption_stream_unknown_asset_ids_is_404(immich_env, album_assets) -> None:
     """Requesting ids that are not in the album is a 404, not a silent zero-work success."""
     resp = _client().post("/immich/caption/stream", json={"album_id": "al1", "asset_ids": ["ghost"]})
